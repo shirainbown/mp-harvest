@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -36,7 +37,28 @@ ARTICLE_EXPORT_FORMATS: dict[str, str] = {
 
 ARTICLE_EXPORT_LABELS = list(ARTICLE_EXPORT_FORMATS.values())
 
-_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+def _resolve_template_dir() -> Path:
+    """定位 article.html 模板目录（兼容 PyInstaller 各布局，2026-08-09 修复）。
+
+    冻结版模块 ``__file__`` 解析到 ``Contents/Frameworks/mp_harvest/core``，
+    模板打包在 ``mp_harvest/core/templates``；开发版就是包内 templates。
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    roots: list[Path] = []
+    if meipass:
+        roots.append(Path(meipass))
+    roots.append(Path(__file__).resolve().parent)
+    candidates: list[Path] = []
+    for r in roots:
+        candidates.append(r / "templates")
+        candidates.append(r / "mp_harvest" / "core" / "templates")
+    for cand in candidates:
+        if (cand / "article.html").is_file():
+            return cand
+    return Path(__file__).resolve().parent / "templates"
+
+
+_TEMPLATE_DIR = _resolve_template_dir()
 _JINJA = Environment(
     loader=FileSystemLoader(str(_TEMPLATE_DIR)),
     autoescape=True,

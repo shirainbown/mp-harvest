@@ -159,6 +159,19 @@
       `account_id`（v2.0.4 起该路径一直坏，非本次新增功能引入）。
     测试：新增 `tests/server/test_article_cache.py`（重启恢复/导出/删账号清缓存），
     并给 server 测试加 `isolated_data_dir` 隔离落盘；server 96/96、core 91/91。
+13. **打包漏正文模板 + 导出无进度（v2.0.5 真机复现）**：
+    - **导出全失败**：冻结版 `article_reader` 的 `__file__` 解析到
+      `Contents/Frameworks/mp_harvest/core`，而 `core/templates/article.html`
+      从未进 PyInstaller 打包（spec datas 只有 frontend）——42 篇全部
+      「article.html not found」，目录只剩 index.html。修复：spec 补
+      `core/templates → mp_harvest/core/templates`，`_TEMPLATE_DIR` 改为运行时
+      多候选解析（_MEIPASS / __file__.parent × templates / mp_harvest/core/templates），
+      并加 `test_article_template_resolves` 回归。
+    - **看不到进度/无完成提示**：导出任务 `on_progress` 只更新 message 不更新
+      percent（恒 0%），且前端只有拉取任务显示 ProgressInline、导出没有。
+      修复：路由按篇数算 percent（done/total×100）；前端记录 `exportTaskId`，
+      工具条内联显示导出进度（可取消），完成/失败 toast 照旧。
+    真机复现：42 篇从「ok:0 failed:42」变为全部成功落盘，进度逐篇刷新。
 
 ### 测试环境事故与处置（重要）
 

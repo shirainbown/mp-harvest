@@ -108,9 +108,15 @@ def export_html(body: ExportHtmlIn) -> dict:
         out_dir = paths.data_dir() / "exports" / (account.get("name") if account else "articles")
 
     def work(task: Task) -> dict:
+        total = len(articles)
+        done = 0
+
         def on_progress(msg: str) -> None:
+            nonlocal done
+            done += 1
             task.check_cancelled()  # 每篇文章一个批次边界
-            task.update(message=str(msg))
+            # 2026-08-09：导出进度此前只有 message 没有 percent，界面进度条不动
+            task.update(percent=done / total * 100, message=str(msg))
 
         result = article_reader.batch_export_articles(
             articles,

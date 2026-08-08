@@ -117,6 +117,11 @@
   get_articles 懒加载，删账号清理）——关掉应用不再丢历史文章；前端导出恒带
   `account_id`，选中文章导出不再报「没有拉取历史文章」；server 测试加隔离数据目录；
   server 96/96、core 91/91、前端 type-check ✅；发布 v2.0.5（重建替换资产）。
+- ✅ **导出模板打包 + 进度展示（E24）**：PyInstaller spec 补
+  `core/templates → mp_harvest/core/templates`（此前漏打包，冻结版导出 42/42 全失败）；
+  `_TEMPLATE_DIR` 运行时多候选解析；导出任务 `on_progress` 按篇数报 percent；
+  前端工具条内联导出进度（可取消）+ 完成/失败 toast；真机复现导出全部落盘；
+  发布 v2.0.6（重建替换资产）。
 
 ## 下一步（继承者从这里开始）
 

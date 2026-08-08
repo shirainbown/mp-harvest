@@ -22,6 +22,8 @@ ICON = str(ROOT / "packaging" / "mp_harvest.icns")
 datas = [
     (str(FRONTEND / "dist"), "frontend/dist"),
     (str(FRONTEND / "public" / "icon.png"), "frontend/public"),
+    # 正文导出模板（2026-08-09 修复：v2.0.4/v2.0.5 漏打包导致导出全部失败）
+    (str(ROOT / "core" / "templates"), "mp_harvest/core/templates"),
 ]
 binaries = []
 hiddenimports = collect_submodules("mp_harvest")
@@ -110,8 +112,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "MP Harvest",
         "CFBundleDisplayName": "MP Harvest",
-        "CFBundleShortVersionString": "2.0.5",
-        "CFBundleVersion": "2.0.5",
+        "CFBundleShortVersionString": "2.0.6",
+        "CFBundleVersion": "2.0.6",
         "NSHighResolutionCapable": True,
     },
 )

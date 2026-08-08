@@ -74,6 +74,7 @@
 | E21 | CA 状态契约双写（前端永远显示「未信任」修复） | ✅ | 2026-08-09 | /api/ca/status 补 trusted；新用户模拟全链路验证；Release v2.0.3 |
 | E22 | 导出全部正文到指定目录 + titles_filtered 风格说明页 | ✅ | 2026-08-09 | export-html 支持 out_dir/view；index.html 搜索/排序/判定；前端「导出到目录…」弹窗；顺手修 ws.ts ai.batch 错用 accounts store；Release v2.0.4 |
 | E23 | 历史文章缓存落盘 + 导出补 account_id（v2.0.4 反馈修复） | ✅ | 2026-08-09 | articles_cache 原子落盘/懒加载；删账号清缓存；前端 exportHtml 恒带 account_id；server 96/96；Release v2.0.5 |
+| E24 | 导出模板打包修复 + 导出进度展示（v2.0.5 真机复现） | ✅ | 2026-08-09 | spec 补 core/templates；_TEMPLATE_DIR 多候选解析；导出任务按篇数报 percent；前端工具条内联进度/可取消；Release v2.0.6 |
 
 ## Epic C 遗留问题（不阻塞，联调期处理）
 

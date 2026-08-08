@@ -10,6 +10,14 @@ sys.path.insert(0, str(ROOT))
 from mp_harvest.core.article_reader import batch_export_articles  # noqa: E402
 
 
+def test_article_template_resolves():
+    """回归：打包漏模板会导出全失败（v2.0.4/v2.0.5 事故），模板必须可定位。"""
+    from mp_harvest.core import article_reader
+
+    assert article_reader._TEMPLATE_DIR.is_dir()
+    assert (article_reader._TEMPLATE_DIR / "article.html").is_file()
+
+
 def test_batch_export_writes_html_files_and_index():
     with tempfile.TemporaryDirectory() as td:
         out = Path(td)

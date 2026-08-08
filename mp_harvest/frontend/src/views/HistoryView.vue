@@ -58,6 +58,7 @@ const range = computed({
 
 // ---- 拉取进度（内联） ----
 const fetchTask = computed(() => (articles.fetchTaskId ? tasks.tasks[articles.fetchTaskId] : null))
+const exportTask = computed(() => (articles.exportTaskId ? tasks.tasks[articles.exportTaskId] : null))
 
 // ---- 视图切换 ----
 const viewTabs: Array<{ v: ArticleView; label: string }> = [
@@ -214,6 +215,12 @@ const aiWorkers = ref(4)
         <SButton size="sm" variant="ghost" @click="articles.clearSelection()">取消选择</SButton>
         <SButton size="sm" variant="primary" :disabled="!articles.visible.length" @click="clickExportHtml()">{{ exportBtnText }}</SButton>
         <SButton size="sm" variant="ghost" :disabled="!articles.visible.length" @click="openExportDir">导出到目录…</SButton>
+        <ProgressInline
+          v-if="exportTask"
+          :text="exportTask.message || '导出中…'"
+          cancellable
+          @cancel="articles.cancelExport()"
+        />
         <span style="width:8px"></span>
         <SPopover>
           <template #anchor><SButton size="sm" :disabled="!articles.accountId || !!articles.aiTaskId">✦ AI 筛选</SButton></template>

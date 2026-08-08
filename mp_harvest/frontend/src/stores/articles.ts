@@ -23,6 +23,7 @@ export const useArticlesStore = defineStore('articles', {
     selected: new Set<string>() as Set<string>,
     loading: false,
     fetchTaskId: '',
+    exportTaskId: '',
     aiTaskId: '',
     aiProgress: '',
     listFormat: 'md' as string,
@@ -158,6 +159,7 @@ export const useArticlesStore = defineStore('articles', {
       if (outDir && outDir.trim()) body.out_dir = outDir.trim()
       const r = await call(rest.post<{ task_id: string }>('/api/articles/export-html', body))
       if (!r) return
+      this.exportTaskId = r.task_id
       const ui = useUiStore()
       ui.toast(
         `开始导出 ${ids.length || this.counts[this.view]} 篇正文 HTML${body.out_dir ? ` → ${body.out_dir}` : ''}（任务已创建，可看进度）`,
@@ -165,9 +167,19 @@ export const useArticlesStore = defineStore('articles', {
       useTasksStore().track(r.task_id, 'export', {
         onDone: (t) => {
           const res = (t.result || {}) as { dir?: string; count?: number }
+          this.exportTaskId = ''
           ui.toast(`正文导出完成（${res.count ?? ''} 篇）→ ${res.dir || 'exports/'}（含 index.html 说明页）`)
         },
+        onError: () => {
+          this.exportTaskId = ''
+        },
       })
+    },
+    async cancelExport() {
+      const t = this.exportTaskId
+      if (!t) return
+      this.exportTaskId = ''
+      await useTasksStore().cancel(t)
     },
     toggleSort() {
       this.newestFirst = !this.newestFirst

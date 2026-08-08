@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from mp_harvest.infra.platform import paths
 
-APP_VERSION = "2.0.5"
+APP_VERSION = "2.0.6"
 
 # GitHub Releases 更新源：默认你的仓库 shirainbown/mp-harvest，可用环境变量覆盖。
 # 用法：MP_HARVEST_GITHUB_REPO=用户名/仓库名
