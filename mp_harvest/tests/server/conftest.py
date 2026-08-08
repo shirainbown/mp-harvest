@@ -193,6 +193,15 @@ def _fake_article_reader() -> types.ModuleType:
             if on_progress:
                 on_progress(f"正在导出 {i}/{len(articles)}")
             written.append(str(Path(out_dir) / f"a{i}.html"))
+        # 与真实 article_reader 契约一致：out_dir 下生成 index.html 说明页
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "index.html").write_text(
+            "<html><body><h1>fake index</h1>"
+            + "".join(f"<p>{i}</p>" for i in range(len(articles)))
+            + "</body></html>",
+            encoding="utf-8",
+        )
         return {
             "ok": len(articles),
             "failed": 0,
@@ -200,7 +209,7 @@ def _fake_article_reader() -> types.ModuleType:
             "written": written,
             "out_dir": str(out_dir),
             "fmt": "html",
-            "index": str(Path(out_dir) / "index.html"),
+            "index": str(out / "index.html"),
         }
 
     mod.batch_export_articles = batch_export_articles

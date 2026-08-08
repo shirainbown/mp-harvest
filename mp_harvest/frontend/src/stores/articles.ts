@@ -148,16 +148,21 @@ export const useArticlesStore = defineStore('articles', {
       URL.revokeObjectURL(a.href)
       useUiStore().toast(`已导出当前视图 ${this.counts[this.view]} 条（仅导出当前视图）`)
     },
-    /** 正文 HTML 导出（§6）：ids 为空 = 当前视图全部（调用方已确认） */
-    async exportHtml(ids: string[]) {
-      const r = await call(rest.post<{ task_id: string }>('/api/articles/export-html', ids.length ? { ids } : {}))
+    /** 正文 HTML 导出（§6）：ids 为空 = 当前视图全部（调用方已确认）；
+     *  outDir 指定目标目录，后端会在其中生成 index.html 说明页（2026-08-09） */
+    async exportHtml(ids: string[], outDir?: string) {
+      const body: Record<string, unknown> = ids.length ? { ids } : { view: this.view }
+      if (outDir && outDir.trim()) body.out_dir = outDir.trim()
+      const r = await call(rest.post<{ task_id: string }>('/api/articles/export-html', body))
       if (!r) return
       const ui = useUiStore()
-      ui.toast(`开始导出 ${ids.length || this.counts[this.view]} 篇 HTML（任务已创建，可看进度）`)
+      ui.toast(
+        `开始导出 ${ids.length || this.counts[this.view]} 篇正文 HTML${body.out_dir ? ` → ${body.out_dir}` : ''}（任务已创建，可看进度）`,
+      )
       useTasksStore().track(r.task_id, 'export', {
         onDone: (t) => {
           const res = (t.result || {}) as { dir?: string; count?: number }
-          ui.toast(`HTML 导出完成（${res.count ?? ''} 篇）→ ${res.dir || 'exports/'}`)
+          ui.toast(`正文导出完成（${res.count ?? ''} 篇）→ ${res.dir || 'exports/'}（含 index.html 说明页）`)
         },
       })
     },

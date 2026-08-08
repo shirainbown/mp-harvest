@@ -371,53 +371,139 @@ def _render_index_page(
     *,
     account_name: str = "",
 ) -> str:
-    """批量导出目录页：标题/日期/链接表格，可点击跳各篇（设计稿 §6.1）。"""
-    title = f"{account_name} · 文章目录" if account_name else "文章目录"
+    """批量导出目录页（titles_filtered.html 风格）：搜索/排序/暗色，正文+原文链接。
+
+    每行含：日期、公众号、标题（链到本地正文）、判定（通过/过滤掉+理由）、
+    本地正文快照链接、原文链接；支持关键字过滤与按日期/公众号/标题排序。
+    """
+    title = f"{account_name} · 文章目录" if account_name else "文章导出目录"
     trs = []
     for i, r in enumerate(rows, start=1):
         t = html.escape(str(r.get("title") or "(无标题)"))
         when = html.escape(str(r.get("publish_at") or ""))
+        ts = html.escape(str(r.get("publish_ts") or "").strip())
+        acct = html.escape(str(r.get("account") or ""))
         file = html.escape(str(r.get("file") or ""))
         link = html.escape(str(r.get("link") or ""))
-        origin = f'<a href="{link}">原文</a>' if link else ""
-        trs.append(
-            f"<tr><td class='idx'>{i}</td>"
-            f"<td><a href='{file}'>{t}</a></td>"
-            f"<td class='when'>{when}</td>"
-            f"<td>{origin}</td></tr>"
+        keep = r.get("keep")
+        if keep is True:
+            verdict = "<span class='v-keep'>通过</span>"
+        elif keep is False:
+            verdict = "<span class='v-drop'>过滤掉</span>"
+        else:
+            verdict = ""
+        reason = html.escape(str(r.get("reason") or ""))
+        title_cell = f'<a href="{file}" target="_blank" rel="noopener">{t}</a>' if file else t
+        local = (
+            f'<a href="{file}" target="_blank" rel="noopener" title="本地正文快照">本地HTML</a>'
+            if file
+            else ""
         )
-    return f"""<!doctype html>
+        origin = f'<a href="{link}" target="_blank" rel="noopener">原文</a>' if link else ""
+        trs.append(
+            "<tr>"
+            f"<td class='date' data-ts='{ts}'>{when}</td>"
+            f"<td class='account'>{acct}</td>"
+            f"<td class='title'>{title_cell}</td>"
+            f"<td class='verdict'>{verdict}<div class='reason'>{reason}</div></td>"
+            f"<td class='local'>{local}</td>"
+            f"<td>{origin}</td>"
+            "</tr>"
+        )
+    css = (
+        ":root{color-scheme:light dark}"
+        "body{font-family:-apple-system,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;"
+        "margin:0;padding:24px}"
+        "h1{font-size:20px;margin:0 0 6px}"
+        ".meta{font-size:13px;opacity:.75;margin-bottom:14px;line-height:1.7}"
+        ".toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}"
+        "input[type=text]{padding:7px 10px;border-radius:8px;border:1px solid #8883;"
+        "font-size:14px;min-width:260px}"
+        "table{border-collapse:collapse;width:100%;font-size:13px}"
+        "th,td{text-align:left;padding:6px 9px;border-bottom:1px solid #8882;vertical-align:top}"
+        "th{position:sticky;top:0;background:#f6f6f6;cursor:pointer;"
+        "user-select:none;white-space:nowrap}"
+        "th:hover{background:#eee}"
+        ".date{white-space:nowrap;color:#888;width:104px}"
+        ".account{white-space:nowrap;width:140px}"
+        ".verdict{width:110px}"
+        ".v-keep{color:#0a7d33;font-weight:600}"
+        ".v-drop{color:#c33;font-weight:600}"
+        ".reason{color:#a44;font-size:12px;margin-top:2px}"
+        ".local{width:84px;white-space:nowrap}"
+        "a{color:#06c;text-decoration:none}"
+        "a:hover{text-decoration:underline}"
+        ".title a{color:#06c;text-decoration:none}"
+        ".title a:hover{text-decoration:underline}"
+        "tr:hover td{background:#0000000c}"
+        "#count{font-size:13px;opacity:.7;margin-left:auto;align-self:center}"
+        "@media(prefers-color-scheme:dark){"
+        "th{background:#222}th:hover{background:#333}"
+        ".title a,.local a{color:#6cf}.reason{color:#f77}"
+        ".v-keep{color:#4ade80}.v-drop{color:#f87171}"
+        "}"
+    )
+    js = (
+        "const input=document.getElementById('filter');"
+        "const countEl=document.getElementById('count');"
+        "const body=document.querySelector('tbody');"
+        "const rows=Array.from(body.rows);"
+        "function render(){"
+        "const kw=input.value.trim().toLowerCase();let shown=0;"
+        "rows.forEach(tr=>{const ok=!kw||tr.textContent.toLowerCase().includes(kw);"
+        "tr.style.display=ok?'':'none';if(ok)shown++;});"
+        "countEl.textContent='显示 '+shown+' / '+rows.length+' 篇';"
+        "}"
+        "function sortBy(key){"
+        "rows.sort((a,b)=>{"
+        "const ta=a.querySelector('td.'+key);const tb=b.querySelector('td.'+key);"
+        "const va=(ta&&ta.textContent)||'';const vb=(tb&&tb.textContent)||'';"
+        "let cmp;"
+        "if(key==='date'){const na=parseFloat(ta&&ta.dataset.ts)||-Infinity;"
+        "const nb=parseFloat(tb&&tb.dataset.ts)||-Infinity;cmp=na-nb;}"
+        "else{cmp=va.localeCompare(vb,'zh');}"
+        "return cmp;"
+        "});"
+        "rows.forEach(tr=>body.appendChild(tr));render();"
+        "}"
+        "input.addEventListener('input',render);"
+        "document.querySelectorAll('th[data-key]').forEach(th=>"
+        "th.addEventListener('click',()=>sortBy(th.dataset.key)));"
+        "render();"
+    )
+    return (
+        """<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>{html.escape(title)}</title>
+<title>__TITLE__</title>
 <style>
- body{{max-width:880px;margin:40px auto;padding:0 20px;
-      font:15px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",serif;
-      color:#1f2328;background:#fff}}
- table{{width:100%;border-collapse:collapse}}
- td,th{{padding:8px 10px;border-bottom:1px solid #e3e1dc;text-align:left;
-       vertical-align:top}}
- th{{font-size:13px;color:#6b7280}}
- .idx,.when{{color:#6b7280;font-size:13px;white-space:nowrap}}
- a{{color:#0969da;text-decoration:none}}
- a:hover{{text-decoration:underline}}
- @media(prefers-color-scheme:dark){{body{{background:#1b1d1f;color:#e8eaed}}
-  td,th{{border-color:#36383b}}.idx,.when,th{{color:#9ba0a6}}a{{color:#58a6ff}}}}
+__CSS__
 </style>
 </head>
 <body>
-<h1>{html.escape(title)}</h1>
-<p class="when">共 {len(rows)} 篇</p>
+<h1>__TITLE__</h1>
+<div class="meta">共 __COUNT__ 篇 · 点击「本地HTML」打开正文快照，点击标题跳转本地文件，点击「原文」跳转微信原文。表头可排序，输入框可筛选。</div>
+<div class="toolbar">
+  <input type="text" id="filter" placeholder="筛选标题 / 公众号 / 日期 / 理由关键词…" autocomplete="off">
+  <span id="count"></span>
+</div>
 <table>
-<tr><th>#</th><th>标题</th><th>日期</th><th>原文</th></tr>
-{"".join(trs)}
+<thead><tr><th data-key="date">日期</th><th data-key="account">公众号</th><th data-key="title">标题</th><th>判定</th><th>正文</th><th>原文</th></tr></thead>
+<tbody>__ROWS__</tbody>
 </table>
+<script>__JS__</script>
 </body>
 </html>
 """
+    .replace("__TITLE__", html.escape(title))
+    .replace("__COUNT__", str(len(rows)))
+    .replace("__CSS__", css)
+    .replace("__ROWS__", "".join(trs))
+    .replace("__JS__", js)
+)
 
 
 def batch_export_articles(
@@ -474,8 +560,12 @@ def batch_export_articles(
                 {
                     "title": final_title,
                     "publish_at": str(parsed.get("publish_at") or ""),
+                    "publish_ts": str(parsed.get("publish_ts") or row.get("publish_ts") or ""),
+                    "account": str(row.get("account") or account_name or ""),
                     "file": fname,
                     "link": link,
+                    "keep": row.get("keep"),
+                    "reason": str(row.get("reason") or ""),
                 }
             )
             ok_n += 1

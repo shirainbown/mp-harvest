@@ -103,6 +103,31 @@ def test_export_html_by_ids(client, auth):
     assert task.result["ok"] == 1
 
 
+def test_export_html_custom_dir_and_view(client, auth, tmp_path):
+    """指定目录 + 视图过滤（2026-08-09）：out_dir 生效且生成 index.html 说明页。"""
+    acc = _prepare_articles(client, auth)
+    from mp_harvest.server import state
+
+    articles = state.get_articles(acc["id"])
+    articles[0]["keep"] = True
+    articles[1]["keep"] = False
+    state.set_articles(acc["id"], articles)
+    out = tmp_path / "custom-export"
+
+    resp = client.post(
+        "/api/articles/export-html",
+        params=auth,
+        json={"account_id": acc["id"], "view": "keep", "out_dir": str(out)},
+    )
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "done"
+    assert task.result["ok"] == 1
+    assert task.result["out_dir"] == str(out)
+    assert (out / "index.html").is_file()
+    assert task.result["index"] == str(out / "index.html")
+
+
 def test_export_html_no_articles_400(client, auth):
     acc = add_account(client, auth)
     resp = client.post(

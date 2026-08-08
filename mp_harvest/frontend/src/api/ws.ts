@@ -2,6 +2,7 @@
 import { MOCK, wsUrl } from '../config'
 import type { WsEvent } from '../types'
 import { useAccountsStore } from '../stores/accounts'
+import { useArticlesStore } from '../stores/articles'
 import { useTasksStore } from '../stores/tasks'
 import { useUiStore } from '../stores/ui'
 
@@ -12,6 +13,7 @@ let closed = false
 /** WS 事件分派（真实 ws 与 mock 共用同一入口） */
 export function dispatchWsEvent(evt: WsEvent) {
   const accounts = useAccountsStore()
+  const articles = useArticlesStore()
   const tasks = useTasksStore()
   const ui = useUiStore()
   switch (evt.type) {
@@ -25,7 +27,7 @@ export function dispatchWsEvent(evt: WsEvent) {
       tasks.onError(evt.task_id, evt.error)
       break
     case 'ai.batch':
-      accounts.onAiBatch(evt.account_id, evt.articles)
+      articles.onAiBatch(evt.account_id, evt.articles)
       break
     case 'credential.captured':
       accounts.onCaptured(evt.account_id, evt.expires_at)

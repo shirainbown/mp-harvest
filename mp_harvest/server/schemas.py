@@ -49,6 +49,8 @@ class SupplementIn(BaseModel):
 class ExportHtmlIn(BaseModel):
     account_id: str | None = None
     ids: list[str] | None = None  # 文章 identity；空 = 该账号全部
+    view: str = "all"  # ids 为空时按当前视图过滤（all/keep/drop，2026-08-09）
+    out_dir: str | None = None  # 自定义导出目录（支持 ~ 展开）；留空用默认 data_dir/exports/...
 
 
 # ── ai ────────────────────────────────────────────────────────────

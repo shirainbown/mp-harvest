@@ -48,7 +48,7 @@
 | GET | `/api/articles?account_id=&view=&order=` | query：`view=all/keep/drop`、`order=desc/asc` | **裸数组** `[Article]`（`Article={id,account_id,title,url,date,source,verdict,reason}`，见 §3 第 5 条）；非法 view/order 400 | `state` 文章缓存 + `sightings` + `server.mappers.article_out` |
 | POST | `/api/articles/supplement` | `{account_id?, url, title?}` | `201` **裸对象** `Article`（`source=补`） | `sightings.SightingsStore.upsert` + `server.mappers.article_out` |
 | GET | `/api/articles/export-list?account_id=&view=&format=` | query：`view=all/keep/drop`（只导出当前视图 §5.5）、`format=json/csv/tsv/md/links/title+links` | **纯文本**（`text/plain`，`Content-Disposition` 带 RFC5987 文件名）；非法格式/view 400，账号 404 | `history_export.render_export / default_export_filename`（fmt 映射 `md→markdown`、`title+links→title_links`） |
-| POST | `/api/articles/export-html` | `{account_id?, ids?}` | `202 {task_id, type, total}`；无文章 400 | `article_reader.batch_export_articles`（§6 正文只有 HTML） |
+| POST | `/api/articles/export-html` | `{account_id?, ids?, view?, out_dir?}`：`ids` 非空导出指定篇；否则按 `view=all/keep/drop` 过滤当前账号；`out_dir` 指定目标目录（支持 `~` 展开，留空用默认 `data/exports/…`） | `202 {task_id, type, total}`；无文章/非法 view 400。任务完成后在 `out_dir` 生成逐篇 HTML + **titles_filtered 风格 `index.html` 说明页**（搜索/排序/判定/本地+原文链接） | `article_reader.batch_export_articles`（§6 正文只有 HTML） |
 
 ### AI
 

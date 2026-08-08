@@ -84,6 +84,19 @@ function exportSingle(a: Article) {
   articles.exportHtml([a.id])
 }
 
+// ---- 导出全部正文到指定目录（2026-08-09） ----
+const EXPORT_DIR_KEY = 'mp_harvest.export_dir'
+const exportDirOpen = ref(false)
+const exportDir = ref(localStorage.getItem(EXPORT_DIR_KEY) || '~/Downloads/mp-harvest-export')
+function openExportDir() {
+  exportDirOpen.value = true
+}
+function confirmExportDir() {
+  exportDirOpen.value = false
+  localStorage.setItem(EXPORT_DIR_KEY, exportDir.value)
+  articles.exportHtml([], exportDir.value)
+}
+
 // ---- 补录链接 ----
 const suppOpen = ref(false)
 const suppUrl = ref('')
@@ -200,6 +213,7 @@ const aiWorkers = ref(4)
         <SButton size="sm" variant="ghost" @click="articles.selectAllVisible()">全选</SButton>
         <SButton size="sm" variant="ghost" @click="articles.clearSelection()">取消选择</SButton>
         <SButton size="sm" variant="primary" :disabled="!articles.visible.length" @click="clickExportHtml()">{{ exportBtnText }}</SButton>
+        <SButton size="sm" variant="ghost" :disabled="!articles.visible.length" @click="openExportDir">导出到目录…</SButton>
         <span style="width:8px"></span>
         <SPopover>
           <template #anchor><SButton size="sm" :disabled="!articles.accountId || !!articles.aiTaskId">✦ AI 筛选</SButton></template>
@@ -312,6 +326,24 @@ const aiWorkers = ref(4)
     <template #foot>
       <SButton variant="ghost" @click="confirmAllOpen = false">取消</SButton>
       <SButton variant="primary" @click="confirmExportAll">导出全部</SButton>
+    </template>
+  </SModal>
+
+  <!-- 导出全部正文到指定目录 Modal -->
+  <SModal :open="exportDirOpen" @close="exportDirOpen = false">
+    <template #head>导出全部正文到指定目录</template>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <span>
+        将当前视图全部 <b style="color:var(--text-primary)">{{ articles.counts[articles.view] }}</b>
+        篇正文导出为 HTML 到目标目录，并在目录内生成
+        <span class="mono">index.html</span> 说明页（可搜索/排序，含本地正文与原文链接）。
+      </span>
+      <SInput v-model="exportDir" mono placeholder="~/Downloads/mp-harvest-export" />
+      <span class="muted" style="font-size:var(--fs-sm)">支持 <span class="mono">~</span> 展开；目录不存在会自动创建。</span>
+    </div>
+    <template #foot>
+      <SButton variant="ghost" @click="exportDirOpen = false">取消</SButton>
+      <SButton variant="primary" @click="confirmExportDir">导出到目录</SButton>
     </template>
   </SModal>
   </section>

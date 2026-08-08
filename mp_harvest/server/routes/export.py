@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
@@ -71,7 +73,12 @@ def export_list(account_id: str, view: str = "all", format: str = "json"):
 
 @router.post("/api/articles/export-html", status_code=202)
 def export_html(body: ExportHtmlIn) -> dict:
-    """正文 HTML 导出 → task_id（设计稿 §6：正文导出只有 HTML）。"""
+    """正文 HTML 导出 → task_id（设计稿 §6：正文导出只有 HTML）。
+
+    ids 非空时导出指定文章；否则按 ``view``（all/keep/drop）过滤当前账号全部。
+    ``out_dir`` 指定目标目录（支持 ``~`` 展开），并在其中生成 titles_filtered
+    风格的 ``index.html`` 说明页（2026-08-09 新增）。
+    """
     from mp_harvest.core import article_reader
 
     account_id = body.account_id or ""
@@ -84,10 +91,21 @@ def export_html(body: ExportHtmlIn) -> dict:
         articles = [
             a for a in articles if str(a.get("identity") or "") in wanted
         ]
+    else:
+        view = (body.view or "all").lower()
+        if view not in ("all", "keep", "drop"):
+            raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
+        if view == "keep":
+            articles = [a for a in articles if a.get("keep") is True]
+        elif view == "drop":
+            articles = [a for a in articles if a.get("keep") is False]
     if not articles:
         raise HTTPException(status_code=400, detail="没有可导出的文章（请先拉取历史）")
     cred = (account or {}).get("credentials") or {}
-    out_dir = paths.data_dir() / "exports" / (account.get("name") if account else "articles")
+    if body.out_dir and str(body.out_dir).strip():
+        out_dir = Path(str(body.out_dir).strip()).expanduser()
+    else:
+        out_dir = paths.data_dir() / "exports" / (account.get("name") if account else "articles")
 
     def work(task: Task) -> dict:
         def on_progress(msg: str) -> None:

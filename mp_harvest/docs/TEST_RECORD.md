@@ -143,9 +143,12 @@
       补写 `modDate` 后从零新增条目可正常导入。
     - 主路径（osascript 管理员 + 系统钥匙串）非取消失败时不再提前 return，继续补
       显式信任设置；仍未生效则降级「登录钥匙串 + 显式信任设置」（无需管理员）。
-    真机验收（新用户全链路）：清空全部 CA/信任 → 启动应用 `trusted:false` →
-    点「安装 CA 证书」输入一次管理员密码 → `trusted:true`；应用内「抓包指引」同步
-    改为首次使用三步（安装 CA → 启动代理 → 微信刷新文章）。
+   真机验收（新用户全链路）：清空全部 CA/信任 → 启动应用 `trusted:false` →
+   点「安装 CA 证书」输入一次管理员密码 → `trusted:true`；应用内「抓包指引」同步
+   改为首次使用三步（安装 CA → 启动代理 → 微信刷新文章）。
+11. **前端 ws.ts 把 `ai.batch` 事件错派到 accounts store**：`dispatchWsEvent` 里
+    `accounts.onAiBatch(...)`，而方法定义在 articles store——运行时事件丢失（AI 判定
+    结果不刷新），type-check 也报错。修复：改用 `useArticlesStore().onAiBatch`。
 
 ### 测试环境事故与处置（重要）
 

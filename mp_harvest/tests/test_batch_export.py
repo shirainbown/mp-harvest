@@ -15,8 +15,8 @@ def test_batch_export_writes_html_files_and_index():
         out = Path(td)
 
         articles = [
-            {"title": "第一篇", "link": "https://mp.weixin.qq.com/s/a1"},
-            {"title": "第二篇", "link": "https://mp.weixin.qq.com/s/a2"},
+            {"title": "第一篇", "link": "https://mp.weixin.qq.com/s/a1", "keep": True, "reason": "技术深度好"},
+            {"title": "第二篇", "link": "https://mp.weixin.qq.com/s/a2", "keep": False, "reason": "商业新闻"},
         ]
 
         def fake_fetch(url: str, cred=None):
@@ -49,6 +49,12 @@ def test_batch_export_writes_html_files_and_index():
         text = index.read_text(encoding="utf-8")
         assert "标题-a1" in text and "标题-a2" in text
         assert "2026-08-05 10:00" in text
+        # titles_filtered 风格说明页（2026-08-09）：账号/判定/本地与原文链接/筛选排序
+        assert "测试号" in text
+        assert "通过" in text and "过滤掉" in text
+        assert "技术深度好" in text
+        assert "本地HTML" in text and "原文" in text
+        assert 'id="filter"' in text and 'data-key="date"' in text
 
 
 def test_batch_export_counts_failures():

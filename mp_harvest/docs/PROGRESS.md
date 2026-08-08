@@ -106,6 +106,12 @@
 - ✅ **CA 状态契约双写（v2.0.3）**：`/api/ca/status` 补 `trusted` 字段（与 `installed`
   同值），修复前端「CA 永远显示未信任」；新用户模拟（清空 CA + 信任 → 生成 → 安装 →
   status=True）全链路通过；core 91/91、server 92/92。
+- ✅ **导出全部正文到指定目录（E22）**：`POST /api/articles/export-html` 支持
+  `out_dir`（自定义目录，`~` 展开）与 `view`（ids 为空时按当前视图过滤）；导出目录
+  内生成 titles_filtered 风格 `index.html` 说明页（搜索/排序/判定/本地正文+原文链接）；
+  历史页新增「导出到目录…」入口并记忆上次目录；顺手修复 ws.ts 把 `ai.batch` 错派到
+  accounts store（应为 articles store）；core 91/91、server 93/93、前端 type-check ✅；
+  发布 v2.0.4（重建替换资产）。
 
 ## 下一步（继承者从这里开始）
 
