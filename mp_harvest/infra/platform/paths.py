@@ -22,7 +22,20 @@ def is_frozen() -> bool:
 
 
 def package_root() -> Path:
-    """``mp_harvest`` 包目录（开发模式下的项目根）。"""
+    """``mp_harvest`` 包目录（开发模式下的项目根）。
+
+    冻结（PyInstaller 6 onedir .app）时资源可能平铺在 ``Contents/Resources`` 下，
+    也可能放在 ``_internal/`` 子目录：依次探测，保证 ``frontend/dist`` 能被找到。
+    """
+    if is_frozen():
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            root = Path(meipass)
+            for cand in (root, root / "_internal"):
+                if (cand / "frontend" / "dist").is_dir():
+                    return cand
+            return root
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
 
 
