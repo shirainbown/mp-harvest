@@ -45,6 +45,16 @@
     而非目录；win 同步加开发模式保护。新增 5 条单测（bundle 定位/脚本内容/开发模式
     拒绝），core 82→87 全绿；发布 **v2.0.1**（APP_VERSION 2.0.1），打包版实测
     「检查更新」连通 GitHub、下载/替换/重启链路就绪。
+12. **CA 信任判定不准确 → 未信任证书也会放行抓包（本机断连根因复盘）**：
+    (a) `ca.status()` 只查「钥匙串里存在 mitmproxy 证书」，不查信任设置——
+    之前 `add-trusted-cert` 在 macOS 上建不出信任设置时状态仍报已安装；
+    (b) 改为按名字匹配 dump-trust-settings 后，开发/打包版两套数据目录各有一把 CA，
+    会被另一把的信任条目误判（冻结版实测 installed:true 但 verify-cert 失败）。
+    修复：`status()` 用 `security verify-cert -c <DER> -p ssl` **按证书精确校验**；
+    `install()` 在 add-trusted-cert 后补 `trust-settings-export → 写显式 TrustRoot →
+    trust-settings-import`（mkcert 同款），装完即真正受信任；
+    `enable_system_proxy()` 加守卫：CA 未信任时**拒绝切换系统代理**并提示先安装。
+    实测：开发 CA trusted=True、打包版 CA trusted=False；发布 v2.0.2。
 
 ### 事故根因分析：为什么用 MP Harvest 会让 Codex/本机助手断连
 

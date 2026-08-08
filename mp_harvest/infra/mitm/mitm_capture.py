@@ -265,11 +265,21 @@ class MitmCaptureService:
             return True, "；".join(msg_parts) if msg_parts else "代理未在运行"
 
     def enable_system_proxy(self) -> tuple[bool, str]:
-        """委托平台代理层（win/mac 各自备份原设置后写入 127.0.0.1:8088）。"""
+        """委托平台代理层（win/mac 各自备份原设置后写入 127.0.0.1:8088）。
+
+        前置守卫（2026-08-09）：CA 未被系统信任时**拒绝切换代理**——否则整机 HTTPS
+        会被中间人拦截且握手失败，表现为全机断网/本机助手断连。
+        """
         try:
             from mp_harvest.infra.platform import get_platform
 
-            result = get_platform().proxy.enable(PROXY_PORT)
+            platform = get_platform()
+            if not platform.ca.status():
+                return False, (
+                    "CA 证书未被系统信任：开启抓包会劫持全机 HTTPS 导致断网。"
+                    "请先在「凭证管理」点「安装 CA 证书」并输入管理员密码完成信任，再启动抓包"
+                )
+            result = platform.proxy.enable(PROXY_PORT)
         except Exception as exc:  # noqa: BLE001
             return False, f"设置系统代理异常：{exc}"
         return result.ok, result.message or result.error or ""

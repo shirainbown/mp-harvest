@@ -45,6 +45,35 @@ def _run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _patch_trust_plist(data: dict, subject_der: bytes) -> bool:
+    """把 trustList 中 ``issuerName == subject_der`` 的条目设为显式 TrustRoot。
+
+    mkcert 同款方案：仅 ``add-trusted-cert`` 在部分 macOS 上不会建立信任设置。
+    """
+    import base64
+
+    settings = [
+        {
+            "kSecTrustSettingsPolicy": base64.b64decode("KoZIhvdjZAED"),
+            "kSecTrustSettingsPolicyName": "sslServer",
+            "kSecTrustSettingsResult": 1,
+        },
+        {
+            "kSecTrustSettingsPolicy": base64.b64decode("KoZIhvdjZAEC"),
+            "kSecTrustSettingsPolicyName": "basicX509",
+            "kSecTrustSettingsResult": 1,
+        },
+    ]
+    changed = False
+    for entry in (data.get("trustList") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("issuerName") == subject_der:
+            entry["trustSettings"] = settings
+            changed = True
+    return changed
+
+
 class MacCaSetup(CaSetup):
     needs_admin = True
 
@@ -61,7 +90,7 @@ class MacCaSetup(CaSetup):
         )
 
     def install(self) -> InstallResult:
-        """弹系统授权框安装 CA；用户取消或失败都返回结构化错误。"""
+        """弹系统授权框安装 CA，并补写显式信任设置（2026-08-09 修复）。"""
         cert = self.cert_path()
         if not cert.exists():
             return InstallResult(
@@ -78,45 +107,131 @@ class MacCaSetup(CaSetup):
             return InstallResult(
                 ok=False, needs_admin=True, error=str(exc), message=f"调起系统授权失败：{exc}"
             )
-        if proc.returncode == 0:
-            return InstallResult(ok=True, needs_admin=True, message="CA 已安装并信任（系统钥匙串）")
         stderr = (proc.stderr or "").strip()
-        if "User canceled" in stderr or "-128" in stderr:
+        if proc.returncode != 0 and ("User canceled" in stderr or "-128" in stderr):
             return InstallResult(
                 ok=False, needs_admin=True, error="user canceled", message="用户取消了授权"
             )
-        # 回退：sudo 直接执行（终端场景）
-        try:
-            proc2 = _run(["sudo", "-n", "security", "add-trusted-cert", "-d", "-r",
-                          "trustRoot", "-k", _SYSTEM_KEYCHAIN, str(cert)], timeout=120)
-            if proc2.returncode == 0:
-                return InstallResult(
-                    ok=True, needs_admin=True, message="CA 已安装并信任（sudo -n 回退）"
+        if proc.returncode != 0:
+            # 回退：sudo 直接执行（终端场景）
+            try:
+                proc2 = _run(
+                    ["sudo", "-n", "security", "add-trusted-cert", "-d", "-r",
+                     "trustRoot", "-k", _SYSTEM_KEYCHAIN, str(cert)],
+                    timeout=120,
                 )
-            stderr = (proc2.stderr or stderr).strip()
-        except Exception:
-            pass
+                if proc2.returncode != 0:
+                    stderr = (proc2.stderr or stderr).strip()
+            except Exception:
+                pass
+            if stderr:
+                return InstallResult(
+                    ok=False,
+                    needs_admin=True,
+                    error=stderr or "unknown",
+                    message=f"证书安装失败：{stderr or 'security 命令非零退出'}",
+                )
+        # 关键：add-trusted-cert 在部分 macOS 上不建立显式信任设置 → 补 trust-settings-import
+        err = self._import_trust(cert)
+        if err:
+            return InstallResult(
+                ok=False,
+                needs_admin=True,
+                error=err,
+                message=f"证书已加入钥匙串，但信任设置写入失败：{err}",
+            )
+        if self.status():
+            return InstallResult(
+                ok=True, needs_admin=True, message="CA 已安装并信任（系统钥匙串 + 显式信任设置）"
+            )
         return InstallResult(
             ok=False,
             needs_admin=True,
-            error=stderr or "unknown",
-            message=f"证书安装失败：{stderr or 'security 命令非零退出'}",
+            error="trust not effective",
+            message="CA 已加入钥匙串，但系统信任校验未通过，请检查「系统设置 → 隐私与安全性」中的证书信任",
         )
+
+    def _import_trust(self, cert: Path) -> str | None:
+        """trust-settings-export → 补显式 TrustRoot → import（用户域，无需管理员）。"""
+        import os
+        import plistlib
+        import tempfile
+
+        from cryptography import x509
+
+        raw = cert.read_bytes()
+        try:
+            subject_der = x509.load_pem_x509_certificate(raw).subject.public_bytes()
+        except Exception:  # noqa: BLE001
+            try:
+                subject_der = x509.load_der_x509_certificate(raw).subject.public_bytes()
+            except Exception as exc:  # noqa: BLE001
+                return f"解析 CA 证书失败：{exc}"
+        fd, plist_path = tempfile.mkstemp(prefix="mp-harvest-trust-", suffix=".plist")
+        os.close(fd)
+        try:
+            p = _run(["security", "trust-settings-export", "-d", plist_path], timeout=60)
+            if p.returncode != 0:
+                return f"trust-settings-export 失败：{(p.stderr or '').strip()}"
+            with open(plist_path, "rb") as fh:
+                data = plistlib.load(fh)
+            if not _patch_trust_plist(data, subject_der):
+                return "信任列表中没有找到本应用 CA 条目（请确认已执行安装命令）"
+            with open(plist_path, "wb") as fh:
+                plistlib.dump(data, fh, fmt=plistlib.FMT_XML)
+            p2 = _run(["security", "trust-settings-import", "-d", plist_path], timeout=60)
+            if p2.returncode != 0:
+                return f"trust-settings-import 失败：{(p2.stderr or '').strip()}"
+            return None
+        finally:
+            try:
+                os.unlink(plist_path)
+            except Exception:  # noqa: BLE001
+                pass
 
     @staticmethod
     def _applescript_quote(cmd: str) -> str:
         return '"' + cmd.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
     def status(self) -> bool:
-        """系统钥匙串中是否已存在 mitmproxy CA（信任设置已由 add-trusted-cert 建立）。"""
+        """CA 是否**真正**被系统信任：按证书精确校验（verify-cert）。
+
+        2026-08-09 修复：不能按「信任列表里存在名为 mitmproxy 的条目」判断——
+        多套数据目录（开发/打包版）各有一把 CA 时会被另一把的信任条目误判。
+        """
         try:
-            proc = _run(
-                ["security", "find-certificate", "-c", "mitmproxy", _SYSTEM_KEYCHAIN],
-                timeout=30,
-            )
-        except Exception:
+            cert = self.cert_path()
+            if not cert.exists():
+                return False
+            from cryptography import x509
+            from cryptography.hazmat.primitives import serialization
+
+            raw = cert.read_bytes()
+            try:
+                loaded = x509.load_pem_x509_certificate(raw)
+            except Exception:  # noqa: BLE001
+                loaded = x509.load_der_x509_certificate(raw)
+            der = loaded.public_bytes(serialization.Encoding.DER)
+            import os
+            import tempfile
+
+            fd, der_path = tempfile.mkstemp(suffix=".der")
+            os.close(fd)
+            try:
+                with open(der_path, "wb") as fh:
+                    fh.write(der)
+                proc = _run(
+                    ["security", "verify-cert", "-c", der_path, "-p", "ssl"],
+                    timeout=30,
+                )
+                return proc.returncode == 0
+            finally:
+                try:
+                    os.unlink(der_path)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
             return False
-        return proc.returncode == 0
 
 
 class MacProxyManager(ProxyManager):

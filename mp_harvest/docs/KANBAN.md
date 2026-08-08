@@ -69,6 +69,7 @@
 | E16 | 项目更名 MP Harvest（mp-harvest）+ 新图标 | ✅ | 2026-08-09 | 包/目录/品牌全量更名；icon 入侧边栏+favicon；手册截图重新生成 |
 | E17 | 仓库公开 + macOS Release v2.0.0 | ✅ | 2026-08-09 | PyInstaller arm64 .app 打包 + 冒烟 + GitHub Release（未签名） |
 | E18 | 应用内升级链路修复（macOS apply）+ v2.0.1 | ✅ | 2026-08-09 | .app 安装目录/管理员授权/开发模式保护；单测 5 条；Release v2.0.1 |
+| E19 | CA 信任精确校验 + 抓包安全守卫（v2.0.2） | ✅ | 2026-08-09 | verify-cert 按证书校验；install 补显式信任设置；未信任拒绝切代理；Release v2.0.2 |
 
 ## Epic C 遗留问题（不阻塞，联调期处理）
 

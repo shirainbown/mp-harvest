@@ -89,6 +89,12 @@
   osascript 管理员授权；开发模式禁止应用内升级；`open` 改为打开新应用；
   APP_VERSION → 2.0.1，打包版实测更新检查连通 GitHub，发布 v2.0.1（zip+dmg），
   应用内升级全链路就绪（详见 TEST_RECORD bug 11）。
+- ✅ **CA 信任精确校验 + 抓包安全守卫（v2.0.2）**：`ca.status()` 改为
+  `security verify-cert` 按证书精确验证（不再按名字匹配，开发/打包两套 CA 不误判）；
+  `install()` 补 trust-settings-import 真正写入显式信任设置；
+  `enable_system_proxy()` 在 CA 未信任时拒绝切换系统代理并提示先安装——
+  杜绝「一开抓包全机断网」（本机助手断连根因闭环，TEST_RECORD bug 12）。
+  实测：开发 CA True / 打包版 CA False；core 90/90、server 90/90；发布 v2.0.2。
 - ✅ 断连根因排查结论落盘：MP Harvest 抓包切换整机系统代理 → 本机助手（Codex）也被吸入
   mitm 中间人且 CA 未信任 → 表现为「正在重新连接」；约定真机抓包短窗口、开发用
   `set_system_proxy=False`（见 TEST_RECORD「事故根因分析」/ USAGE_NOTES §2）。
