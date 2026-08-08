@@ -453,6 +453,37 @@ class MacProxyManager(ProxyManager):
                 ok=True, message=f"已恢复原系统代理设置（{len(services)} 个网络服务）"
             )
 
+    def recover_stale(self, host: str = "127.0.0.1", port: int = 8088) -> ProxyResult:
+        """启动自愈（2026-08-09）：系统代理指向 host:port 但端口未监听
+        （上次异常退出残留）时，把该代理关闭，避免全机 HTTPS 走死端口断网。"""
+        import socket
+
+        up = False
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                up = True
+        except OSError:
+            up = False
+        if up:
+            return ProxyResult(ok=True, message="代理端口正常监听，无需恢复")
+        recovered: list[str] = []
+        for svc in self.list_services():
+            for kind in ("webproxy", "securewebproxy"):
+                st = self._read_state(svc, kind)
+                if (
+                    str(st.get("enabled") or "").lower() == "yes"
+                    and str(st.get("server") or "") == host
+                    and str(st.get("port") or "") == str(port)
+                ):
+                    _run(["networksetup", f"-set{kind}state", svc, "off"], timeout=30)
+                    recovered.append(f"{svc}·{kind}")
+        if recovered:
+            return ProxyResult(
+                ok=True,
+                message=f"已恢复异常退出残留的系统代理（{host}:{port} 未监听）：{', '.join(recovered)}",
+            )
+        return ProxyResult(ok=True, message="未发现残留代理")
+
 
 def _app_bundle_root(exe: Path) -> Path | None:
     """从可执行文件向上找 ``.app`` 包根（如 ``/Applications/MP Harvest.app``）。"""

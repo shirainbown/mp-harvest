@@ -62,7 +62,7 @@ def article_source(source: Any) -> str:
     return "M" if s else "G"
 
 
-def article_out(row: dict[str, Any], *, account_id: str = "") -> dict[str, Any]:
+def article_out(row: dict[str, Any], *, account_id: str = "", account_name: str = "") -> dict[str, Any]:
     """core 文章行（history_client / sightings 合并行）→ 前端 ``Article``（types.ts）。
 
     字段映射：``identity→id``、``link→url``、``publish_ts→date``（本地 ISO 字符串，
@@ -80,6 +80,7 @@ def article_out(row: dict[str, Any], *, account_id: str = "") -> dict[str, Any]:
     return {
         "id": str(row.get("identity") or row.get("link") or ""),
         "account_id": str(account_id or ""),
+        "account_name": str(account_name or ""),
         "title": str(row.get("title") or ""),
         "url": str(row.get("link") or ""),
         "date": date,

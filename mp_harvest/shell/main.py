@@ -127,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if not args.dev:
         ensure_frontend_dist()
+    recover_stale_proxy()
     server, _thread, port = start_server()
     url = build_url(port, args.dev)
     print(f"[mp_harvest] 服务已启动：{url}", flush=True)
@@ -161,6 +162,19 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         cleanup(server)
     return 0
+
+
+def recover_stale_proxy() -> None:
+    """启动自愈（2026-08-09）：异常退出把系统代理留在 127.0.0.1:8088 且端口已死
+    时自动关闭，避免全机 HTTPS 走死端口导致断网（含本机助手）。"""
+    try:
+        from mp_harvest.infra.platform import get_platform
+
+        result = get_platform().proxy.recover_stale()
+        if result and "已恢复" in (result.message or ""):
+            print(f"[mp_harvest] {result.message}", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 if __name__ == "__main__":

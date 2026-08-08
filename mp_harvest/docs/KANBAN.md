@@ -75,6 +75,10 @@
 | E22 | 导出全部正文到指定目录 + titles_filtered 风格说明页 | ✅ | 2026-08-09 | export-html 支持 out_dir/view；index.html 搜索/排序/判定；前端「导出到目录…」弹窗；顺手修 ws.ts ai.batch 错用 accounts store；Release v2.0.4 |
 | E23 | 历史文章缓存落盘 + 导出补 account_id（v2.0.4 反馈修复） | ✅ | 2026-08-09 | articles_cache 原子落盘/懒加载；删账号清缓存；前端 exportHtml 恒带 account_id；server 96/96；Release v2.0.5 |
 | E24 | 导出模板打包修复 + 导出进度展示（v2.0.5 真机复现） | ✅ | 2026-08-09 | spec 补 core/templates；_TEMPLATE_DIR 多候选解析；导出任务按篇数报 percent；前端工具条内联进度/可取消；Release v2.0.6 |
+| E25 | 导出文件名改为「日期_公众号_编号_标题」 | ✅ | 2026-08-09 | safe_export_filename 支持 date/account；空字段自动跳过；单测+冒烟通过 |
+| E26 | 拉取后自动识别公众号名（仅默认名覆盖） | ✅ | 2026-08-09 | getmsg nickname 提取→store.rename→accounts.changed 广播；自定义名不覆盖；core 94/94、server 98/98；Release v2.0.7 |
+| E27 | 批量拉取 + 全部公众号聚合视图 + 双维度排序 | ✅ | 2026-08-09 | POST /api/history/fetch-batch 聚合任务逐号拉取；GET /api/articles account_id 空=全号合并带 account_name；排序支持按时间/按名称（组内规则） |
+| E28 | 异常退出残留代理自愈 | ✅ | 2026-08-09 | 启动检测系统代理=127.0.0.1:8088 且端口未监听→自动关闭，避免全机断网；base 默认 no-op，mac 实现 |
 
 ## Epic C 遗留问题（不阻塞，联调期处理）
 

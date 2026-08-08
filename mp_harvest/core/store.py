@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 TTL_MINUTES = 30
+DEFAULT_ACCOUNT_NAME = "未命名公众号"
 
 
 def _now() -> datetime:
@@ -83,7 +84,7 @@ class AccountStore:
     def add_pending(self, *, name: str, article_url: str) -> dict[str, Any]:
         row = {
             "id": str(uuid.uuid4()),
-            "name": name.strip() or "未命名公众号",
+            "name": name.strip() or DEFAULT_ACCOUNT_NAME,
             "article_url": article_url.strip(),
             "credentials": {},
             "expires_at": None,
@@ -96,6 +97,23 @@ class AccountStore:
             self.save()
         self._emit()
         return deepcopy(row)
+
+    def rename(self, account_id: str, name: str) -> dict[str, Any] | None:
+        """按账号 id 改名（持久化 + 通知）；名称相同则幂等返回当前行。"""
+        cleaned = (name or "").strip()
+        if not cleaned:
+            return None
+        with self._lock:
+            for row in self._accounts:
+                if row.get("id") != account_id:
+                    continue
+                if (row.get("name") or "").strip() == cleaned:
+                    return deepcopy(row)
+                row["name"] = cleaned
+                self.save()
+                self._emit()
+                return deepcopy(row)
+        return None
 
     def apply_credentials(self, account_id: str, credentials: dict[str, str]) -> dict[str, Any] | None:
         expires = _now() + timedelta(minutes=TTL_MINUTES)

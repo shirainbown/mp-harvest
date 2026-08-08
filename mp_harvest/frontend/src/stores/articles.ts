@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import type { Article, ArticleView } from '../types'
 import { call, rest } from '../api/rest'
+import { useAccountsStore } from './accounts'
 import { useTasksStore } from './tasks'
 import { useUiStore } from './ui'
 
@@ -19,10 +20,12 @@ export const useArticlesStore = defineStore('articles', {
     rangeDays: 7,
     list: [] as Article[],
     view: 'all' as ArticleView,
-    newestFirst: true,
+    sortBy: 'time' as 'time' | 'name',
+    sortDir: 'desc' as 'desc' | 'asc',
     selected: new Set<string>() as Set<string>,
     loading: false,
     fetchTaskId: '',
+    batchTaskId: '',
     exportTaskId: '',
     aiTaskId: '',
     aiProgress: '',
@@ -39,8 +42,14 @@ export const useArticlesStore = defineStore('articles', {
     visible(): Article[] {
       const rows = this.view === 'all' ? [...this.list] : this.list.filter((a) => a.verdict === this.view)
       rows.sort((a, b) => {
-        const d = Date.parse(b.date) - Date.parse(a.date)
-        return this.newestFirst ? d : -d
+        if (this.sortBy === 'name') {
+          const byName = (a.account_name || '').localeCompare(b.account_name || '', 'zh')
+          if (byName) return byName * (this.sortDir === 'asc' ? 1 : -1)
+          return Date.parse(b.date) - Date.parse(a.date) // 组内按时间新→旧
+        }
+        const byTime = Date.parse(b.date) - Date.parse(a.date)
+        if (byTime) return byTime * (this.sortDir === 'desc' ? 1 : -1)
+        return (a.account_name || '').localeCompare(b.account_name || '', 'zh')
       })
       return rows
     },
@@ -54,7 +63,7 @@ export const useArticlesStore = defineStore('articles', {
       this.loading = true
       const r = await call(
         rest.get<Article[]>(
-          `/api/articles?account_id=${encodeURIComponent(this.accountId)}&view=all&order=${this.newestFirst ? 'desc' : 'asc'}`,
+          `/api/articles?account_id=${encodeURIComponent(this.accountId)}&view=all&order=desc`,
         ),
       )
       if (r) this.list = r
@@ -82,6 +91,42 @@ export const useArticlesStore = defineStore('articles', {
     },
     async cancelFetch() {
       if (this.fetchTaskId) await useTasksStore().cancel(this.fetchTaskId)
+    },
+    /** 批量拉取：勾选多个公众号 → 聚合任务逐个拉取（2026-08-09 新增） */
+    async fetchBatch(accountIds: string[]) {
+      if (!accountIds.length || this.batchTaskId) return
+      const r = await call(
+        rest.post<{ task_id: string }>('/api/history/fetch-batch', {
+          account_ids: accountIds,
+          days: this.rangeDays,
+        }),
+      )
+      if (!r) return
+      this.batchTaskId = r.task_id
+      const ui = useUiStore()
+      useTasksStore().track(r.task_id, 'history', {
+        onDone: async (t) => {
+          this.batchTaskId = ''
+          const res = (t.result || {}) as { ok?: number; failed?: number; total?: number }
+          ui.toast(`批量拉取完成：成功 ${res.ok ?? 0} / 失败 ${res.failed ?? 0}（共 ${res.total ?? accountIds.length} 个公众号）`)
+          await useAccountsStore().load() // 名称可能被官方昵称覆盖
+          await this.load()
+        },
+        onError: () => {
+          this.batchTaskId = ''
+        },
+      })
+    },
+    async cancelBatch() {
+      if (this.batchTaskId) await useTasksStore().cancel(this.batchTaskId)
+    },
+    setSortBy(by: 'time' | 'name') {
+      this.sortBy = by
+      // 切维度时重置为该维度的默认方向：时间默认最新在前、名称默认 A→Z
+      this.sortDir = by === 'time' ? 'desc' : 'asc'
+    },
+    toggleSortDir() {
+      this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc'
     },
     /** AI 筛选：每模型迷你进度经 task.message 内联展示（§5.5）；batch_size/workers 可调 */
     async aiFilter(batchSize = 50, workers = 4) {
@@ -180,9 +225,6 @@ export const useArticlesStore = defineStore('articles', {
       if (!t) return
       this.exportTaskId = ''
       await useTasksStore().cancel(t)
-    },
-    toggleSort() {
-      this.newestFirst = !this.newestFirst
     },
     setView(v: ArticleView) {
       this.view = v

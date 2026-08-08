@@ -122,6 +122,22 @@
   `_TEMPLATE_DIR` 运行时多候选解析；导出任务 `on_progress` 按篇数报 percent；
   前端工具条内联导出进度（可取消）+ 完成/失败 toast；真机复现导出全部落盘；
   发布 v2.0.6（重建替换资产）。
+- ✅ **导出文件名重命名（E25）**：`日期_公众号名_编号_标题.html`
+  （safe_export_filename 增加 date/account 参数，空字段跳过）；index.html 链接同步；
+  core 93/93、server 96/96、前端 build ✅。
+- ✅ **自动识别公众号名（E26）**：parse_getmsg_response 提取官方 `nickname`；
+  AccountStore 新增 `rename`（持久化+通知）；拉取任务成功后仅当名称为默认
+  「未命名公众号」时覆盖为官方昵称并广播 `accounts.changed`（前端刷新列表）；
+  自定义名称不覆盖；core 94/94、server 98/98、前端 type-check ✅；
+  发布 v2.0.7（重建替换资产）。
+- ✅ **批量拉取 + 聚合视图 + 双维度排序（E27）**：历史页新增「批量拉取…」
+  （勾选公众号 → `POST /api/history/fetch-batch` 聚合任务逐号拉取，工具条实时进度）；
+  公众号下拉新增「全部公众号」聚合视图（`GET /api/articles` account_id 空 = 全号合并，
+  每行带 `account_name`）；排序支持**按时间**（新→旧/旧→新，同日按公众号名）与
+  **按名称**（A→Z/Z→A，组内按时间）；列表增加公众号列。
+- ✅ **异常退出残留代理自愈（E28）**：应用启动时检测系统代理指向 127.0.0.1:8088
+  且端口未监听（上次强杀残留）→ 自动关闭该代理，避免全机 HTTPS 走死端口断网；
+  core 96/96、server 104、前端 type-check ✅。
 
 ## 下一步（继承者从这里开始）
 

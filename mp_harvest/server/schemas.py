@@ -40,6 +40,13 @@ class HistoryFetchIn(BaseModel):
     days: int = Field(default=7, ge=1, le=365)
 
 
+class HistoryFetchBatchIn(BaseModel):
+    """批量拉取：一次为多个公众号创建聚合任务（2026-08-09 新增）。"""
+
+    account_ids: list[str] = Field(min_length=1)
+    days: int = Field(default=7, ge=1, le=365)
+
+
 class SupplementIn(BaseModel):
     account_id: str | None = None
     url: str = Field(min_length=1)

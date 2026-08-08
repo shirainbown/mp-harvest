@@ -14,7 +14,7 @@ from datetime import datetime
 from mp_harvest.tests.server.conftest import add_account, give_credential
 
 ACCOUNT_KEYS = {"id", "name", "url", "expires_at", "pending", "__biz", "mitm_message"}
-ARTICLE_KEYS = {"id", "account_id", "title", "url", "date", "source", "verdict", "reason"}
+ARTICLE_KEYS = {"id", "account_id", "account_name", "title", "url", "date", "source", "verdict", "reason"}
 
 
 def _fetch_history(client, auth, account_id):

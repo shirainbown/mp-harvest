@@ -35,6 +35,10 @@ export function dispatchWsEvent(evt: WsEvent) {
     case 'credential.expired':
       accounts.onExpired(evt.account_id)
       break
+    case 'accounts.changed':
+      // 拉取历史后自动改名（未命名公众号 → 官方昵称），刷新账号列表
+      accounts.load()
+      break
     case 'mitm.status':
       accounts.mitm = { running: evt.running, port: evt.port }
       break

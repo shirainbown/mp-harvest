@@ -37,7 +37,7 @@ function expires_at_ms(e: number) {
 watch(
   () => articles.accountId,
   (id) => {
-    if (id) articles.load(id)
+    if (id !== undefined) articles.load(id)
   },
 )
 onMounted(async () => {
@@ -59,6 +59,31 @@ const range = computed({
 // ---- 拉取进度（内联） ----
 const fetchTask = computed(() => (articles.fetchTaskId ? tasks.tasks[articles.fetchTaskId] : null))
 const exportTask = computed(() => (articles.exportTaskId ? tasks.tasks[articles.exportTaskId] : null))
+
+// ---- 批量拉取（2026-08-09）----
+const batchOpen = ref(false)
+const batchSel = ref(new Set<string>())
+const sortDirLabel = computed(() =>
+  articles.sortBy === 'name' ? (articles.sortDir === 'asc' ? 'A→Z' : 'Z→A') : articles.sortDir === 'desc' ? '新→旧' : '旧→新',
+)
+function toggleBatchSel(id: string, on: boolean) {
+  const s = new Set(batchSel.value)
+  if (on) s.add(id)
+  else s.delete(id)
+  batchSel.value = s
+}
+function selectAllBatch() {
+  batchSel.value = new Set(accounts.list.filter((a) => !acctExpired(a.id, a.expires_at)).map((a) => a.id))
+}
+function confirmBatch() {
+  const ids = [...batchSel.value]
+  if (!ids.length) {
+    ui.error('请至少勾选一个公众号')
+    return
+  }
+  batchOpen.value = false
+  articles.fetchBatch(ids)
+}
 
 // ---- 视图切换 ----
 const viewTabs: Array<{ v: ArticleView; label: string }> = [
@@ -161,7 +186,7 @@ const aiWorkers = ref(4)
       <div class="fetch-bar">
         <span class="form-label">公众号</span>
         <select v-model="articles.accountId" class="input" style="width:200px">
-          <option value="" disabled>请选择</option>
+          <option value="">全部公众号</option>
           <option v-for="a in accounts.list" :key="a.id" :value="a.id" :disabled="acctExpired(a.id, a.expires_at)">
             {{ a.name }}{{ acctExpired(a.id, a.expires_at) ? '（需续约）' : '' }}
           </option>
@@ -171,11 +196,20 @@ const aiWorkers = ref(4)
         <SButton variant="primary" :disabled="!articles.accountId || !!fetchTask" @click="articles.fetchHistory()">
           ⟳ 拉取历史
         </SButton>
+        <SButton variant="ghost" :disabled="!accounts.list.length || !!articles.batchTaskId" @click="batchOpen = true">
+          批量拉取…
+        </SButton>
         <ProgressInline
           v-if="fetchTask"
           :text="fetchTask.message || '拉取中…'"
           cancellable
           @cancel="articles.cancelFetch()"
+        />
+        <ProgressInline
+          v-if="articles.batchTaskId"
+          :text="(tasks.tasks[articles.batchTaskId]?.message) || '批量拉取中…'"
+          cancellable
+          @cancel="articles.cancelBatch()"
         />
       </div>
     </div>
@@ -202,19 +236,29 @@ const aiWorkers = ref(4)
         <select v-model="articles.listFormat" class="input btn-sm" style="height:24px;font-size:var(--fs-xs)">
           <option v-for="f in LIST_FORMATS" :key="f.value" :value="f.value">{{ f.label }}</option>
         </select>
-        <SButton size="sm" @click="articles.copyList()">复制</SButton>
+        <SButton size="sm" :disabled="!articles.accountId" @click="articles.copyList()">复制</SButton>
         <STooltip text="始终只导出当前视图">
-          <SButton size="sm" @click="articles.exportList()">导出</SButton>
+          <SButton size="sm" :disabled="!articles.accountId" @click="articles.exportList()">导出</SButton>
         </STooltip>
         <SButton size="sm" variant="ghost" :disabled="!articles.accountId" @click="suppOpen = true">+ 补录链接</SButton>
         <SButton size="sm" variant="ghost" :disabled="!articles.accountId" @click="articles.load()">刷新</SButton>
-        <SButton size="sm" variant="ghost" @click="articles.toggleSort()">排序：{{ articles.newestFirst ? '最新' : '最旧' }} ▾</SButton>
+        <span class="muted" style="font-size:var(--fs-sm)">排序：</span>
+        <select
+          class="input btn-sm"
+          style="height:24px;font-size:var(--fs-xs);width:80px"
+          :value="articles.sortBy"
+          @change="articles.setSortBy(($event.target as HTMLSelectElement).value as 'time' | 'name')"
+        >
+          <option value="time">按时间</option>
+          <option value="name">按名称</option>
+        </select>
+        <SButton size="sm" variant="ghost" @click="articles.toggleSortDir()">{{ sortDirLabel }} ▾</SButton>
         <span class="spacer"></span>
         <span class="muted" style="font-size:var(--fs-sm)">正文：</span>
         <SButton size="sm" variant="ghost" @click="articles.selectAllVisible()">全选</SButton>
         <SButton size="sm" variant="ghost" @click="articles.clearSelection()">取消选择</SButton>
-        <SButton size="sm" variant="primary" :disabled="!articles.visible.length" @click="clickExportHtml()">{{ exportBtnText }}</SButton>
-        <SButton size="sm" variant="ghost" :disabled="!articles.visible.length" @click="openExportDir">导出到目录…</SButton>
+        <SButton size="sm" variant="primary" :disabled="!articles.accountId || !articles.visible.length" @click="clickExportHtml()">{{ exportBtnText }}</SButton>
+        <SButton size="sm" variant="ghost" :disabled="!articles.accountId || !articles.visible.length" @click="openExportDir">导出到目录…</SButton>
         <ProgressInline
           v-if="exportTask"
           :text="exportTask.message || '导出中…'"
@@ -248,10 +292,10 @@ const aiWorkers = ref(4)
 
     <!-- 文章表格 -->
     <div class="art-table">
-      <div class="art-head"><span></span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span></div>
+      <div class="art-head"><span></span><span>公众号</span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span></div>
       <div ref="scrollRef" class="art-scroll">
         <SkeletonRows v-if="articles.loading" :rows="8" />
-        <EmptyState v-else-if="!articles.visible.length" text="先选择公众号并拉取历史" />
+        <EmptyState v-else-if="!articles.visible.length" text="先选择公众号并拉取历史（可「批量拉取…」一次拉多个）" />
         <!-- 虚拟滚动（>500 条） -->
         <div v-else-if="useVirtual" :style="`height:${totalSize}px;position:relative`">
           <div
@@ -267,6 +311,9 @@ const aiWorkers = ref(4)
                 :checked="articles.selected.has(articles.visible[vr.index].id)"
                 @change="articles.toggleSelect(articles.visible[vr.index].id, ($event.target as HTMLInputElement).checked)"
               />
+            </span>
+            <span class="muted" style="font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              {{ articles.visible[vr.index].account_name || '—' }}
             </span>
             <STooltip :text="articles.visible[vr.index].title" style="min-width:0">
               <span class="art-title">{{ articles.visible[vr.index].title }}</span>
@@ -296,6 +343,9 @@ const aiWorkers = ref(4)
                 :checked="articles.selected.has(a.id)"
                 @change="articles.toggleSelect(a.id, ($event.target as HTMLInputElement).checked)"
               />
+            </span>
+            <span class="muted" style="font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              {{ a.account_name || '—' }}
             </span>
             <STooltip :text="a.title" style="min-width:0"><span class="art-title">{{ a.title }}</span></STooltip>
             <STooltip v-if="a.reason" :text="a.reason" style="min-width:0"><span class="art-reason">{{ a.reason }}</span></STooltip>
@@ -351,6 +401,39 @@ const aiWorkers = ref(4)
     <template #foot>
       <SButton variant="ghost" @click="exportDirOpen = false">取消</SButton>
       <SButton variant="primary" @click="confirmExportDir">导出到目录</SButton>
+    </template>
+  </SModal>
+
+  <!-- 批量拉取 Modal -->
+  <SModal :open="batchOpen" @close="batchOpen = false">
+    <template #head>批量拉取历史</template>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <span class="muted" style="font-size:var(--fs-sm)">
+        勾选本次要拉取的公众号，将逐个拉取最近 {{ range }} 天历史（进度在工具条实时显示）。
+      </span>
+      <div style="max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
+        <label v-for="a in accounts.list" :key="a.id" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input
+            type="checkbox"
+            class="cb"
+            :checked="batchSel.has(a.id)"
+            :disabled="acctExpired(a.id, a.expires_at)"
+            @change="toggleBatchSel(a.id, ($event.target as HTMLInputElement).checked)"
+          />
+          <span>{{ a.name }}</span>
+          <span v-if="acctExpired(a.id, a.expires_at)" class="muted" style="font-size:var(--fs-xs)">（需续约，暂不可拉取）</span>
+        </label>
+      </div>
+      <div class="toolbar">
+        <SButton size="sm" variant="ghost" @click="selectAllBatch()">全选</SButton>
+        <SButton size="sm" variant="ghost" @click="batchSel = new Set()">清空</SButton>
+        <span class="spacer"></span>
+        <span class="muted" style="font-size:var(--fs-sm)">已选 {{ batchSel.size }} 个</span>
+      </div>
+    </div>
+    <template #foot>
+      <SButton variant="ghost" @click="batchOpen = false">取消</SButton>
+      <SButton variant="primary" @click="confirmBatch">开始批量拉取</SButton>
     </template>
   </SModal>
   </section>

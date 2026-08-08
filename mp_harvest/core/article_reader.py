@@ -381,12 +381,30 @@ def write_article_export(
     return path
 
 
-def safe_export_filename(title: str, *, ext: str, index: int = 0) -> str:
-    safe = re.sub(r'[\\/:*?"<>|]+', "_", (title or "article").strip())[:48] or "article"
-    if index > 0:
-        return f"{index:02d}_{safe}.{ext}"
-    return f"{safe}.{ext}"
+def safe_export_filename(
+    title: str,
+    *,
+    ext: str,
+    index: int = 0,
+    date: str = "",
+    account: str = "",
+) -> str:
+    """导出文件名：日期_公众号名_编号_标题.ext（2026-08-09 用户需求）。
 
+    空字段自动跳过（无日期/公众号时退化为编号_标题 / 标题）；非法字符统一替换为 ``_``。
+    """
+    parts: list[str] = []
+    d = re.sub(r"[^0-9-]+", "", str(date or ""))[:10]
+    if d:
+        parts.append(d)
+    acct = re.sub(r'[\\/:*?"<>|]+', "_", str(account or "").strip()).strip("_")
+    if acct:
+        parts.append(acct)
+    if index > 0:
+        parts.append(f"{index:02d}")
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", (title or "article").strip())[:48] or "article"
+    parts.append(safe)
+    return "_".join(parts) + f".{ext}"
 
 def _render_index_page(
     rows: list[dict[str, Any]],
@@ -569,7 +587,13 @@ def batch_export_articles(
             if not parsed.get("title") or parsed.get("title") == "(无标题)":
                 parsed["title"] = title or parsed.get("title")
             final_title = str(parsed.get("title") or title)
-            fname = safe_export_filename(final_title, ext="html", index=i)
+            fname = safe_export_filename(
+                final_title,
+                ext="html",
+                index=i,
+                date=str(parsed.get("publish_at") or row.get("publish_at") or ""),
+                account=str(row.get("account") or account_name or ""),
+            )
             path = write_article_export(
                 out_dir / fname,
                 parsed,

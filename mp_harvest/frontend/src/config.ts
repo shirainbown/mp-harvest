@@ -10,7 +10,7 @@ const q = new URLSearchParams(location.search)
 export const TOKEN = q.get('token') || ''
 export const API_BASE = (q.get('api') || '').replace(/\/$/, '')
 export const MOCK = q.get('mock') === '1'
-export const APP_VERSION = 'v2.0.6'
+export const APP_VERSION = 'v2.0.8'
 
 export function apiUrl(path: string): string {
   const sep = path.includes('?') ? '&' : '?'

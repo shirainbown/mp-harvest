@@ -17,6 +17,8 @@ export type ArticleView = 'all' | 'keep' | 'drop'
 export interface Article {
   id: string
   account_id: string
+  /** 跨账号聚合视图（全部公众号）时用于显示/按名称排序（2026-08-09） */
+  account_name?: string
   title: string
   url: string
   /** ISO 日期或 epoch 秒，渲染为 MM-DD */
@@ -106,6 +108,7 @@ export type WsEvent =
     }
   | { type: 'credential.captured'; account_id: string; expires_at: number }
   | { type: 'credential.expired'; account_id: string }
+  | { type: 'accounts.changed'; account_id: string }
   | { type: 'mitm.status'; running: boolean; port: number }
   | { type: 'clipboard.credential'; name: string; url: string }
 

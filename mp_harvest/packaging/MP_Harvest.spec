@@ -112,8 +112,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "MP Harvest",
         "CFBundleDisplayName": "MP Harvest",
-        "CFBundleShortVersionString": "2.0.6",
-        "CFBundleVersion": "2.0.6",
+        "CFBundleShortVersionString": "2.0.8",
+        "CFBundleVersion": "2.0.8",
         "NSHighResolutionCapable": True,
     },
 )

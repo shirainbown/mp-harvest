@@ -24,6 +24,7 @@ import pytest
 
 def _fake_store() -> types.ModuleType:
     mod = types.ModuleType("mp_harvest.core.store")
+    mod.DEFAULT_ACCOUNT_NAME = "未命名公众号"
 
     class AccountStore:
         def __init__(self, path: Path) -> None:
@@ -53,6 +54,13 @@ def _fake_store() -> types.ModuleType:
 
         def delete(self, account_id: str) -> None:
             self._rows = [r for r in self._rows if r["id"] != account_id]
+
+        def rename(self, account_id: str, name: str):
+            for r in self._rows:
+                if r["id"] == account_id:
+                    r["name"] = (name or "").strip() or r["name"]
+                    return dict(r)
+            return None
 
         def set_awaiting(self, account_id: str) -> None:
             for r in self._rows:
@@ -167,7 +175,13 @@ def _fake_history_client() -> types.ModuleType:
                     "identity": f"art-{i}",
                 }
             )
-        return {"ok": True, "articles": articles, "pages": mod.pages_before_return, "warning": ""}
+        return {
+            "ok": True,
+            "articles": articles,
+            "pages": mod.pages_before_return,
+            "warning": "",
+            "nickname": "真实公众号",
+        }
 
     mod.fetch_history_days = fetch_history_days
     return mod

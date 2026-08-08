@@ -167,7 +167,25 @@ def test_parse_getmsg_ok_string_list():
         ensure_ascii=False,
     )
     page = parse_getmsg_response(
-        {"ret": 0, "errmsg": "ok", "general_msg_list": gml, "can_msg_continue": 0}
+        {
+            "ret": 0,
+            "errmsg": "ok",
+            "general_msg_list": gml,
+            "can_msg_continue": 0,
+            "nickname": "半导体行业观察",
+        }
     )
     assert page["ok"]
     assert len(page["articles"]) == 1
+    assert page["nickname"] == "半导体行业观察"
+
+
+def test_parse_profile_nickname():
+    from mp_harvest.core.history_client import _parse_profile_nickname
+
+    html = (
+        '<html><script>var nickname = "半导体行业观察";</script>'
+        '<p>... "nickname":"集微网" ...</p></html>'
+    )
+    assert _parse_profile_nickname(html) == "半导体行业观察"
+    assert _parse_profile_nickname("<html><body>无昵称</body></html>") == ""

@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from mp_harvest.infra.platform import paths
 
-APP_VERSION = "2.0.6"
+APP_VERSION = "2.0.8"
 
 # GitHub Releases 更新源：默认你的仓库 shirainbown/mp-harvest，可用环境变量覆盖。
 # 用法：MP_HARVEST_GITHUB_REPO=用户名/仓库名
@@ -121,6 +121,10 @@ class ProxyManager(ABC):
 
     @abstractmethod
     def disable(self) -> ProxyResult: ...
+
+    def recover_stale(self, host: str = "127.0.0.1", port: int = 8088) -> ProxyResult:
+        """启动自愈（2026-08-09）：异常退出残留的系统代理由平台层实现，默认无操作。"""
+        return ProxyResult(ok=True, message="无需恢复")
 
 
 class Updater(ABC):

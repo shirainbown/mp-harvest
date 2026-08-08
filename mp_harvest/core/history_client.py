@@ -17,6 +17,12 @@ import requests
 
 GETMSG_URL = "https://mp.weixin.qq.com/mp/profile_ext"
 REQUIRED_CRED_KEYS = ("__biz", "uin", "key")
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 "
+    "MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI "
+    "WindowsWechat(0x63090a13) XWEB/11275"
+)
 
 # getmsg ``count`` is number of *push messages* (推送), not articles.
 # Busy accounts may push many times/day; keep paging until date cutoff.
@@ -254,6 +260,7 @@ def parse_getmsg_response(payload: dict[str, Any]) -> dict[str, Any]:
         "can_continue": bool(int(can)) if can is not None and str(can).isdigit() else bool(can),
         "next_offset": payload.get("next_offset"),
         "msg_count": payload.get("msg_count"),
+        "nickname": str(payload.get("nickname") or "").strip(),
         "raw": payload,
     }
 
@@ -341,6 +348,66 @@ def fetch_getmsg_page(
     page["http_status"] = resp.status_code
     page["request_url"] = f"{GETMSG_URL}?{urlencode(params)}"
     return page
+
+
+def _parse_profile_nickname(html_text: str) -> str:
+    """从公众号主页 HTML 里解析官方昵称（2026-08-09：getmsg 不带 nickname）。"""
+    patterns = (
+        r'"nickname"\s*:\s*"([^"]+)"',
+        r"nickname\s*[:=]\s*['\"]([^'\"]+)['\"]",
+        r"var\s+nickname\s*=\s*['\"]([^'\"]+)['\"]",
+    )
+    best = None
+    for pattern in patterns:
+        m = re.search(pattern, html_text or "", re.I | re.S)
+        if m and (best is None or m.start() < best.start()):
+            best = m
+    if best:
+        name = html.unescape(best.group(1)).strip()
+        if name:
+            return name
+    return ""
+
+
+def fetch_profile_nickname(
+    cred: dict[str, Any],
+    *,
+    timeout: float = 10.0,
+    session: requests.Session | None = None,
+) -> str:
+    """拉公众号主页（action=home）解析官方昵称；失败返回空串（best-effort）。"""
+    try:
+        cred = normalize_credentials(cred)
+        if not validate_credentials(cred)[0]:
+            return ""
+        params = {
+            "action": "home",
+            "__biz": str(cred["__biz"]).strip(),
+            "f": "json",
+            "scene": "124",
+            "uin": str(cred["uin"]).strip(),
+            "key": str(cred["key"]).strip(),
+        }
+        if cred.get("pass_ticket"):
+            params["pass_ticket"] = str(cred["pass_ticket"]).strip()
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": "https://mp.weixin.qq.com/",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        }
+        cookies: dict[str, str] = {}
+        if cred.get("pass_ticket"):
+            cookies["pass_ticket"] = str(cred["pass_ticket"]).strip()
+        if cred.get("uin"):
+            cookies["wxuin"] = str(cred["uin"]).strip()
+        sess = session or requests.Session()
+        sess.trust_env = False
+        resp = sess.get(
+            GETMSG_URL, params=params, headers=headers, cookies=cookies, timeout=timeout
+        )
+        return _parse_profile_nickname(resp.text)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 ProgressCb = Callable[[str], None]
@@ -495,6 +562,7 @@ def fetch_history_days(
     articles: list[dict[str, Any]] = []
     pages = 0
     offset = 0
+    nickname = ""
     sess = requests.Session()
     sess.trust_env = False
     hit_page_cap = False
@@ -519,10 +587,13 @@ def fetch_history_days(
                 "days": days,
                 "cutoff_ts": cutoff,
                 "warning": "",
+                "nickname": nickname,
                 "merged_sightings": max(0, len(partial) - len(_dedupe(articles))),
             }
 
         batch = page.get("articles") or []
+        if not nickname:
+            nickname = str(page.get("nickname") or "").strip()
         last_can_continue = bool(page.get("can_continue"))
         raw_msg_count = 0
         try:
@@ -571,6 +642,8 @@ def fetch_history_days(
             hit_page_cap = True
             last_can_continue = True
 
+    if not nickname:
+        nickname = fetch_profile_nickname(cred, session=sess)
     base_n = len(_dedupe(articles))
     deduped = merge_articles_with_sightings(
         articles, sightings or [], cutoff_ts=cutoff, biz=biz
@@ -602,5 +675,6 @@ def fetch_history_days(
         "cutoff_ts": cutoff,
         "hit_page_cap": hit_page_cap,
         "merged_sightings": merged_extra,
+        "nickname": nickname,
         "__biz": biz,
     }

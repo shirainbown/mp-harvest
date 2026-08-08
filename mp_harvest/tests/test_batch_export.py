@@ -18,6 +18,21 @@ def test_article_template_resolves():
     assert (article_reader._TEMPLATE_DIR / "article.html").is_file()
 
 
+def test_safe_export_filename_date_account_index():
+    from mp_harvest.core.article_reader import safe_export_filename
+
+    name = safe_export_filename(
+        "标题<A>/带斜杠",
+        ext="html",
+        index=3,
+        date="2026-08-05 10:00",
+        account="测试号",
+    )
+    assert name == "2026-08-05_测试号_03_标题_A_带斜杠.html"
+    # 缺日期/公众号时退化为编号_标题
+    assert safe_export_filename("标题", ext="md", index=1) == "01_标题.md"
+
+
 def test_batch_export_writes_html_files_and_index():
     with tempfile.TemporaryDirectory() as td:
         out = Path(td)
@@ -51,6 +66,11 @@ def test_batch_export_writes_html_files_and_index():
         html_files = [p for p in out.glob("*.html") if p.name != "index.html"]
         assert len(html_files) == 2
         assert all(p.read_text(encoding="utf-8").startswith("<!doctype html>") for p in html_files)
+        # 文件名：日期_公众号_编号_标题（2026-08-09 用户需求）
+        names = sorted(p.name for p in html_files)
+        assert names[0].startswith("2026-08-05_测试号_01_")
+        assert names[1].startswith("2026-08-05_测试号_02_")
+        assert "标题-a1" in names[0] and "标题-a2" in names[1]
         # index.html 目录页
         index = Path(result["index"])
         assert index.name == "index.html" and index.is_file()

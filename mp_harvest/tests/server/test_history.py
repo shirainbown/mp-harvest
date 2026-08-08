@@ -25,6 +25,97 @@ def test_history_fetch_task_done(client, auth):
     assert task.result["ok"] is True
 
 
+def test_history_fetch_renames_default_account(client, auth):
+    """默认「未命名公众号」拉取成功后自动改为官方昵称（2026-08-09）。"""
+    from mp_harvest.server import state
+
+    acc = add_account(client, auth, name="未命名公众号")
+    give_credential(acc["id"])
+    task_id = _fetch(client, auth, acc["id"])
+    wait_task(task_id)
+    assert state.get_store().get(acc["id"])["name"] == "真实公众号"
+
+
+def test_history_fetch_keeps_custom_name(client, auth):
+    """自定义名称不会被官方昵称覆盖。"""
+    from mp_harvest.server import state
+
+    acc = add_account(client, auth, name="我的收藏")
+    give_credential(acc["id"])
+    task_id = _fetch(client, auth, acc["id"])
+    wait_task(task_id)
+    assert state.get_store().get(acc["id"])["name"] == "我的收藏"
+
+
+def test_history_fetch_batch(client, auth):
+    """批量拉取：一次为多个公众号建聚合任务，逐号结果汇总。"""
+    from mp_harvest.server import state
+
+    acc1 = add_account(client, auth, name="A公众号")
+    acc2 = add_account(client, auth, name="B公众号")
+    give_credential(acc1["id"])
+    give_credential(acc2["id"])
+    resp = client.post(
+        "/api/history/fetch-batch",
+        params=auth,
+        json={"account_ids": [acc1["id"], acc2["id"]], "days": 7},
+    )
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "done"
+    assert task.result["ok"] == 2
+    assert task.result["failed"] == 0
+    assert len(task.result["results"]) == 2
+    names = {r["name"] for r in task.result["results"]}
+    assert names == {"A公众号", "B公众号"}
+    assert len(state.get_articles(acc1["id"])) == 2
+    assert len(state.get_articles(acc2["id"])) == 2
+
+
+def test_history_fetch_batch_no_credential_409(client, auth):
+    acc1 = add_account(client, auth)
+    acc2 = add_account(client, auth)
+    give_credential(acc1["id"])
+    resp = client.post(
+        "/api/history/fetch-batch",
+        params=auth,
+        json={"account_ids": [acc1["id"], acc2["id"]]},
+    )
+    assert resp.status_code == 409
+
+
+def test_history_fetch_batch_unknown_account_404(client, auth):
+    resp = client.post(
+        "/api/history/fetch-batch",
+        params=auth,
+        json={"account_ids": ["nope"]},
+    )
+    assert resp.status_code == 404
+
+
+def test_articles_all_accounts_merge_with_name(client, auth):
+    """account_id 为空 = 全部公众号合并，每行带 account_name（2026-08-09）。"""
+    from mp_harvest.server import state
+
+    acc1 = add_account(client, auth, name="A公众号")
+    acc2 = add_account(client, auth, name="B公众号")
+    state.set_articles(
+        acc1["id"],
+        [{"title": "a1", "link": "https://x/1", "publish_ts": 3, "identity": "a1"}],
+    )
+    state.set_articles(
+        acc2["id"],
+        [{"title": "b1", "link": "https://x/2", "publish_ts": 2, "identity": "b1"}],
+    )
+    resp = client.get("/api/articles", params={**auth, "account_id": ""})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 2
+    by_id = {a["id"]: a for a in data}
+    assert by_id["a1"]["account_name"] == "A公众号"
+    assert by_id["b1"]["account_name"] == "B公众号"
+
+
 def test_history_fetch_unknown_account_404(client, auth):
     resp = client.post("/api/history/fetch", params=auth, json={"account_id": "nope", "days": 7})
     assert resp.status_code == 404
