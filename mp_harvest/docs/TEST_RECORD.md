@@ -49,12 +49,14 @@
     (a) `ca.status()` 只查「钥匙串里存在 mitmproxy 证书」，不查信任设置——
     之前 `add-trusted-cert` 在 macOS 上建不出信任设置时状态仍报已安装；
     (b) 改为按名字匹配 dump-trust-settings 后，开发/打包版两套数据目录各有一把 CA，
-    会被另一把的信任条目误判（冻结版实测 installed:true 但 verify-cert 失败）。
-    修复：`status()` 用 `security verify-cert -c <DER> -p ssl` **按证书精确校验**；
-    `install()` 在 add-trusted-cert 后补 `trust-settings-export → 写显式 TrustRoot →
-    trust-settings-import`（mkcert 同款），装完即真正受信任；
+    会被另一把的信任条目误判；且 `security verify-cert` 含 CT/网络校验、同一证书
+    结果不稳定（实测同一命令一次 exit=0 一次 exit=1），不能用作守卫。
+    修复：`status()` 改按**证书 SHA-1 指纹**查 trust-settings-export 的 trustList
+    （key 即指纹，确定性精确）；`install()` 在 add-trusted-cert 后按指纹更新或
+    **新增**信任条目再 `trust-settings-import`（mkcert 同款），装完即真正受信任；
     `enable_system_proxy()` 加守卫：CA 未信任时**拒绝切换系统代理**并提示先安装。
-    实测：开发 CA trusted=True、打包版 CA trusted=False；发布 v2.0.2。
+    实测：开发 CA trusted=True、打包版 CA（未补信任前 False → 补信任后 True）；
+    发布 v2.0.2（重建替换资产）。
 
 ### 事故根因分析：为什么用 MP Harvest 会让 Codex/本机助手断连
 

@@ -45,10 +45,18 @@ def _run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
-def _patch_trust_plist(data: dict, subject_der: bytes) -> bool:
-    """把 trustList 中 ``issuerName == subject_der`` 的条目设为显式 TrustRoot。
+def _patch_trust_plist(
+    data: dict,
+    *,
+    fingerprint: str,
+    subject_der: bytes,
+    serial_bytes: bytes,
+) -> bool:
+    """按证书 SHA-1 指纹把 trustList 条目设为显式 TrustRoot；缺失则新增。
 
     mkcert 同款方案：仅 ``add-trusted-cert`` 在部分 macOS 上不会建立信任设置。
+    2026-08-09 修复：不能按 ``issuerName`` 匹配——开发/打包两把 CA 同名同
+    issuer，会互相误改；trustList 的 key 就是证书 SHA-1 指纹。
     """
     import base64
 
@@ -64,14 +72,19 @@ def _patch_trust_plist(data: dict, subject_der: bytes) -> bool:
             "kSecTrustSettingsResult": 1,
         },
     ]
-    changed = False
-    for entry in (data.get("trustList") or {}).values():
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("issuerName") == subject_der:
-            entry["trustSettings"] = settings
-            changed = True
-    return changed
+    trust_list = data.get("trustList")
+    if not isinstance(trust_list, dict):
+        return False
+    entry = trust_list.get(fingerprint)
+    if isinstance(entry, dict):
+        entry["trustSettings"] = settings
+    else:
+        trust_list[fingerprint] = {
+            "issuerName": subject_der,
+            "serialNumber": serial_bytes,
+            "trustSettings": settings,
+        }
+    return True
 
 
 class MacCaSetup(CaSetup):
@@ -158,15 +171,20 @@ class MacCaSetup(CaSetup):
         import tempfile
 
         from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
 
         raw = cert.read_bytes()
         try:
-            subject_der = x509.load_pem_x509_certificate(raw).subject.public_bytes()
+            loaded = x509.load_pem_x509_certificate(raw)
         except Exception:  # noqa: BLE001
             try:
-                subject_der = x509.load_der_x509_certificate(raw).subject.public_bytes()
+                loaded = x509.load_der_x509_certificate(raw)
             except Exception as exc:  # noqa: BLE001
                 return f"解析 CA 证书失败：{exc}"
+        subject_der = loaded.subject.public_bytes()
+        fingerprint = loaded.fingerprint(hashes.SHA1()).hex().upper()
+        serial = loaded.serial_number
+        serial_bytes = serial.to_bytes((serial.bit_length() + 7) // 8, "big")
         fd, plist_path = tempfile.mkstemp(prefix="mp-harvest-trust-", suffix=".plist")
         os.close(fd)
         try:
@@ -175,8 +193,13 @@ class MacCaSetup(CaSetup):
                 return f"trust-settings-export 失败：{(p.stderr or '').strip()}"
             with open(plist_path, "rb") as fh:
                 data = plistlib.load(fh)
-            if not _patch_trust_plist(data, subject_der):
-                return "信任列表中没有找到本应用 CA 条目（请确认已执行安装命令）"
+            if not _patch_trust_plist(
+                data,
+                fingerprint=fingerprint,
+                subject_der=subject_der,
+                serial_bytes=serial_bytes,
+            ):
+                return "无法写入信任条目（trustList 结构异常）"
             with open(plist_path, "wb") as fh:
                 plistlib.dump(data, fh, fmt=plistlib.FMT_XML)
             p2 = _run(["security", "trust-settings-import", "-d", plist_path], timeout=60)
@@ -194,44 +217,55 @@ class MacCaSetup(CaSetup):
         return '"' + cmd.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
     def status(self) -> bool:
-        """CA 是否**真正**被系统信任：按证书精确校验（verify-cert）。
+        """CA 是否**真正**被系统信任：按证书 SHA-1 指纹查信任设置。
 
         2026-08-09 修复：不能按「信任列表里存在名为 mitmproxy 的条目」判断——
-        多套数据目录（开发/打包版）各有一把 CA 时会被另一把的信任条目误判。
+        多套数据目录各有一把 CA 时会被另一把误判；``security verify-cert`` 含
+        CT/网络校验、结果不稳定，也不适用。trust-settings-export 的 trustList
+        key 即证书 SHA-1，按指纹精确且确定。
         """
         try:
             cert = self.cert_path()
             if not cert.exists():
                 return False
             from cryptography import x509
-            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives import hashes
 
             raw = cert.read_bytes()
             try:
                 loaded = x509.load_pem_x509_certificate(raw)
             except Exception:  # noqa: BLE001
                 loaded = x509.load_der_x509_certificate(raw)
-            der = loaded.public_bytes(serialization.Encoding.DER)
+            fingerprint = loaded.fingerprint(hashes.SHA1()).hex().upper()
             import os
+            import plistlib
             import tempfile
 
-            fd, der_path = tempfile.mkstemp(suffix=".der")
-            os.close(fd)
-            try:
-                with open(der_path, "wb") as fh:
-                    fh.write(der)
-                proc = _run(
-                    ["security", "verify-cert", "-c", der_path, "-p", "ssl"],
-                    timeout=30,
-                )
-                return proc.returncode == 0
-            finally:
+            for domain in ("-d", "-s"):
+                fd, plist_path = tempfile.mkstemp(suffix=".plist")
+                os.close(fd)
                 try:
-                    os.unlink(der_path)
+                    proc = _run(
+                        ["security", "trust-settings-export", domain, plist_path],
+                        timeout=30,
+                    )
+                    if proc.returncode != 0:
+                        continue
+                    with open(plist_path, "rb") as fh:
+                        data = plistlib.load(fh)
+                    entry = (data.get("trustList") or {}).get(fingerprint)
+                    if isinstance(entry, dict) and entry.get("trustSettings"):
+                        return True
                 except Exception:  # noqa: BLE001
-                    pass
+                    continue
+                finally:
+                    try:
+                        os.unlink(plist_path)
+                    except Exception:  # noqa: BLE001
+                        pass
         except Exception:  # noqa: BLE001
             return False
+        return False
 
 
 class MacProxyManager(ProxyManager):

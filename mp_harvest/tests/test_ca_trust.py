@@ -12,26 +12,55 @@ sys.path.insert(0, str(ROOT))
 from mp_harvest.infra.platform.mac import _patch_trust_plist  # noqa: E402
 
 
-def test_patch_trust_plist_sets_explicit_settings():
-    subject = b"0(1\x120\x10\x06\x03U\x04\x03\x0c\tmitmproxy"
+def test_patch_trust_plist_updates_by_fingerprint():
+    fp = "695B4025F6A349F34D65BADA54A0F15AD3FD9A96"
+    subject = b"subject-der"
     data = {
         "trustVersion": 1,
         "trustList": {
-            "AAA": {"issuerName": subject, "serialNumber": b"x"},
-            "BBB": {"issuerName": b"other", "serialNumber": b"y"},
+            fp: {"issuerName": subject, "serialNumber": b"ser"},
+            # 同名 issuer 的另一把 CA（开发版）：不应被误改
+            "EC7D0039295A25C58527EA546D5971B8BD609AA5": {
+                "issuerName": subject,
+                "serialNumber": b"other",
+            },
         },
     }
-    assert _patch_trust_plist(data, subject) is True
-    settings = data["trustList"]["AAA"].get("trustSettings")
+    assert (
+        _patch_trust_plist(data, fingerprint=fp, subject_der=subject, serial_bytes=b"ser")
+        is True
+    )
+    settings = data["trustList"][fp].get("trustSettings")
     assert settings is not None and len(settings) == 2
     assert settings[0]["kSecTrustSettingsPolicyName"] == "sslServer"
     assert settings[0]["kSecTrustSettingsResult"] == 1
-    assert "trustSettings" not in data["trustList"]["BBB"]
+    assert "trustSettings" not in data["trustList"]["EC7D0039295A25C58527EA546D5971B8BD609AA5"]
 
 
-def test_patch_trust_plist_no_match_returns_false():
-    data = {"trustVersion": 1, "trustList": {"AAA": {"issuerName": b"other"}}}
-    assert _patch_trust_plist(data, b"target") is False
+def test_patch_trust_plist_inserts_missing_entry():
+    fp = "NEWFINGERPRINT"
+    subject = b"subject-der"
+    data = {"trustVersion": 1, "trustList": {}}
+    assert (
+        _patch_trust_plist(data, fingerprint=fp, subject_der=subject, serial_bytes=b"ser")
+        is True
+    )
+    entry = data["trustList"][fp]
+    assert entry["issuerName"] == subject
+    assert entry["serialNumber"] == b"ser"
+    assert entry.get("trustSettings")
+
+
+def test_patch_trust_plist_bad_structure_returns_false():
+    assert (
+        _patch_trust_plist(
+            {"trustVersion": 1, "trustList": "nope"},
+            fingerprint="A",
+            subject_der=b"x",
+            serial_bytes=b"y",
+        )
+        is False
+    )
 
 
 def test_enable_system_proxy_blocks_untrusted_ca():
