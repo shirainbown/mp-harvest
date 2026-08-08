@@ -74,4 +74,26 @@ def test_ca_status(client, auth):
     assert resp.status_code == 200
     data = resp.json()
     assert data["installed"] is True
+    # 契约双写：前端按 trusted 判断（2026-08-09 修复字段不一致）
+    assert data["trusted"] is True
     assert "cert_path" in data
+
+
+def test_ca_open_opens_cert_folder(client, auth, monkeypatch):
+    """POST /api/ca/open 调平台 shell_open 打开证书所在目录（2026-08-09 补）。"""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    opened: list[str] = []
+    from mp_harvest.server.routes import mitm as mitm_routes
+
+    def fake_get():
+        return SimpleNamespace(
+            ca=SimpleNamespace(cert_path=lambda: Path("/fake/mitmproxy-ca-cert.pem")),
+            shell_open=lambda path: opened.append(str(path)),
+        )
+
+    monkeypatch.setattr(mitm_routes, "get_platform", fake_get)
+    resp = client.post("/api/ca/open", params=auth)
+    assert resp.status_code == 200, resp.text
+    assert opened == ["/fake"]  # cert_path=/fake/mitmproxy-ca-cert.pem → 父目录

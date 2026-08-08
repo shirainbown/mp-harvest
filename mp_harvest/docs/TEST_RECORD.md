@@ -57,6 +57,18 @@
     `enable_system_proxy()` 加守卫：CA 未信任时**拒绝切换系统代理**并提示先安装。
     实测：开发 CA trusted=True、打包版 CA（未补信任前 False → 补信任后 True）；
     发布 v2.0.2（重建替换资产）。
+13. **凭证过期从不推送 + CA 目录无法打开 + 更新弹窗文案（代码复查）**：
+    (a) 前端有 `credential.expired` 处理但服务端从不发该事件——补 `sweep_expired()`
+    随 watcher 轮询标记过期账号并广播（新增单测）；
+    (b) 「打开证书文件」按钮是禁用占位——补 `POST /api/ca/open`（平台 shell_open
+    打开证书目录）+ 前端接线（新增契约测试）；
+    (c) 更新弹窗下载文案是旧包名 `mp_harvest-*.zip`——改为通用「更新包 vX」；
+    (d) 公开仓库无 README——新增根目录 `README.md`（功能/下载/运行/文档/致谢）。
+    **连带修复测试基建坑**：watcher 线程在测试环境里首次导入真实 `core.store` 后，
+    父包 `mp_harvest.core` 会绑定真实模块属性，此后 fake_core 仅注入 `sys.modules`
+    失效（`from pkg import mod` 优先取父包属性）→ 后续测试拿到真实 store 全挂。
+    修复：fake_core 注入时同步 `monkeypatch.setattr(parent, attr, fake, raising=False)`
+    绑定父包属性；`sweep_expired` 对无 `mark_expired_if_needed` 的 store 防御性跳过。
 
 ### 事故根因分析：为什么用 MP Harvest 会让 Codex/本机助手断连
 

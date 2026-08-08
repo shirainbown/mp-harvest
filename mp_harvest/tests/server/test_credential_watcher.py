@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from mp_harvest.server import credential_watcher as watcher_mod
 from mp_harvest.server import state
@@ -39,6 +39,20 @@ class FakeStore:
                 self.applied.append(account_id)
                 return dict(a)
         return None
+
+    def mark_expired_if_needed(self) -> bool:
+        now = datetime.now()
+        changed = False
+        for a in self.accounts:
+            exp = a.get("expires_at")
+            if a.get("status") == "active" and exp:
+                try:
+                    if datetime.fromisoformat(exp) <= now:
+                        a["status"] = "expired"
+                        changed = True
+                except Exception:  # noqa: BLE001
+                    continue
+        return changed
 
 
 def _awaiting(account_id: str, biz: str = "") -> dict:
@@ -143,3 +157,21 @@ def test_watcher_thread_polls_until_stop(monkeypatch):
     w.stop()
     assert len(calls) >= 3
     assert not w._thread or not w._thread.is_alive()
+
+
+def test_sweep_expired_broadcasts(monkeypatch):
+    """过期的 active 账号被标记并广播 credential.expired（2026-08-09 补）。"""
+    past = (datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds")
+    future = (datetime.now() + timedelta(minutes=10)).isoformat(timespec="seconds")
+    accounts = [
+        {"id": "a1", "status": "active", "expires_at": past},
+        {"id": "a2", "status": "active", "expires_at": future},
+    ]
+    _, store, events = _install_fakes(monkeypatch, creds=None, accounts=accounts)
+
+    expired = watcher_mod.sweep_expired()
+
+    assert expired == {"a1"}
+    assert store.accounts[0]["status"] == "expired"
+    assert store.accounts[1]["status"] == "active"
+    assert ("credential.expired", {"account_id": "a1"}) in events

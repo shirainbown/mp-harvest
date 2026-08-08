@@ -72,8 +72,27 @@ def ca_install() -> dict:
 @router.get("/api/ca/status")
 def ca_status() -> dict:
     ca = get_platform().ca
+    trusted = bool(ca.status())
     return {
-        "installed": bool(ca.status()),
+        # 契约双写：v2.0 前端按 trusted 判断（types.ts CaStatus），
+        # installed 为 API.md 既有字段，保留兼容（2026-08-09 修复）。
+        "installed": trusted,
+        "trusted": trusted,
         "cert_path": str(ca.cert_path()),
         "needs_admin": ca.needs_admin,
     }
+
+
+@router.post("/api/ca/open")
+def ca_open() -> dict:
+    """在 Finder 中打开 CA 证书所在目录（2026-08-09 补上占位按钮的后端）。"""
+    from mp_harvest.infra.platform.base import PlatformError
+    from pathlib import Path
+
+    ca = get_platform().ca
+    folder = Path(ca.cert_path()).parent
+    try:
+        get_platform().shell_open(str(folder))
+    except PlatformError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True, "path": str(folder)}

@@ -70,10 +70,11 @@
 | E17 | 仓库公开 + macOS Release v2.0.0 | ✅ | 2026-08-09 | PyInstaller arm64 .app 打包 + 冒烟 + GitHub Release（未签名） |
 | E18 | 应用内升级链路修复（macOS apply）+ v2.0.1 | ✅ | 2026-08-09 | .app 安装目录/管理员授权/开发模式保护；单测 5 条；Release v2.0.1 |
 | E19 | CA 信任精确校验 + 抓包安全守卫（v2.0.2） | ✅ | 2026-08-09 | verify-cert 按证书校验；install 补显式信任设置；未信任拒绝切代理；Release v2.0.2 |
+| E20 | 凭证过期广播 + 打开证书目录 + 更新文案 + README | ✅ | 2026-08-09 | sweep_expired；POST /api/ca/open；UpdateModal 文案；根 README |
 
 ## Epic C 遗留问题（不阻塞，联调期处理）
 
-- ⬜ 「打开证书文件」按钮暂为禁用占位，需后端提供「打开 CA 文件所在目录」端点（platform.shell.open）。
+- ✅ ~~「打开证书文件」按钮暂为禁用占位~~ → **E20 已实现**：`POST /api/ca/open` 打开证书目录。
 - ⬜ 导出完成 toast 未带「打开文件夹」按钮（§6.1），当前 toast 仅文本提示导出目录。
 - ⬜ 列表导出浏览器环境为下载附件，生产 pywebview 场景可切换为后端写盘。
 - ✅ ~~**与后端 §7 契约假设见 frontend/README.md**~~ → **E4 已收口**：AI 模型 GET/PUT、settings 解包与 proxy 字段、update check/download 字段全部对齐服务端（见 TEST_RECORD §5-8）

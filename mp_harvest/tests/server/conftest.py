@@ -432,6 +432,13 @@ def fake_core(monkeypatch):
     for name, factory in FAKE_MODULES.items():
         m = factory()
         monkeypatch.setitem(sys.modules, name, m)
+        # 关键：同时把假模块绑定到父包属性上——否则一旦真实子模块被导入过
+        # （如 watcher 线程在测试环境里创建真实 store），`from pkg import mod`
+        # 会优先取父包已绑定的真实属性，sys.modules 注入即失效（2026-08-09）。
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None:
+            monkeypatch.setattr(parent, attr, m, raising=False)
         mods[name.rsplit(".", 1)[-1]] = m
     from mp_harvest.server import state
 

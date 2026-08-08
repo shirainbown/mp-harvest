@@ -38,7 +38,7 @@
 | POST | `/api/mitm/start` | — | `{ok, message, running, port}`；启动失败 500（并广播 `mitm.status`） | `MitmCaptureService.start` |
 | POST | `/api/mitm/stop` | — | 同上 | `MitmCaptureService.stop` |
 | POST | `/api/ca/install` | — | `InstallResult.to_dict()`（结构化错误内嵌 `ok:false`，非 5xx） | `infra.platform.ca.install` |
-| GET | `/api/ca/status` | — | `{installed, cert_path, needs_admin}` | `infra.platform.ca.status/cert_path` |
+| GET | `/api/ca/status` | — | `{installed, trusted, cert_path, needs_admin}`（`trusted` 为前端判定字段，与 `installed` 同值，2026-08-09 修复） | `infra.platform.ca.status/cert_path` |
 
 ### 历史 / 文章 / 导出
 

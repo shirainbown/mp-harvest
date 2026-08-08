@@ -97,6 +97,9 @@
   杜绝「一开抓包全机断网」（本机助手断连根因闭环，TEST_RECORD bug 12）。
   实测：开发 CA True / 打包版 CA 补信任后 True；core 91/91、server 90/90；
   发布 v2.0.2（重建替换资产）。
+- ✅ 遗留收口（代码复查）：凭证过期随 watcher 广播 `credential.expired`；
+  `POST /api/ca/open` 打开证书目录（占位按钮接线）；更新弹窗文案通用化；
+  新增根目录 `README.md`；core 91/91、server 92/92、前端 build ✅。
 - ✅ 断连根因排查结论落盘：MP Harvest 抓包切换整机系统代理 → 本机助手（Codex）也被吸入
   mitm 中间人且 CA 未信任 → 表现为「正在重新连接」；约定真机抓包短窗口、开发用
   `set_system_proxy=False`（见 TEST_RECORD「事故根因分析」/ USAGE_NOTES §2）。

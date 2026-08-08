@@ -75,6 +75,22 @@ def poll_once() -> bool:
     return True
 
 
+def sweep_expired() -> set[str]:
+    """标记已过期账号并广播 ``credential.expired``（2026-08-09：此前服务端从不推送）。"""
+    store = state.get_store()
+    if not hasattr(store, "mark_expired_if_needed"):
+        return set()
+    before = {str(a.get("id") or "") for a in store.list_accounts() if a.get("status") == "active"}
+    if not before:
+        return set()
+    store.mark_expired_if_needed()
+    after = {str(a.get("id") or "") for a in store.list_accounts() if a.get("status") == "active"}
+    expired = before - after
+    for account_id in expired:
+        broadcast_event("credential.expired", {"account_id": account_id})
+    return expired
+
+
 class CredentialWatcher:
     """守护线程轮询 inbox（服务 lifespan 启停）。"""
 
@@ -102,6 +118,7 @@ class CredentialWatcher:
         while not self._stop.is_set():
             try:
                 poll_once()
+                sweep_expired()
             except Exception:  # noqa: BLE001
                 pass
             self._stop.wait(self._interval)

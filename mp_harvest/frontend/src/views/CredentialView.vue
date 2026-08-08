@@ -104,7 +104,7 @@ const importOpen = ref(false)
         <span style="flex:1"></span>
         <SButton size="sm" @click="accounts.toggleMitm()">{{ accounts.mitm.running ? '停止代理' : '启动代理' }}</SButton>
         <SButton v-if="!accounts.ca.trusted" size="sm" class="pulse" @click="accounts.installCa()">安装 CA 证书</SButton>
-        <SButton size="sm" variant="ghost" disabled title="由后端打开 CA 文件所在目录">打开证书文件</SButton>
+        <SButton size="sm" variant="ghost" @click="accounts.openCaFolder()">打开证书文件</SButton>
         <SPopover>
           <template #anchor>
             <span class="tertiary" style="cursor:help;border-bottom:1px dashed var(--text-tertiary)">抓包指引 ⓘ</span>

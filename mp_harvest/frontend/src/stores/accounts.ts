@@ -85,6 +85,11 @@ export const useAccountsStore = defineStore('accounts', {
         if (ca) this.ca = ca
       }
     },
+    /** 在 Finder 中打开 CA 证书所在目录（2026-08-09 补后端端点） */
+    async openCaFolder() {
+      const r = await call(rest.post<{ ok: boolean; path?: string }>('/api/ca/open'))
+      if (r) useUiStore().toast(`已打开证书目录：${r.path || '…'}`)
+    },
     /** 批量导入两段式（§7.1）：预览 → 确认 */
     async importPreview(text: string): Promise<ImportItem[]> {
       const r = await call(rest.post<{ items: ImportItem[] }>('/api/accounts/import', { text }))

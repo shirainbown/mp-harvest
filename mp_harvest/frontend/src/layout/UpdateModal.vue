@@ -38,7 +38,7 @@ async function restart() {
         <div class="progress-fill" :style="`width:${settings.updateProgress}%`"></div>
       </div>
       <span class="muted" style="font-size:var(--fs-sm)">
-        <template v-if="downloading">正在下载 mp_harvest-{{ settings.update?.version }}.zip … {{ settings.updateProgress }}%（走所选代理）</template>
+        <template v-if="downloading">正在下载更新包 v{{ settings.update?.version }} … {{ settings.updateProgress }}%（走所选代理）</template>
         <template v-else>下载完成，重启应用后生效</template>
       </span>
     </template>
