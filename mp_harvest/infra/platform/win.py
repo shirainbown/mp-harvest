@@ -194,6 +194,8 @@ class WinUpdater(GithubUpdater):
         pkg = Path(package_path)
         if not pkg.exists():
             raise PlatformError(f"更新包不存在：{pkg}")
+        if not paths.is_frozen():
+            raise PlatformError("开发模式不支持应用内升级，请手动更新代码或重新安装")
         install_dir = Path(sys.executable).resolve().parent if paths.is_frozen() else paths.app_root()
         extract_dir = pkg.parent / "extracted"
         try:

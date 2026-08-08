@@ -270,6 +270,58 @@ class MacProxyManager(ProxyManager):
             )
 
 
+def _app_bundle_root(exe: Path) -> Path | None:
+    """从可执行文件向上找 ``.app`` 包根（如 ``/Applications/MP Harvest.app``）。"""
+    p = Path(exe).resolve()
+    for _ in range(8):
+        p = p.parent
+        if p.name.endswith(".app"):
+            return p
+    return None
+
+
+def _mac_install_dir() -> Path:
+    """冻结 ``.app`` 时返回其所在目录（如 ``/Applications``）；否则回退 exe 目录。"""
+    bundle = _app_bundle_root(sys.executable)
+    if bundle is not None:
+        return bundle.parent
+    return Path(sys.executable).resolve().parent
+
+
+def _build_apply_script(*, pkg: Path, install_dir: Path, pid: int) -> str:
+    """生成「等待退出 → 解压 → 替换 .app → 重新打开」脚本文本（可单测）。
+
+    目标目录不可写（如 /Applications 为 root 属主）时，用 ``osascript``
+    弹管理员授权框，以 root 完成替换（2026-08-09 修复）。
+    """
+    pkg = Path(pkg)
+    install_dir = Path(install_dir)
+    core = pkg.parent / "apply_core.sh"
+    core.write_text(
+        "#!/bin/bash\n"
+        'APP="$1"\n'
+        f'rm -rf "{install_dir}/$APP"\n'
+        f'mv "$APP" "{install_dir}/"\n',
+        encoding="utf-8",
+    )
+    core.chmod(0o755)
+    return (
+        "#!/bin/bash\n"
+        f"while kill -0 {int(pid)} 2>/dev/null; do sleep 0.5; done\n"
+        f'cd "{pkg.parent}" || exit 1\n'
+        f'ditto -xk "{pkg.name}" . || exit 1\n'
+        'APP="$(ls -d *.app 2>/dev/null | head -1)"\n'
+        '[ -n "$APP" ] || exit 1\n'
+        f'if [ -w "{install_dir}" ]; then\n'
+        f'  bash "{core}" "$APP"\n'
+        "else\n"
+        f'  osascript -e "do shell script \\"bash \'{core}\' \'$APP\'\\" with administrator privileges"\n'
+        "fi\n"
+        f'open "{install_dir}/$APP"\n'
+        f'rm -f "{core}" "$0"\n'
+    )
+
+
 class MacUpdater(GithubUpdater):
     asset_suffix = ".zip"
 
@@ -277,19 +329,15 @@ class MacUpdater(GithubUpdater):
         """生成「等待退出 → 替换 .app → 重新打开」shell 脚本并后台启动。"""
         import os
 
+        if not paths.is_frozen():
+            raise PlatformError("开发模式不支持应用内升级，请手动更新代码或重新安装")
         pkg = Path(package_path)
         if not pkg.exists():
             raise PlatformError(f"更新包不存在：{pkg}")
-        install_dir = Path(sys.executable).resolve().parent if paths.is_frozen() else paths.app_root()
+        install_dir = _mac_install_dir()
         script = paths.data_dir() / "update" / "apply_update.sh"
         script.write_text(
-            "#!/bin/bash\n"
-            f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 0.5; done\n"
-            f'cd "{pkg.parent}" && ditto -xk "{pkg.name}" . || exit 1\n'
-            # 解压出的 .app 整体覆盖安装目录（公证 zip 解压即带签名）
-            f'for app in *.app; do rm -rf "{install_dir}/$app" && mv "$app" "{install_dir}/"; done\n'
-            f'open "{install_dir}"\n'
-            'rm -f "$0"\n',
+            _build_apply_script(pkg=pkg, install_dir=install_dir, pid=os.getpid()),
             encoding="utf-8",
         )
         script.chmod(0o755)

@@ -84,6 +84,11 @@
   并补发 **DMG 安装版** `MP-Harvest-mac-2.0.0.dmg`（拖入 Applications，59MB）；
   zip 供应用内自更新、dmg 供用户安装（未签名/未公证，Gatekeeper 需右键打开；
   Intel/公证/CI 留待后续）。
+- ✅ **升级链路修复 + v2.0.1 发布**：`MacUpdater.apply` 安装目录改为 `.app` 包根
+  的父目录（不再嵌套进 Contents/MacOS）；`/Applications` 不可写时升级脚本走
+  osascript 管理员授权；开发模式禁止应用内升级；`open` 改为打开新应用；
+  APP_VERSION → 2.0.1，打包版实测更新检查连通 GitHub，发布 v2.0.1（zip+dmg），
+  应用内升级全链路就绪（详见 TEST_RECORD bug 11）。
 - ✅ 断连根因排查结论落盘：MP Harvest 抓包切换整机系统代理 → 本机助手（Codex）也被吸入
   mitm 中间人且 CA 未信任 → 表现为「正在重新连接」；约定真机抓包短窗口、开发用
   `set_system_proxy=False`（见 TEST_RECORD「事故根因分析」/ USAGE_NOTES §2）。

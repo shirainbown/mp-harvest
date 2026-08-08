@@ -35,6 +35,16 @@
     改 `max_retries=2` 留出兜底机会；新增回归测试（模拟 400→去 response_format
     重试成功），core 套件 79→80 全绿；真机验证测试接口
     `{"ok":true,"message":"连接成功（1.2s）：'OK'"}`。
+11. **macOS 打包版「重启以应用」替换位置错误（代码审查发现）**：`MacUpdater.apply`
+    把安装目录算成 `sys.executable` 的父目录——对 `.app` 来说是 `Contents/MacOS`，
+    新应用会被嵌套进旧包内部，而不是替换 `/Applications/MP Harvest.app`；
+    且装在 `/Applications`（root 属主）时普通权限 rm/mv 必然失败。
+    修复：新增 `_app_bundle_root`/`_mac_install_dir`（向上找 `.app` 根、取父目录为
+    安装目录）；目标不可写时升级脚本用 `osascript ... with administrator privileges`
+    弹管理员授权完成替换；开发模式直接抛「不支持应用内升级」；替换后 `open` 新应用
+    而非目录；win 同步加开发模式保护。新增 5 条单测（bundle 定位/脚本内容/开发模式
+    拒绝），core 82→87 全绿；发布 **v2.0.1**（APP_VERSION 2.0.1），打包版实测
+    「检查更新」连通 GitHub、下载/替换/重启链路就绪。
 
 ### 事故根因分析：为什么用 MP Harvest 会让 Codex/本机助手断连
 
