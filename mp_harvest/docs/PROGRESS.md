@@ -77,6 +77,11 @@
 - ✅ 已上传 GitHub：仓库 **shirainbown/mp-harvest**（private，main，commit 8652076），
   更新源默认 `shirainbown/mp-harvest`（可用环境变量覆盖）；本地项目目录已建独立
   git 仓库（外层 Documents 仓库未触碰）；数据/依赖/构建产物均 gitignore 未上传。
+- ✅ **M5 部分完成：macOS 发布版**：仓库已公开；PyInstaller 打包（arm64 .app，99MB）
+  并修复冻结模式 `package_root()` 资源路径（兼容 PyInstaller 6 平铺/`_internal` 两种布局）；
+  冒烟通过（页面/资源/API/冻结数据目录）；发布 GitHub Release **v2.0.0**：
+  [MP-Harvest-mac-2.0.0.zip](https://github.com/shirainbown/mp-harvest/releases/tag/v2.0.0)
+  （未签名/未公证，Gatekeeper 需右键打开；Intel/公证/DMG/CI 留待后续）。
 - ✅ 断连根因排查结论落盘：MP Harvest 抓包切换整机系统代理 → 本机助手（Codex）也被吸入
   mitm 中间人且 CA 未信任 → 表现为「正在重新连接」；约定真机抓包短窗口、开发用
   `set_system_proxy=False`（见 TEST_RECORD「事故根因分析」/ USAGE_NOTES §2）。

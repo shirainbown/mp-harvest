@@ -67,6 +67,7 @@
 | E14 | 公众号名称可留空（默认未命名公众号） | ✅ | 2026-08-09 | AccountCreateIn.name 放开 + 表单去掉必填校验 |
 | E15 | 任意目录直接运行（run.py + 自动构建 + 相对资源路径） | ✅ | 2026-08-09 | /tmp 实测：页面/资源/数据目录正确；清理测试污染的垃圾目录 |
 | E16 | 项目更名 MP Harvest（mp-harvest）+ 新图标 | ✅ | 2026-08-09 | 包/目录/品牌全量更名；icon 入侧边栏+favicon；手册截图重新生成 |
+| E17 | 仓库公开 + macOS Release v2.0.0 | ✅ | 2026-08-09 | PyInstaller arm64 .app 打包 + 冒烟 + GitHub Release（未签名） |
 
 ## Epic C 遗留问题（不阻塞，联调期处理）
 

@@ -48,6 +48,11 @@ git clone https://github.com/shirainbown/mp-harvest.git
 
 下载后确认目录结构里有 `run.py`（启动器）和 `mp_harvest/` 目录即可。**不需要**放到固定位置，也不需要管理员权限安装。
 
+> **不想装 Python/Node 的普通用户**：直接下载发布版
+> [MP Harvest v2.0.0（macOS）](https://github.com/shirainbown/mp-harvest/releases/tag/v2.0.0)
+> 的 `MP-Harvest-mac-2.0.0.zip`，解压后把 `MP Harvest.app` 拖入「应用程序」即可（当前仅 Apple Silicon；
+> 未签名版本首次打开请右键 → 打开，或执行 `xattr -cr "/Applications/MP Harvest.app"`）。
+
 ---
 
 ## 3. 环境要求与依赖
