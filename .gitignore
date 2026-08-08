@@ -1,0 +1,11 @@
+.reference/
+mp_harvest/data/
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+node_modules/
+mp_harvest/frontend/dist/
+.DS_Store
+build/
+dist/

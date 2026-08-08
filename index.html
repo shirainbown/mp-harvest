@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MP Harvest · UI 设计原型</title>
+<style>
+/* ============ 设计 Token（对应设计文档 §5.2） ============ */
+:root{
+  --bg-app:#F7F6F3; --bg-panel:#FFFFFF; --bg-sidebar:#F0EFEB;
+  --bg-hover:#EDECE8; --bg-selected:#E8EEF5; --border:#E3E1DC;
+  --text-primary:#1F2328; --text-secondary:#6B7280; --text-tertiary:#9CA3AF;
+  --accent:#2F6FED; --accent-hover:#2563D8;
+  --success:#3F9B62; --warning:#C98A2C; --danger:#D0554F; --info:#5B8DEF;
+  --font-ui:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-mono:"SF Mono","Cascadia Mono",Consolas,monospace;
+  --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-lg:15px; --fs-xl:18px;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-6:24px;
+  --radius-sm:4px; --radius-md:6px; --radius-lg:10px;
+  --shadow-pop:0 4px 16px rgba(0,0,0,.10),0 1px 3px rgba(0,0,0,.06);
+  --shadow-modal:0 12px 40px rgba(0,0,0,.16);
+  --ease:cubic-bezier(.2,.8,.3,1); --dur-fast:120ms; --dur-med:200ms;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg-app:#1B1D1F; --bg-panel:#242628; --bg-sidebar:#1F2123;
+    --bg-hover:#2C2E31; --bg-selected:#2A3648; --border:#36383B;
+    --text-primary:#E8EAED; --text-secondary:#9BA0A6; --text-tertiary:#6E7278;
+    --accent:#5B8DEF; --accent-hover:#6F9BF2;
+    --shadow-pop:0 4px 16px rgba(0,0,0,.4); --shadow-modal:0 12px 40px rgba(0,0,0,.5);
+  }
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font-family:var(--font-ui);font-size:var(--fs-md);color:var(--text-primary);background:var(--bg-app);overflow:hidden}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-tertiary)}
+
+/* ============ 布局骨架 ============ */
+.app{display:flex;height:100vh}
+.sidebar{width:200px;flex-shrink:0;background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:var(--sp-3) 0}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.page-header{height:44px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 var(--sp-4);border-bottom:1px solid var(--border);background:var(--bg-panel)}
+.page-header h1{font-size:var(--fs-lg);font-weight:600}
+.page-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-3)}
+.view{display:none;flex-direction:column;gap:var(--sp-3)}
+.view.active{display:flex}
+
+/* ============ 侧边栏 ============ */
+.brand{padding:var(--sp-2) var(--sp-4) var(--sp-3);font-size:var(--fs-lg);font-weight:700;letter-spacing:.3px}
+.nav-group{padding:var(--sp-2) 0}
+.nav-group + .nav-group{border-top:1px solid var(--border);margin-top:var(--sp-2);padding-top:var(--sp-3)}
+.nav-item{display:flex;align-items:center;height:32px;padding:0 var(--sp-4);color:var(--text-secondary);cursor:pointer;position:relative;transition:background var(--dur-fast) var(--ease);user-select:none}
+.nav-item:hover{background:var(--bg-hover)}
+.nav-item.active{background:var(--bg-selected);color:var(--text-primary);font-weight:500}
+.nav-item.active::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:2px;background:var(--accent)}
+.nav-spacer{flex:1}
+.version{padding:var(--sp-2) var(--sp-4);font-size:var(--fs-xs);color:var(--text-tertiary);font-family:var(--font-mono)}
+
+/* ============ 通用组件 ============ */
+.panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-3) var(--sp-4)}
+.panel-title{font-size:var(--fs-sm);font-weight:600;color:var(--text-secondary);margin-bottom:var(--sp-2)}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 var(--sp-3);border-radius:var(--radius-md);border:1px solid transparent;font-size:var(--fs-sm);font-family:var(--font-ui);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease);white-space:nowrap;user-select:none}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-secondary{background:var(--bg-panel);border-color:var(--border);color:var(--text-primary)}
+.btn-secondary:hover{background:var(--bg-hover)}
+.btn-ghost{background:transparent;color:var(--text-secondary)}
+.btn-ghost:hover{background:var(--bg-hover);color:var(--text-primary)}
+.btn-danger-ghost{background:transparent;color:var(--danger)}
+.btn-danger-ghost:hover{background:var(--bg-hover)}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.btn-sm{height:24px;padding:0 var(--sp-2);font-size:var(--fs-xs)}
+.input{height:28px;padding:0 var(--sp-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-panel);color:var(--text-primary);font-size:var(--fs-sm);font-family:var(--font-ui);outline:none;transition:border-color var(--dur-fast) var(--ease)}
+.input:focus{border-color:var(--accent)}
+.input::placeholder{color:var(--text-tertiary)}
+select.input{cursor:pointer}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+.dot.green{background:var(--success)} .dot.gray{background:var(--text-tertiary)} .dot.yellow{background:var(--warning)} .dot.red{background:var(--danger)}
+.badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--radius-sm);font-size:var(--fs-xs);background:var(--bg-hover);color:var(--text-secondary)}
+.badge.m{background:rgba(47,111,237,.12);color:var(--accent)}
+.badge.g{background:rgba(63,155,98,.12);color:var(--success)}
+.badge.bu{background:rgba(201,138,44,.14);color:var(--warning)}
+.mono{font-family:var(--font-mono);font-size:var(--fs-sm)}
+.muted{color:var(--text-secondary)} .tertiary{color:var(--text-tertiary)}
+.seg{display:inline-flex;background:var(--bg-hover);border-radius:var(--radius-md);padding:2px;gap:2px}
+.seg-item{height:24px;padding:0 var(--sp-3);display:inline-flex;align-items:center;border-radius:var(--radius-sm);font-size:var(--fs-sm);color:var(--text-secondary);cursor:pointer;transition:all var(--dur-fast) var(--ease);user-select:none}
+.seg-item.active{background:var(--bg-panel);color:var(--text-primary);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.link{color:var(--accent);cursor:pointer;text-decoration:none}
+.link:hover{text-decoration:underline}
+.spinner{width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pulse{animation:pulse 1.6s var(--ease) infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(47,111,237,.35)}50%{box-shadow:0 0 0 5px rgba(47,111,237,0)}}
+
+/* ============ 凭证管理页 ============ */
+.mitm-panel.warn{border-color:var(--warning);background:color-mix(in srgb,var(--warning) 5%,var(--bg-panel))}
+.mitm-row{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+.acct-table{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg-panel);overflow:hidden}
+.acct-head,.acct-row{display:grid;grid-template-columns:110px 1fr 130px 1fr auto;align-items:center;gap:var(--sp-3);padding:0 var(--sp-4)}
+.acct-head{height:32px;font-size:var(--fs-xs);color:var(--text-tertiary);border-bottom:1px solid var(--border);background:var(--bg-sidebar)}
+.acct-row{height:40px;border-bottom:1px solid var(--border);transition:background var(--dur-fast) var(--ease)}
+.acct-row:last-child{border-bottom:none}
+.acct-row:hover{background:var(--bg-hover)}
+.acct-row .row-actions{display:flex;gap:2px;opacity:0;transition:opacity var(--dur-fast) var(--ease)}
+.acct-row:hover .row-actions{opacity:1}
+.countdown{font-family:var(--font-mono);font-size:var(--fs-sm)}
+.countdown.warn{color:var(--warning)}
+.countdown.expired{color:var(--text-tertiary)}
+.acct-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-biz{color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis}
+.toolbar{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+.toolbar .spacer{flex:1}
+
+/* ============ 历史文章页 ============ */
+.fetch-bar{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+.task-inline{display:inline-flex;align-items:center;gap:var(--sp-2);color:var(--text-secondary);font-size:var(--fs-sm)}
+.view-tabs{display:inline-flex;gap:var(--sp-1)}
+.view-tab{height:26px;padding:0 var(--sp-3);display:inline-flex;align-items:center;gap:6px;border-radius:var(--radius-md);font-size:var(--fs-sm);color:var(--text-secondary);cursor:pointer;position:relative;transition:all var(--dur-fast) var(--ease);user-select:none}
+.view-tab:hover{background:var(--bg-hover)}
+.view-tab.active{color:var(--text-primary);font-weight:600}
+.view-tab.active::after{content:"";position:absolute;left:12px;right:12px;bottom:-7px;height:2px;background:var(--accent);border-radius:1px}
+.view-tab .cnt{font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--text-tertiary)}
+.art-table{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg-panel);overflow:hidden;flex:1;display:flex;flex-direction:column;min-height:260px}
+.art-scroll{overflow-y:auto;flex:1}
+.art-head,.art-row{display:grid;grid-template-columns:32px minmax(200px,1.4fr) minmax(120px,.8fr) 64px 40px auto;align-items:center;gap:var(--sp-3);padding:0 var(--sp-3)}
+.art-head{height:30px;font-size:var(--fs-xs);color:var(--text-tertiary);border-bottom:1px solid var(--border);background:var(--bg-sidebar);flex-shrink:0}
+.art-row{height:36px;border-bottom:1px solid var(--border);transition:background var(--dur-fast) var(--ease)}
+.art-row:hover{background:var(--bg-hover)}
+.art-row.hidden{display:none}
+.art-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.art-reason{font-size:var(--fs-sm);color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.art-row .row-actions{display:flex;gap:2px;opacity:0;transition:opacity var(--dur-fast) var(--ease)}
+.art-row:hover .row-actions{opacity:1}
+.cb{width:14px;height:14px;accent-color:var(--accent);cursor:pointer}
+.ai-progress{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--text-secondary)}
+
+/* ============ AI 模型页 ============ */
+.model-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-3) var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-2)}
+.model-line{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+.model-line .input{flex:1;min-width:180px}
+.switch{width:32px;height:18px;border-radius:9px;background:var(--border);position:relative;cursor:pointer;transition:background var(--dur-fast) var(--ease);flex-shrink:0}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform var(--dur-fast) var(--ease)}
+.switch.on{background:var(--accent)}
+.switch.on::after{transform:translateX(14px)}
+.principles{width:100%;min-height:180px;padding:var(--sp-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-panel);color:var(--text-primary);font-family:var(--font-mono);font-size:var(--fs-sm);line-height:1.7;resize:vertical;outline:none}
+.principles:focus{border-color:var(--accent)}
+.status-ok{color:var(--success);font-size:var(--fs-sm)}
+.status-fail{color:var(--danger);font-size:var(--fs-sm)}
+
+/* ============ 网络设置页 ============ */
+.radio-row{display:flex;align-items:center;gap:var(--sp-2);height:30px;cursor:pointer}
+.radio{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--border);position:relative;flex-shrink:0}
+.radio.on{border-color:var(--accent)}
+.radio.on::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--accent)}
+.cap-list{display:flex;flex-direction:column;gap:6px;font-size:var(--fs-sm);color:var(--text-secondary)}
+
+/* ============ Drawer / Modal / Toast ============ */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.28);opacity:0;pointer-events:none;transition:opacity var(--dur-med) var(--ease);z-index:40}
+.overlay.show{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:480px;background:var(--bg-panel);box-shadow:var(--shadow-modal);transform:translateX(100%);transition:transform var(--dur-med) var(--ease);z-index:50;display:flex;flex-direction:column}
+.drawer.show{transform:translateX(0)}
+.drawer-head{height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 var(--sp-4);border-bottom:1px solid var(--border);font-weight:600;flex-shrink:0}
+.drawer-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-3)}
+.drawer-foot{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:var(--sp-2);flex-shrink:0}
+.modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%) scale(.96);width:520px;max-width:90vw;background:var(--bg-panel);border-radius:var(--radius-lg);box-shadow:var(--shadow-modal);opacity:0;pointer-events:none;transition:all var(--dur-med) var(--ease);z-index:50;display:flex;flex-direction:column;max-height:80vh}
+.modal.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+.modal-head{padding:var(--sp-4) var(--sp-4) var(--sp-2);font-weight:600;font-size:var(--fs-lg)}
+.modal-body{padding:0 var(--sp-4) var(--sp-3);overflow-y:auto;color:var(--text-secondary);line-height:1.7}
+.modal-foot{padding:var(--sp-3) var(--sp-4);display:flex;justify-content:flex-end;gap:var(--sp-2);border-top:1px solid var(--border)}
+.modal-body h4{color:var(--text-primary);margin:var(--sp-2) 0 var(--sp-1)}
+.modal-body ul{padding-left:18px}
+.progress-track{height:6px;border-radius:3px;background:var(--bg-hover);overflow:hidden;margin:var(--sp-2) 0}
+.progress-fill{height:100%;width:62%;background:var(--accent);border-radius:3px;transition:width var(--dur-med) var(--ease)}
+.toasts{position:fixed;top:16px;right:16px;z-index:60;display:flex;flex-direction:column;gap:var(--sp-2)}
+.toast{display:flex;align-items:center;gap:var(--sp-2);min-width:240px;max-width:340px;padding:var(--sp-2) var(--sp-3);background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-md);box-shadow:var(--shadow-pop);font-size:var(--fs-sm);animation:toast-in var(--dur-med) var(--ease)}
+@keyframes toast-in{from{transform:translateX(24px);opacity:0}to{transform:translateX(0);opacity:1}}
+.toast.out{transition:all var(--dur-med) var(--ease);transform:translateX(24px);opacity:0}
+.tooltip-info{cursor:help;color:var(--text-tertiary);border-bottom:1px dashed var(--text-tertiary)}
+.empty-hint{padding:var(--sp-6);text-align:center;color:var(--text-tertiary);font-size:var(--fs-sm)}
+.form-label{font-size:var(--fs-sm);color:var(--text-secondary);white-space:nowrap}
+.divider{height:1px;background:var(--border);margin:var(--sp-2) 0}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar">
+    <div class="brand">MP Harvest</div>
+    <nav class="nav-group">
+      <div class="nav-item active" data-view="credentials">凭证管理</div>
+      <div class="nav-item" data-view="history">历史文章</div>
+    </nav>
+    <nav class="nav-group">
+      <div class="nav-item" data-view="ai">AI 模型</div>
+      <div class="nav-item" data-view="network">网络设置</div>
+    </nav>
+    <div class="nav-spacer"></div>
+    <nav class="nav-group">
+      <div class="nav-item" id="nav-update">检查更新</div>
+    </nav>
+    <div class="version">v2.0.0 · UI 原型</div>
+  </aside>
+
+  <!-- ============ 主区域 ============ -->
+  <div class="main">
+    <!-- ============ 页面一：凭证管理 ============ -->
+    <section class="view active" id="view-credentials">
+      <header class="page-header">
+        <h1>凭证管理</h1>
+        <button class="btn btn-secondary btn-sm" id="btn-renew-all">⏻ 一键续约全部</button>
+      </header>
+      <div class="page-body">
+
+        <div class="panel mitm-panel" id="mitm-panel">
+          <div class="panel-title">MITM 代理</div>
+          <div class="mitm-row">
+            <span style="display:inline-flex;align-items:center;gap:6px"><span class="dot green" id="mitm-dot"></span><span id="mitm-status">运行中 <span class="mono muted">127.0.0.1:8080</span></span></span>
+            <span class="muted" id="ca-status">CA：<span class="status-ok">✓ 已信任</span></span>
+            <span class="spacer" style="flex:1"></span>
+            <button class="btn btn-secondary btn-sm" id="btn-mitm-toggle">停止代理</button>
+            <button class="btn btn-secondary btn-sm pulse" id="btn-ca-install" style="display:none">安装 CA 证书</button>
+            <button class="btn btn-ghost btn-sm">打开证书文件</button>
+            <span class="tooltip-info" title="添加公众号后，在微信桌面内刷新该公众号已打开的文章，即可自动捕获凭证（30 分钟有效）">抓包指引 ⓘ</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">添加公众号</div>
+          <div class="mitm-row">
+            <span class="form-label">名称</span>
+            <input class="input" style="width:180px" placeholder="如：互联网周刊">
+            <span class="form-label">文章链接</span>
+            <input class="input" style="flex:1;min-width:220px" placeholder="https://mp.weixin.qq.com/s/…">
+            <button class="btn btn-primary" id="btn-add">添加并抓包</button>
+            <button class="btn btn-secondary" id="btn-import">批量导入 ▸</button>
+          </div>
+        </div>
+
+        <div class="toolbar" style="padding:0 2px">
+          <span class="muted">已添加 <b style="color:var(--text-primary)">6</b></span>
+        </div>
+        <div class="acct-table">
+          <div class="acct-head"><span>状态</span><span>名称</span><span>__biz</span><span>链接</span><span></span></div>
+          <div class="acct-row" data-ttl="1781">
+            <span style="display:flex;align-items:center;gap:6px"><span class="dot green"></span><span class="countdown" >29:41</span></span>
+            <span class="acct-name">互联网周刊</span>
+            <span class="acct-biz mono">aXJvc2…</span>
+            <span class="acct-biz mono">mp.weixin.qq.com/s/8fK2…</span>
+            <span class="row-actions"><button class="btn btn-ghost btn-sm" data-toast="凭证 JSON 已复制">复制</button><button class="btn btn-ghost btn-sm" data-toast="已切换到等待抓包，请在微信内刷新文章">续约</button><button class="btn btn-ghost btn-sm">打开</button><button class="btn btn-danger-ghost btn-sm" data-toast="已删除「互联网周刊」（原型演示）">删除</button></span>
+          </div>
+          <div class="acct-row" data-ttl="723">
+            <span style="display:flex;align-items:center;gap:6px"><span class="dot green"></span><span class="countdown">12:03</span></span>
+            <span class="acct-name">芯片那些事</span>
+            <span class="acct-biz mono">bWl0bX…</span>
+            <span class="acct-biz mono">mp.weixin.qq.com/s/Q7d1…</span>
+            <span class="row-actions"><button class="btn btn-ghost btn-sm" data-toast="凭证 JSON 已复制">复制</button><button class="btn btn-ghost btn-sm" data-toast="已切换到等待抓包，请在微信内刷新文章">续约</button><button class="btn btn-ghost btn-sm">打开</button><button class="btn btn-danger-ghost btn-sm" data-toast="已删除「芯片那些事」（原型演示）">删除</button></span>
+          </div>
+          <div class="acct-row" data-ttl="214">
+            <span style="display:flex;align-items:center;gap:6px"><span class="dot yellow"></span><span class="countdown warn">03:34</span></span>
+            <span class="acct-name">半导体行业观察</span>
+            <span class="acct-biz mono">c2VtaW…</span>
+            <span class="acct-biz mono">mp.weixin.qq.com/s/Zm3w…</span>
+            <span class="row-actions"><button class="btn btn-ghost btn-sm" data-toast="凭证 JSON 已复制">复制</button><button class="btn btn-ghost btn-sm" data-toast="已切换到等待抓包，请在微信内刷新文章">续约</button><button class="btn btn-ghost btn-sm">打开</button><button class="btn btn-danger-ghost btn-sm" data-toast="已删除「半导体行业观察」（原型演示）">删除</button></span>
+          </div>
+          <div class="acct-row" data-ttl="0">
+            <span style="display:flex;align-items:center;gap:6px"><span class="dot gray"></span><span class="countdown expired">已过期</span></span>
+            <span class="acct-name">前端早读课</span>
+            <span class="acct-biz mono">d2luZG…</span>
+            <span class="acct-biz mono">mp.weixin.qq.com/s/1pN8…</span>
+            <span class="row-actions"><button class="btn btn-ghost btn-sm" data-toast="凭证已过期，请先续约" >复制</button><button class="btn btn-ghost btn-sm" data-toast="已切换到等待抓包，请在微信内刷新文章">续约</button><button class="btn btn-ghost btn-sm">打开</button><button class="btn btn-danger-ghost btn-sm" data-toast="已删除「前端早读课」（原型演示）">删除</button></span>
+          </div>
+          <div class="acct-row" data-ttl="1599">
+            <span style="display:flex;align-items:center;gap:6px"><span class="dot green"></span><span class="countdown">26:39</span></span>
+            <span class="acct-name">机器之心</span>
+            <span class="acct-biz mono">bWFjaG…</span>
+            <span class="acct-biz mono">mp.weixin.qq.com/s/T5rR…</span>
+            <span class="row-actions"><button class="btn btn-ghost btn-sm" data-toast="凭证 JSON 已复制">复制</button><button class="btn btn-ghost btn-sm" data-toast="已切换到等待抓包，请在微信内刷新文章">续约</button><button class="btn btn-ghost btn-sm">打开</button><button class="btn btn-danger-ghost btn-sm" data-toast="已删除「机器之心」（原型演示）">删除</button></span>
+          </div>
+          <div class="acct-row" data-ttl="0">
+            <span style="display:flex;align-items:center;gap:6px"><span class="dot gray"></span><span class="countdown expired">已过期</span></span>
+            <span class="acct-name">晚点 LatePost</span>
+            <span class="acct-biz mono">bGF0ZX…</span>
+            <span class="acct-biz mono">mp.weixin.qq.com/s/W9qQ…</span>
+            <span class="row-actions"><button class="btn btn-ghost btn-sm" data-toast="凭证已过期，请先续约">复制</button><button class="btn btn-ghost btn-sm" data-toast="已切换到等待抓包，请在微信内刷新文章">续约</button><button class="btn btn-ghost btn-sm">打开</button><button class="btn btn-danger-ghost btn-sm" data-toast="已删除「晚点 LatePost」（原型演示）">删除</button></span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+    <!-- ============ 页面二：历史文章 ============ -->
+    <section class="view" id="view-history">
+      <header class="page-header">
+        <h1>历史文章</h1>
+      </header>
+      <div class="page-body">
+
+        <div class="panel">
+          <div class="fetch-bar">
+            <span class="form-label">公众号</span>
+            <select class="input" style="width:200px">
+              <option>互联网周刊</option><option>芯片那些事</option>
+              <option disabled>前端早读课（需续约）</option><option>机器之心</option>
+            </select>
+            <span class="form-label">范围</span>
+            <div class="seg" id="seg-range">
+              <span class="seg-item active">近 7 天</span><span class="seg-item">近 30 天</span><span class="seg-item">近 90 天</span>
+            </div>
+            <button class="btn btn-primary" id="btn-fetch">⟳ 拉取历史</button>
+            <span class="task-inline" id="fetch-progress" style="display:none"><span class="spinner"></span>第 3 页 / 已获 87 篇<button class="btn btn-ghost btn-sm" id="btn-fetch-cancel">取消</button></span>
+          </div>
+        </div>
+
+        <div class="panel" style="padding:var(--sp-2) var(--sp-4)">
+          <div class="toolbar" style="border-bottom:1px solid var(--border);padding-bottom:var(--sp-2)">
+            <div class="view-tabs" id="view-tabs">
+              <span class="view-tab active" data-v="all">全部 <span class="cnt">214</span></span>
+              <span class="view-tab" data-v="keep">通过 <span class="cnt">96</span></span>
+              <span class="view-tab" data-v="drop">过滤掉 <span class="cnt">118</span></span>
+            </div>
+            <span class="spacer"></span>
+            <span class="ai-progress" id="ai-progress"><span class="dot green"></span>模型 A 214/214 ✓<span class="dot green"></span>模型 B 214/214 ✓</span>
+          </div>
+          <div class="toolbar" style="padding-top:var(--sp-2)">
+            <span class="muted" style="font-size:var(--fs-sm)">列表：</span>
+            <select class="input btn-sm" style="height:24px;font-size:var(--fs-xs)"><option>Markdown</option><option>JSON</option><option>CSV</option><option>TSV</option><option>纯链接</option><option>标题+链接</option></select>
+            <button class="btn btn-secondary btn-sm" data-toast="当前视图列表已复制（Markdown）">复制</button>
+            <button class="btn btn-secondary btn-sm" data-toast="已导出当前视图 214 条（仅导出当前视图）">导出</button>
+            <button class="btn btn-ghost btn-sm" data-toast="补录链接已加入列表">+ 补录链接</button>
+            <button class="btn btn-ghost btn-sm" data-toast="列表已刷新">刷新</button>
+            <button class="btn btn-ghost btn-sm" id="btn-sort">排序：最新 ▾</button>
+            <span class="spacer"></span>
+            <span class="muted" style="font-size:var(--fs-sm)">正文：</span>
+            <button class="btn btn-ghost btn-sm" id="btn-sel-all">全选</button>
+            <button class="btn btn-ghost btn-sm" id="btn-sel-none">取消选择</button>
+            <button class="btn btn-primary btn-sm" id="btn-export-html">导出 HTML（未选择）</button>
+            <span style="width:8px"></span>
+            <button class="btn btn-secondary btn-sm" data-toast="AI 筛选完成：通过 96 / 过滤 118（缓存命中 203）">✦ AI 筛选</button>
+            <button class="btn btn-ghost btn-sm" id="btn-goto-ai">⚙ 模型设置</button>
+          </div>
+        </div>
+
+        <div class="art-table">
+          <div class="art-head"><span></span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span></div>
+          <div class="art-scroll" id="art-scroll"></div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============ 页面三：AI 模型 ============ -->
+    <section class="view" id="view-ai">
+      <header class="page-header">
+        <h1>AI 模型</h1>
+        <button class="btn btn-primary btn-sm" data-toast="已添加空白模型卡片，请填写配置">+ 添加模型</button>
+      </header>
+      <div class="page-body">
+
+        <div class="model-card">
+          <div class="model-line">
+            <span class="switch on" title="启用"></span>
+            <span class="form-label">请求地址</span>
+            <input class="input mono" value="https://api.openai.com">
+            <button class="btn btn-secondary btn-sm" data-testbtn>测试</button>
+            <button class="btn btn-danger-ghost btn-sm" data-toast="已删除模型（原型演示）">删除</button>
+          </div>
+          <div class="model-line">
+            <span class="form-label">API Key</span>
+            <input class="input mono" type="password" value="sk-proj-abc123def456">
+            <button class="btn btn-ghost btn-sm" data-eye>👁</button>
+            <div class="seg" style="margin-left:8px"><span class="seg-item active">OpenAI 兼容</span><span class="seg-item">Anthropic</span></div>
+            <span class="form-label">模型</span>
+            <input class="input mono" style="width:180px" value="gpt-5-mini">
+            <span class="status-ok">● 可用 · 212ms</span>
+          </div>
+        </div>
+
+        <div class="model-card">
+          <div class="model-line">
+            <span class="switch on" title="启用"></span>
+            <span class="form-label">请求地址</span>
+            <input class="input mono" value="https://api.anthropic.com">
+            <button class="btn btn-secondary btn-sm" data-testbtn>测试</button>
+            <button class="btn btn-danger-ghost btn-sm" data-toast="已删除模型（原型演示）">删除</button>
+          </div>
+          <div class="model-line">
+            <span class="form-label">API Key</span>
+            <input class="input mono" type="password" value="sk-ant-xyz789">
+            <button class="btn btn-ghost btn-sm" data-eye>👁</button>
+            <div class="seg" style="margin-left:8px"><span class="seg-item">OpenAI 兼容</span><span class="seg-item active">Anthropic</span></div>
+            <span class="form-label">模型</span>
+            <input class="input mono" style="width:180px" value="claude-sonnet-4.5">
+            <span class="status-fail tooltip-info" title="HTTP 401：authentication_error · invalid x-api-key">● 失败 · 401</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">筛选原则 <span class="tertiary" style="font-weight:400">— 输出格式由软件固定（严格 JSON），原则只管判定标准</span></div>
+          <textarea class="principles">请判断以下公众号文章标题是否值得阅读。
+
+值得保留（keep=true）的标准：
+- 行业深度分析、技术趋势长文
+- 有信息增量的独家报道
+- 与半导体 / AI / 互联网产品相关的硬核内容
+
+应当过滤（keep=false）的标准：
+- 例行会议纪要、活动预告、招聘启事
+- 标题党但正文信息量低的软文
+- 与上述领域无关的泛娱乐内容</textarea>
+          <div class="toolbar" style="margin-top:var(--sp-2)">
+            <span class="spacer"></span>
+            <button class="btn btn-ghost btn-sm" data-toast="已恢复默认原则">恢复默认</button>
+            <button class="btn btn-primary btn-sm" data-toast="筛选原则已保存（ai_principles.txt）">保存</button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============ 页面四：网络设置 ============ -->
+    <section class="view" id="view-network">
+      <header class="page-header">
+        <h1>网络设置</h1>
+      </header>
+      <div class="page-body">
+        <div class="panel">
+          <div class="panel-title">更新与下载代理</div>
+          <div class="radio-row" data-radio><span class="radio on"></span>直连 / 系统代理</div>
+          <div class="radio-row" data-radio><span class="radio"></span>自定义 HTTP 代理</div>
+          <div class="mitm-row" style="margin-top:var(--sp-2)">
+            <span class="form-label">地址</span>
+            <input class="input mono" style="width:280px" placeholder="http://127.0.0.1:7890">
+            <button class="btn btn-secondary btn-sm" data-toast="连接成功 · 延迟 189ms">测试连接</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">平台能力 <span class="tertiary" style="font-weight:400">（由 platform.info() 渲染，随系统变化）</span></div>
+          <div class="cap-list" id="cap-list">
+            <span>系统：Windows 11 · 安装 CA 无需管理员 · 设置系统代理无需管理员</span>
+            <span>数据目录：<span class="mono">%APPDATA%\MP Harvest\data\</span></span>
+            <span>渲染引擎：WebView2（Chromium）</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ============ 批量导入 Drawer ============ -->
+<div class="overlay" id="overlay"></div>
+<div class="drawer" id="drawer-import">
+  <div class="drawer-head">批量导入公众号 <button class="btn btn-ghost btn-sm" data-close>✕</button></div>
+  <div class="drawer-body">
+    <div>
+      <div class="panel-title">粘贴「名称 + 链接」（每行一条，空格/逗号分隔）</div>
+      <textarea class="principles" style="min-height:120px;font-family:var(--font-ui)">科技新知  https://mp.weixin.qq.com/s/a1B2c3
+智东西    https://mp.weixin.qq.com/s/d4E5f6
+芯片那些事 https://mp.weixin.qq.com/s/Q7d1x2</textarea>
+    </div>
+    <div>
+      <div class="panel-title">或从文件导入</div>
+      <div class="toolbar">
+        <button class="btn btn-secondary btn-sm" data-toast="原型演示：选择 TXT / CSV / JSON 文件">选择文件…</button>
+        <span class="tertiary" style="font-size:var(--fs-xs)">支持 .txt / .csv / .json</span>
+      </div>
+    </div>
+    <div>
+      <div class="panel-title">解析预览（URL + 名称双重去重）</div>
+      <div class="acct-table">
+        <div class="acct-head" style="grid-template-columns:1fr 1.4fr 90px"><span>名称</span><span>链接</span><span>结果</span></div>
+        <div class="acct-row" style="grid-template-columns:1fr 1.4fr 90px"><span class="acct-name">科技新知</span><span class="acct-biz mono">mp.weixin.qq.com/s/a1B2…</span><span class="status-ok">新增</span></div>
+        <div class="acct-row" style="grid-template-columns:1fr 1.4fr 90px"><span class="acct-name">智东西</span><span class="acct-biz mono">mp.weixin.qq.com/s/d4E5…</span><span class="status-ok">新增</span></div>
+        <div class="acct-row" style="grid-template-columns:1fr 1.4fr 90px"><span class="acct-name">芯片那些事</span><span class="acct-biz mono">mp.weixin.qq.com/s/Q7d1…</span><span style="color:var(--warning);font-size:var(--fs-sm)">重复</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="drawer-foot">
+    <button class="btn btn-ghost" data-close>取消</button>
+    <button class="btn btn-primary" data-close data-toast="已导入 2 条（跳过 1 条重复）">导入 2 条</button>
+  </div>
+</div>
+
+<!-- ============ 检查更新 Modal ============ -->
+<div class="modal" id="modal-update">
+  <div class="modal-head">发现新版本 <span class="badge m" style="margin-left:4px">v2.1.0</span></div>
+  <div class="modal-body">
+    <h4>更新内容</h4>
+    <ul>
+      <li>新增 macOS 支持（签名公证版 DMG）</li>
+      <li>正文导出收敛为 HTML，支持图片本地化</li>
+      <li>文章列表虚拟滚动，500+ 条流畅不卡</li>
+      <li>修复 AI 筛选缓存在跨公众号时偶发串键</li>
+    </ul>
+    <div class="progress-track"><div class="progress-fill"></div></div>
+    <span class="muted" style="font-size:var(--fs-sm)">正在下载 mp_harvest-v2.1.0.zip … 62%（走自定义代理）</span>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" data-close>稍后</button>
+    <button class="btn btn-primary" data-close data-toast="下载完成后将退出并自动替换重启">立即更新</button>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+/* ================= 视图切换 ================= */
+const navItems = document.querySelectorAll('.nav-item[data-view]');
+navItems.forEach(n => n.addEventListener('click', () => {
+  navItems.forEach(x => x.classList.remove('active'));
+  n.classList.add('active');
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + n.dataset.view).classList.add('active');
+}));
+document.getElementById('btn-goto-ai').addEventListener('click', () => {
+  document.querySelector('.nav-item[data-view="ai"]').click();
+});
+
+/* ================= Toast ================= */
+function toast(msg, ok = true) {
+  const box = document.getElementById('toasts');
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.innerHTML = `<span class="dot ${ok ? 'green' : 'red'}"></span><span>${msg}</span>`;
+  box.appendChild(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 250); }, ok ? 2000 : 4000);
+}
+document.querySelectorAll('[data-toast]').forEach(el =>
+  el.addEventListener('click', e => { e.stopPropagation(); toast(el.dataset.toast); }));
+
+/* ================= 倒计时（单一全局 interval 驱动所有行） ================= */
+function tick() {
+  document.querySelectorAll('.acct-row[data-ttl]').forEach(row => {
+    let ttl = +row.dataset.ttl;
+    const cd = row.querySelector('.countdown');
+    const dot = row.querySelector('.dot');
+    if (ttl <= 0) return;
+    ttl--; row.dataset.ttl = ttl;
+    if (ttl <= 0) {
+      cd.textContent = '已过期'; cd.className = 'countdown expired';
+      dot.className = 'dot gray';
+    } else {
+      const m = String(Math.floor(ttl / 60)).padStart(2, '0');
+      const s = String(ttl % 60).padStart(2, '0');
+      cd.textContent = `${m}:${s}`;
+      if (ttl < 300) { cd.classList.add('warn'); dot.className = 'dot yellow'; }
+    }
+  });
+}
+setInterval(tick, 1000);
+
+/* ================= MITM 面板状态演示 ================= */
+let mitmRunning = true;
+document.getElementById('btn-mitm-toggle').addEventListener('click', function () {
+  mitmRunning = !mitmRunning;
+  const dot = document.getElementById('mitm-dot');
+  const status = document.getElementById('mitm-status');
+  if (mitmRunning) {
+    dot.className = 'dot green';
+    status.innerHTML = '运行中 <span class="mono muted">127.0.0.1:8080</span>';
+    this.textContent = '停止代理';
+    toast('MITM 代理已启动（127.0.0.1:8080）');
+  } else {
+    dot.className = 'dot gray';
+    status.textContent = '已停止';
+    this.textContent = '启动代理';
+    toast('MITM 代理已停止');
+  }
+});
+
+/* ================= 拉取历史进度演示 ================= */
+const fp = document.getElementById('fetch-progress');
+document.getElementById('btn-fetch').addEventListener('click', function () {
+  fp.style.display = 'inline-flex';
+  this.textContent = '拉取中…'; this.disabled = true;
+  setTimeout(() => {
+    fp.style.display = 'none';
+    this.textContent = '⟳ 拉取历史'; this.disabled = false;
+    toast('拉取完成：新增 12 篇，共 214 篇');
+  }, 2600);
+});
+document.getElementById('btn-fetch-cancel').addEventListener('click', () => {
+  fp.style.display = 'none';
+  const b = document.getElementById('btn-fetch');
+  b.textContent = '⟳ 拉取历史'; b.disabled = false;
+  toast('已取消拉取（保留已获取的 87 篇）', false);
+});
+
+/* ================= 文章列表（样例数据渲染） ================= */
+const articles = [
+  ['国产 EDA 的突围之路：从点工具到全流程', '行业深度分析，信息增量高', '08-07', 'M', 'keep'],
+  ['周三例行产品发布会会议纪要', '例行纪要，信息密度低', '08-07', 'G', 'drop'],
+  ['RISC-V 生态 2026 半年报解读', '技术趋势长文，数据详实', '08-06', 'M', 'keep'],
+  ['【招聘】芯片验证工程师（base 上海）', '招聘启事，予以过滤', '08-06', 'G', 'drop'],
+  ['先进封装：Chiplet 时代的必争之地', '技术深度好文', '08-05', 'G', 'keep'],
+  ['限时优惠！这门课改变了我的人生', '软文标题党，正文信息量低', '08-05', 'G', 'drop'],
+  ['台积电 2nm 良率爬坡的幕后', '独家供应链信息', '08-04', 'M', 'keep'],
+  ['大模型推理成本一年下降 90% 之后', '趋势判断有数据支撑', '08-04', 'G', 'keep'],
+  ['公司团建精彩瞬间回顾', '与领域无关', '08-03', 'G', 'drop'],
+  ['从 MITM 到凭证管理：公众号采集的工程实践', '工程方法论，可复用', '08-03', '补', 'keep'],
+  ['AI 芯片国产化替代的三种路径', '行业格局分析清晰', '08-02', 'G', 'keep'],
+  ['本周值得关注的新品发布会预告', '活动预告，予以过滤', '08-02', 'G', 'drop'],
+  ['存算一体架构的十年演进', '技术综述，引用扎实', '08-01', 'G', 'keep'],
+  ['深度｜HBM4 供应链格局重构', '深度报道，信息增量高', '08-01', 'M', 'keep'],
+  ['某明星同款穿搭盘点', '泛娱乐内容，予以过滤', '07-31', 'G', 'drop'],
+];
+const badgeMap = { 'M': '<span class="badge m">M</span>', 'G': '<span class="badge g">G</span>', '补': '<span class="badge bu">补</span>' };
+const scroll = document.getElementById('art-scroll');
+scroll.innerHTML = articles.map(([title, reason, date, src, v], i) => `
+  <div class="art-row" data-v="${v}">
+    <span><input type="checkbox" class="cb art-cb" ${i < 4 ? 'checked' : ''}></span>
+    <span class="art-title" title="${title}">${title}</span>
+    <span class="art-reason" title="${reason}">${reason}</span>
+    <span class="mono muted">${date}</span>
+    <span>${badgeMap[src]}</span>
+    <span class="row-actions">
+      <button class="btn btn-ghost btn-sm">打开</button>
+      <button class="btn btn-ghost btn-sm" data-toast="链接已复制">复制</button>
+      <button class="btn btn-ghost btn-sm" data-toast="已导出单篇 HTML">导出</button>
+    </span>
+  </div>`).join('');
+scroll.querySelectorAll('[data-toast]').forEach(el =>
+  el.addEventListener('click', e => { e.stopPropagation(); toast(el.dataset.toast); }));
+
+/* 选择计数 → 导出按钮文案 */
+function refreshExportBtn() {
+  const n = scroll.querySelectorAll('.art-cb:checked').length;
+  document.getElementById('btn-export-html').textContent =
+    n ? `导出 HTML（已选 ${n}）` : '导出 HTML（未选择 = 当前视图全部）';
+}
+scroll.addEventListener('change', refreshExportBtn);
+refreshExportBtn();
+document.getElementById('btn-sel-all').addEventListener('click', () => {
+  scroll.querySelectorAll('.art-row:not(.hidden) .art-cb').forEach(c => c.checked = true);
+  refreshExportBtn();
+});
+document.getElementById('btn-sel-none').addEventListener('click', () => {
+  scroll.querySelectorAll('.art-cb').forEach(c => c.checked = false);
+  refreshExportBtn();
+});
+document.getElementById('btn-export-html').addEventListener('click', function () {
+  const n = scroll.querySelectorAll('.art-cb:checked').length;
+  toast(n ? `开始导出 ${n} 篇 HTML（任务已创建，可看进度）` : '未勾选：将导出当前视图全部 214 篇（需确认）');
+});
+
+/* 视图切换（全部/通过/过滤掉） */
+document.querySelectorAll('#view-tabs .view-tab').forEach(tab =>
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('#view-tabs .view-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    const v = tab.dataset.v;
+    scroll.querySelectorAll('.art-row').forEach(r =>
+      r.classList.toggle('hidden', v !== 'all' && r.dataset.v !== v));
+  }));
+
+/* 排序切换演示 */
+let newest = true;
+document.getElementById('btn-sort').addEventListener('click', function () {
+  newest = !newest;
+  this.textContent = newest ? '排序：最新 ▾' : '排序：最旧 ▾';
+  const rows = [...scroll.querySelectorAll('.art-row')].reverse();
+  rows.forEach(r => scroll.appendChild(r));
+});
+
+/* ================= 分段控件通用 ================= */
+document.querySelectorAll('.seg').forEach(seg =>
+  seg.addEventListener('click', e => {
+    const item = e.target.closest('.seg-item');
+    if (!item) return;
+    seg.querySelectorAll('.seg-item').forEach(s => s.classList.remove('active'));
+    item.classList.add('active');
+  }));
+
+/* ================= 开关 / 单选 ================= */
+document.querySelectorAll('.switch').forEach(sw =>
+  sw.addEventListener('click', () => sw.classList.toggle('on')));
+document.querySelectorAll('.radio-row').forEach(r =>
+  r.addEventListener('click', () => {
+    document.querySelectorAll('.radio-row .radio').forEach(x => x.classList.remove('on'));
+    r.querySelector('.radio').classList.add('on');
+  }));
+
+/* ================= API Key 显隐 ================= */
+document.querySelectorAll('[data-eye]').forEach(btn =>
+  btn.addEventListener('click', () => {
+    const inp = btn.parentElement.querySelector('input');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  }));
+
+/* ================= 模型测试演示 ================= */
+document.querySelectorAll('[data-testbtn]').forEach(btn =>
+  btn.addEventListener('click', () => {
+    const old = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span>'; btn.disabled = true;
+    setTimeout(() => {
+      btn.innerHTML = old; btn.disabled = false;
+      toast('连通性测试通过 · 212ms');
+    }, 1200);
+  }));
+
+/* ================= Drawer / Modal ================= */
+const overlay = document.getElementById('overlay');
+const drawer = document.getElementById('drawer-import');
+const modal = document.getElementById('modal-update');
+function openLayer(el) { overlay.classList.add('show'); el.classList.add('show'); }
+function closeLayers() {
+  overlay.classList.remove('show');
+  drawer.classList.remove('show'); modal.classList.remove('show');
+}
+document.getElementById('btn-import').addEventListener('click', () => openLayer(drawer));
+document.getElementById('nav-update').addEventListener('click', () => openLayer(modal));
+overlay.addEventListener('click', closeLayers);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLayers(); });
+document.querySelectorAll('[data-close]').forEach(el =>
+  el.addEventListener('click', () => {
+    closeLayers();
+    if (el.dataset.toast) toast(el.dataset.toast);
+  }));
+
+/* ================= 添加并抓包演示 ================= */
+document.getElementById('btn-add').addEventListener('click', function () {
+  const old = this.innerHTML;
+  this.innerHTML = '<span class="spinner" style="border-top-color:#fff"></span> 等待抓包…';
+  this.disabled = true;
+  setTimeout(() => {
+    this.innerHTML = old; this.disabled = false;
+    toast('已捕获凭证并绑定（有效期 30 分钟）');
+  }, 2200);
+});
+document.getElementById('btn-renew-all').addEventListener('click', () =>
+  toast('已进入批量续约：请在微信内依次刷新各公众号文章'));
+</script>
+</body>
+</html>

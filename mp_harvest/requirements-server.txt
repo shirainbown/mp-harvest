@@ -1,0 +1,13 @@
+# MP Harvest server / shell / infra-platform 运行时与测试依赖（Epic B）
+# 安装：.venv/bin/pip install -r mp_harvest/requirements-server.txt
+# 注：core / infra.mitm 的依赖（mitmproxy、requests、beautifulsoup4 等）见 requirements.txt（Epic A/D1 合并）。
+
+# ── 运行时 ──
+fastapi>=0.115           # REST + WebSocket 服务层（server/）
+uvicorn[standard]>=0.30  # ASGI 服务器：127.0.0.1 动态端口、单 worker、后台线程（含 websockets）
+pywebview>=6.0           # 壳层窗口（shell/main.py），macOS Cocoa / Windows EdgeChromium
+pydantic>=2.7            # schemas.py 请求/响应契约（fastapi 传递依赖，显式声明）
+
+# ── 测试（契约测试 mp_harvest/tests/server/）──
+httpx>=0.27              # fastapi.testclient.TestClient 依赖
+pytest>=8.0              # 契约测试运行器

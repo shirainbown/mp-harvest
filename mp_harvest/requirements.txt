@@ -1,0 +1,21 @@
+# MP Harvest 全量依赖（Epic D1 合并：requirements-core.txt + requirements-server.txt）
+# 安装：.venv/bin/pip install -r mp_harvest/requirements.txt
+
+# ── core / infra.mitm（Epic A 平移）──
+requests>=2.31.0        # history_client / article_reader / 图片本地化
+beautifulsoup4>=4.12.0  # article_reader HTML 解析与 sanitize
+lxml>=5.0.0             # bs4 解析后端（设计稿 §6.2）
+jinja2>=3.1.0           # core/templates/article.html 渲染
+pyperclip>=1.9.0        # clipboard_watch
+cryptography>=42.0.0    # mitm CA（platform 层 CA 适配共用）
+mitmproxy>=10.0.0       # infra/mitm DumpMaster 抓包
+
+# ── server / shell / infra-platform 运行时（Epic B）──
+fastapi>=0.115           # REST + WebSocket 服务层（server/）
+uvicorn[standard]>=0.30  # ASGI 服务器：127.0.0.1 动态端口、单 worker、后台线程（含 websockets）
+pywebview>=6.0           # 壳层窗口（shell/main.py），macOS Cocoa / Windows EdgeChromium
+pydantic>=2.7            # schemas.py 请求/响应契约（fastapi 传递依赖，显式声明）
+
+# ── 测试（契约测试 mp_harvest/tests/server/）──
+httpx>=0.27              # fastapi.testclient.TestClient 依赖
+pytest>=8.0              # 契约测试运行器

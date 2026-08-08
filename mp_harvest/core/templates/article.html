@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{{ title }}{% if account %} - {{ account }}{% endif %}</title>
+<style>
+ body{max-width:680px;margin:40px auto;padding:0 20px;
+      font:16px/1.8 -apple-system,"PingFang SC","Microsoft YaHei",serif;
+      color:#1f2328;background:#fff}
+ img{max-width:100%;height:auto}
+ .meta{color:#6b7280;font-size:13px;border-bottom:1px solid #e3e1dc;
+       padding-bottom:12px;margin-bottom:24px}
+ pre{overflow-x:auto;background:#f7f6f3;padding:12px;border-radius:6px;
+     white-space:pre-wrap;word-break:break-word}
+ blockquote{border-left:3px solid #e3e1dc;margin-left:0;padding-left:16px;
+            color:#6b7280}
+ a{color:#0969da}
+ @media(prefers-color-scheme:dark){body{background:#1b1d1f;color:#e8eaed}
+  .meta{color:#9ba0a6;border-color:#36383b}pre{background:#242628}
+  blockquote{color:#9ba0a6;border-color:#36383b}a{color:#58a6ff}}
+</style>
+</head>
+<body>
+<h1>{{ title }}</h1>
+<div class="meta">
+{%- if account %}{{ account }}{% endif -%}
+{%- if publish_at %}{% if account %} · {% endif %}{{ publish_at }}{% endif -%}
+{%- if link %}{% if account or publish_at %} · {% endif %}<a href="{{ link }}" referrerpolicy="no-referrer">原文</a>{% endif -%}
+</div>
+<article>{{ body | safe }}</article>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# MP Harvest core / infra.mitm 实际依赖（Epic A 平移后）
+# 已去除 UI（customtkinter/pillow）、python-docx、pyinstaller 等与业务层无关依赖。
+requests>=2.31.0        # history_client / article_reader / 图片本地化
+beautifulsoup4>=4.12.0  # article_reader HTML 解析与 sanitize
+lxml>=5.0.0             # bs4 解析后端（设计稿 §6.2）
+jinja2>=3.1.0           # core/templates/article.html 渲染
+pyperclip>=1.9.0        # clipboard_watch
+cryptography>=42.0.0    # mitm CA（platform 层 CA 适配共用）
+mitmproxy>=10.0.0       # infra/mitm DumpMaster 抓包
