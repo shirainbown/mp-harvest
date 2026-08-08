@@ -134,7 +134,7 @@ def delete_account(account_id: str) -> dict:
     if store.get(account_id) is None:
         raise HTTPException(status_code=404, detail="账号不存在")
     store.delete(account_id)
-    state.set_articles(account_id, [])
+    state.drop_articles(account_id)
     return {"ok": True, "id": account_id}
 
 

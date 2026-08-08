@@ -112,6 +112,11 @@
   历史页新增「导出到目录…」入口并记忆上次目录；顺手修复 ws.ts 把 `ai.batch` 错派到
   accounts store（应为 articles store）；core 91/91、server 93/93、前端 type-check ✅；
   发布 v2.0.4（重建替换资产）。
+- ✅ **历史文章持久化 + 导出修复（E23）**：文章缓存原子落盘
+  `data/articles_cache/<account_id>.json`（set_articles/merge_article_verdicts 写，
+  get_articles 懒加载，删账号清理）——关掉应用不再丢历史文章；前端导出恒带
+  `account_id`，选中文章导出不再报「没有拉取历史文章」；server 测试加隔离数据目录；
+  server 96/96、core 91/91、前端 type-check ✅；发布 v2.0.5（重建替换资产）。
 
 ## 下一步（继承者从这里开始）
 

@@ -151,7 +151,10 @@ export const useArticlesStore = defineStore('articles', {
     /** 正文 HTML 导出（§6）：ids 为空 = 当前视图全部（调用方已确认）；
      *  outDir 指定目标目录，后端会在其中生成 index.html 说明页（2026-08-09） */
     async exportHtml(ids: string[], outDir?: string) {
-      const body: Record<string, unknown> = ids.length ? { ids } : { view: this.view }
+      // 必须带 account_id，否则后端拿不到文章列表（2026-08-09 修复）
+      const body: Record<string, unknown> = { account_id: this.accountId }
+      if (ids.length) body.ids = ids
+      else body.view = this.view
       if (outDir && outDir.trim()) body.out_dir = outDir.trim()
       const r = await call(rest.post<{ task_id: string }>('/api/articles/export-html', body))
       if (!r) return

@@ -73,6 +73,7 @@
 | E20 | 凭证过期广播 + 打开证书目录 + 更新文案 + README | ✅ | 2026-08-09 | sweep_expired；POST /api/ca/open；UpdateModal 文案；根 README |
 | E21 | CA 状态契约双写（前端永远显示「未信任」修复） | ✅ | 2026-08-09 | /api/ca/status 补 trusted；新用户模拟全链路验证；Release v2.0.3 |
 | E22 | 导出全部正文到指定目录 + titles_filtered 风格说明页 | ✅ | 2026-08-09 | export-html 支持 out_dir/view；index.html 搜索/排序/判定；前端「导出到目录…」弹窗；顺手修 ws.ts ai.batch 错用 accounts store；Release v2.0.4 |
+| E23 | 历史文章缓存落盘 + 导出补 account_id（v2.0.4 反馈修复） | ✅ | 2026-08-09 | articles_cache 原子落盘/懒加载；删账号清缓存；前端 exportHtml 恒带 account_id；server 96/96；Release v2.0.5 |
 
 ## Epic C 遗留问题（不阻塞，联调期处理）
 

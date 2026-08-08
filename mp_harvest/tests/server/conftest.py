@@ -470,7 +470,17 @@ def fake_platform(monkeypatch):
 
 
 @pytest.fixture()
-def client(fake_core, fake_platform):
+def isolated_data_dir(tmp_path, monkeypatch):
+    """隔离数据目录：文章缓存等落盘不污染真实 mp_harvest/data（2026-08-09）。"""
+    import mp_harvest.infra.platform.paths as paths_mod
+
+    d = tmp_path / "data"
+    monkeypatch.setattr(paths_mod, "data_dir", lambda: d)
+    return d
+
+
+@pytest.fixture()
+def client(fake_core, fake_platform, isolated_data_dir):
     from fastapi.testclient import TestClient
 
     from mp_harvest.server.app import create_app

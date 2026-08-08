@@ -2,13 +2,18 @@
 
 - ``get_store()`` / ``get_sightings()`` / ``get_mitm()``：core / infra.mitm
   对象的惰性单例（core 未就绪时本模块仍可导入——全部函数内惰性 import）。
-- 文章缓存：旧版文章列表只存内存（``self._history_articles``），重构后由
-  服务层按 account_id 持有，拉历史/补录/AI 判定写回，GET /api/articles 读取。
+- 文章缓存：按 account_id 持有，拉历史/补录/AI 判定写回，GET /api/articles 读取；
+  同时落盘到 ``data/articles_cache/<account_id>.json``（2026-08-09 新增），
+  重启后 ``get_articles`` 懒加载恢复，关闭应用不再丢历史文章。
 """
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import threading
+from pathlib import Path
 from typing import Any
 
 from mp_harvest.infra.platform import paths
@@ -19,6 +24,46 @@ _sightings: Any = None
 _mitm: Any = None
 _articles: dict[str, list[dict[str, Any]]] = {}
 _last_days: dict[str, int] = {}
+
+_ARTICLES_CACHE_DIR = "articles_cache"
+
+
+def _account_cache_path(account_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(account_id)) or "account"
+    return paths.data_dir() / _ARTICLES_CACHE_DIR / f"{safe}.json"
+
+
+def _load_articles_from_disk(account_id: str) -> None:
+    """从磁盘恢复某账号文章缓存（幂等；损坏/缺失静默跳过）。"""
+    p = _account_cache_path(account_id)
+    if not p.is_file():
+        return
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return
+    arts = data.get("articles")
+    if isinstance(arts, list):
+        _articles[account_id] = [dict(a) for a in arts]
+        days = data.get("days")
+        if isinstance(days, int):
+            _last_days[account_id] = days
+
+
+def _save_articles_to_disk(account_id: str) -> None:
+    """把某账号文章缓存原子写盘（tmp + replace；失败不阻断主流程）。"""
+    try:
+        p = _account_cache_path(account_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "days": _last_days.get(account_id, 7),
+            "articles": _articles.get(account_id, []),
+        }
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def get_store():
@@ -59,26 +104,35 @@ def get_mitm():
 
 def set_articles(account_id: str, articles: list[dict[str, Any]], *, days: int | None = None) -> None:
     with _lock:
-        _articles[str(account_id)] = [dict(a) for a in articles]
+        key = str(account_id)
+        _articles[key] = [dict(a) for a in articles]
         if days is not None:
-            _last_days[str(account_id)] = int(days)
+            _last_days[key] = int(days)
+        _save_articles_to_disk(key)
 
 
 def get_last_days(account_id: str) -> int:
     with _lock:
-        return _last_days.get(str(account_id), 7)
+        key = str(account_id)
+        if key not in _last_days and key not in _articles:
+            _load_articles_from_disk(key)
+        return _last_days.get(key, 7)
 
 
 def get_articles(account_id: str) -> list[dict[str, Any]]:
     with _lock:
-        return [dict(a) for a in _articles.get(str(account_id), [])]
+        key = str(account_id)
+        if key not in _articles:
+            _load_articles_from_disk(key)
+        return [dict(a) for a in _articles.get(key, [])]
 
 
 def merge_article_verdicts(account_id: str, judged: list[dict[str, Any]]) -> None:
     """把 AI 判定字段（keep/category/...）按 identity/link 合并回缓存。"""
     key_of = lambda a: str(a.get("identity") or a.get("link") or "")  # noqa: E731
     with _lock:
-        rows = _articles.get(str(account_id))
+        key = str(account_id)
+        rows = _articles.get(key)
         if not rows:
             return
         verdicts = {
@@ -90,6 +144,21 @@ def merge_article_verdicts(account_id: str, judged: list[dict[str, Any]]) -> Non
             v = verdicts.get(key_of(row))
             if v:
                 row.update(v)
+        _save_articles_to_disk(key)
+
+
+def drop_articles(account_id: str) -> None:
+    """删除账号时清空内存与磁盘文章缓存。"""
+    with _lock:
+        key = str(account_id)
+        _articles.pop(key, None)
+        _last_days.pop(key, None)
+        try:
+            p = _account_cache_path(key)
+            if p.is_file():
+                os.unlink(p)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def reset() -> None:

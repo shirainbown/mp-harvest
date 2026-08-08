@@ -149,6 +149,16 @@
 11. **前端 ws.ts 把 `ai.batch` 事件错派到 accounts store**：`dispatchWsEvent` 里
     `accounts.onAiBatch(...)`，而方法定义在 articles store——运行时事件丢失（AI 判定
     结果不刷新），type-check 也报错。修复：改用 `useArticlesStore().onAiBatch`。
+12. **历史文章缓存不落盘 + 导出缺 account_id（v2.0.4 用户反馈）**：
+    - 文章列表只存内存 `state._articles`，关掉应用即丢；修复：`set_articles`/
+      `merge_article_verdicts` 原子落盘 `data/articles_cache/<account_id>.json`
+      （含 days），`get_articles`/`get_last_days` 内存缺失时懒加载恢复；
+      删账号时 `drop_articles` 清内存与磁盘。
+    - 「选中文章导出」报「没有拉取历史文章」：前端 `exportHtml` 只发 `{ids}`，
+      没带 `account_id`，后端 `if account_id else []` 拿到空列表；修复：body 恒带
+      `account_id`（v2.0.4 起该路径一直坏，非本次新增功能引入）。
+    测试：新增 `tests/server/test_article_cache.py`（重启恢复/导出/删账号清缓存），
+    并给 server 测试加 `isolated_data_dir` 隔离落盘；server 96/96、core 91/91。
 
 ### 测试环境事故与处置（重要）
 

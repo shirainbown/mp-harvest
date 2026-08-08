@@ -49,9 +49,9 @@ git clone https://github.com/shirainbown/mp-harvest.git
 下载后确认目录结构里有 `run.py`（启动器）和 `mp_harvest/` 目录即可。**不需要**放到固定位置，也不需要管理员权限安装。
 
 > **不想装 Python/Node 的普通用户**：直接下载发布版
-> [MP Harvest v2.0.4（macOS）](https://github.com/shirainbown/mp-harvest/releases/tag/v2.0.4)
-> 的 **`MP-Harvest-mac-2.0.4.dmg`**（推荐）：双击打开，把 `MP Harvest.app` 拖入「应用程序」即可
-> （`MP-Harvest-mac-2.0.4.zip` 供应用内自动更新使用；当前仅 Apple Silicon；
+> [MP Harvest v2.0.5（macOS）](https://github.com/shirainbown/mp-harvest/releases/tag/v2.0.5)
+> 的 **`MP-Harvest-mac-2.0.5.dmg`**（推荐）：双击打开，把 `MP Harvest.app` 拖入「应用程序」即可
+> （`MP-Harvest-mac-2.0.5.zip` 供应用内自动更新使用；当前仅 Apple Silicon；
 > 未签名版本首次打开会提示「无法验证开发者」：**右键点击应用 → 打开 → 再点「打开」**，
 > 或到「系统设置 → 隐私与安全性 → 仍要打开」放行一次；有管理员权限也可执行
 > `sudo xattr -cr "/Applications/MP Harvest.app"`）。
