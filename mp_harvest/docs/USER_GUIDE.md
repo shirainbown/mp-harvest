@@ -50,7 +50,8 @@ git clone https://github.com/shirainbown/mp-harvest.git
 
 > **不想装 Python/Node 的普通用户**：直接下载发布版
 > [MP Harvest v2.0.0（macOS）](https://github.com/shirainbown/mp-harvest/releases/tag/v2.0.0)
-> 的 `MP-Harvest-mac-2.0.0.zip`，解压后把 `MP Harvest.app` 拖入「应用程序」即可（当前仅 Apple Silicon；
+> 的 **`MP-Harvest-mac-2.0.0.dmg`**（推荐）：双击打开，把 `MP Harvest.app` 拖入「应用程序」即可
+> （`MP-Harvest-mac-2.0.0.zip` 供应用内自动更新使用；当前仅 Apple Silicon；
 > 未签名版本首次打开请右键 → 打开，或执行 `xattr -cr "/Applications/MP Harvest.app"`）。
 
 ---
