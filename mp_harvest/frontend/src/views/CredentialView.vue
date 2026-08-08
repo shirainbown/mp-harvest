@@ -109,7 +109,12 @@ const importOpen = ref(false)
           <template #anchor>
             <span class="tertiary" style="cursor:help;border-bottom:1px dashed var(--text-tertiary)">抓包指引 ⓘ</span>
           </template>
-          添加公众号后，在微信桌面内刷新该公众号已打开的文章，即可自动捕获凭证（30 分钟有效）。
+          <div style="line-height:1.7">
+            首次使用三步：<br />
+            1. 点「安装 CA 证书」，输入管理员密码完成信任（仅此一次）；<br />
+            2. 点「启动代理」；<br />
+            3. 添加公众号后，在微信桌面内刷新该公众号已打开的文章，即可自动捕获凭证（30 分钟有效）。
+          </div>
         </SPopover>
       </div>
     </div>

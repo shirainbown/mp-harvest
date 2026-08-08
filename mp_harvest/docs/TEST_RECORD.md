@@ -127,6 +127,25 @@
 6. **前端网络设置契约不匹配**：`GET /api/settings` 服务端返回 `{settings:{...}}`，前端未解包（mode/proxy_url 全 undefined）；`test-proxy` 前端发 `{mode,proxy_url}`、服务端要 `{proxy}`。修复：load 解包并映射 `proxy→proxy_url`，save 存 `{mode, proxy}`，test-proxy 发 `{proxy}`。
 7. **更新检查/下载契约不匹配**：前端 `UpdateCheckResult.has_update` vs 服务端 `available`（检查更新永远弹不出弹窗）；下载发 `{version}` vs 服务端 `{zip_url}`（必 422）。修复：types/store/mock 对齐为 `available/current_version/zip_url`，`ok:false` 时返回 fail。
 8. **`AiModelIn.name` 必填但原型卡片无名称输入**：保存模型必 422。修复：服务端 name 默认空串（core `ModelConfig.from_dict` 默认「未命名模型」），422 契约用例改用 `{"name": 123}` 保持覆盖。
+9. **CA 状态前后端字段不一致（界面永远显示「未信任」）**：`GET /api/ca/status` 返回
+   `{installed, cert_path, needs_admin}`，而前端 `CaStatus`/凭证页只读 `ca.trusted`
+   ——`trusted` 恒为 undefined，即使 CA 已装好且系统信任，界面也一直显示「未信任」、
+   「安装 CA」按钮常驻。修复：服务端契约双写，`trusted` 与 `installed` 同值返回
+   （API.md 同步），契约测试补 `data["trusted"] is True` 断言。
+   新用户模拟验证：清空两把 CA（数据目录 + 系统/登录钥匙串 + 信任设置）→
+  `status=False` → 启动抓包生成新 CA → 安装信任 → `status=True` 全链路通过。
+10. **新用户「安装 CA 证书」一键流程三处加固（v2.0.3 实测暴露）**：
+    - 证书缺失时 `install()` 报「请先启动一次抓包」，新用户必须理解先后顺序；改为
+      **自动调用 `prepare_mitm_confdir` 生成 CA**，点「安装」即可（发现原代码引错模块：
+      `ca_setup.app_root()` 应为 `paths.app_root()`，已修）。
+    - `_patch_trust_plist` **新增条目缺 `modDate`**，`trust-settings-import` 报
+      「Trust Settings Record was corrupted」（仅当 add-trusted-cert 未先建条目时触发）；
+      补写 `modDate` 后从零新增条目可正常导入。
+    - 主路径（osascript 管理员 + 系统钥匙串）非取消失败时不再提前 return，继续补
+      显式信任设置；仍未生效则降级「登录钥匙串 + 显式信任设置」（无需管理员）。
+    真机验收（新用户全链路）：清空全部 CA/信任 → 启动应用 `trusted:false` →
+    点「安装 CA 证书」输入一次管理员密码 → `trusted:true`；应用内「抓包指引」同步
+    改为首次使用三步（安装 CA → 启动代理 → 微信刷新文章）。
 
 ### 测试环境事故与处置（重要）
 

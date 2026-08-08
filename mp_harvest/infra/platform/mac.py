@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import datetime
 import shlex
 import subprocess
 import sys
@@ -82,6 +83,9 @@ def _patch_trust_plist(
         trust_list[fingerprint] = {
             "issuerName": subject_der,
             "serialNumber": serial_bytes,
+            # 新增条目必须带 modDate，否则 trust-settings-import 报
+            # "Trust Settings Record was corrupted"（2026-08-09 实测）。
+            "modDate": datetime.datetime.now(),
             "trustSettings": settings,
         }
     return True
@@ -103,29 +107,49 @@ class MacCaSetup(CaSetup):
         )
 
     def install(self) -> InstallResult:
-        """弹系统授权框安装 CA，并补写显式信任设置（2026-08-09 修复）。"""
+        """安装并信任 CA（新用户一键流程，只需一次管理员密码）。
+
+        2026-08-09 加固：
+        - 证书缺失时先自动生成（新用户无需先启动抓包）；
+        - 主路径（osascript 管理员 + 系统钥匙串）失败不阻断，继续补写
+          显式信任设置（用户态 trust-settings-import，无需管理员）；
+        - 仍未生效则降级：登录钥匙串 + 显式信任设置，彻底无需管理员。
+        """
         cert = self.cert_path()
         if not cert.exists():
-            return InstallResult(
-                ok=False,
-                needs_admin=True,
-                error="cert missing",
-                message=f"CA 证书不存在：{cert}（请先启动一次抓包以生成证书）",
-            )
+            from mp_harvest.infra.platform import ca_setup, paths
+
+            try:
+                ca_setup.prepare_mitm_confdir(paths.app_root())
+            except Exception as exc:  # noqa: BLE001
+                return InstallResult(
+                    ok=False,
+                    needs_admin=True,
+                    error="cert missing",
+                    message=f"CA 证书不存在：{cert}（自动生成失败：{exc}）",
+                )
+            if not cert.exists():
+                return InstallResult(
+                    ok=False,
+                    needs_admin=True,
+                    error="cert missing",
+                    message=f"CA 证书不存在：{cert}（请先启动一次抓包以生成证书）",
+                )
         # 优先 osascript 弹原生授权对话框（UX 比 sudo 读密码好）
         script = f'do shell script {self._applescript_quote(self._security_cmd())} with administrator privileges'
         try:
             proc = _run(["osascript", "-e", script], timeout=300)
         except Exception as exc:  # noqa: BLE001
-            return InstallResult(
-                ok=False, needs_admin=True, error=str(exc), message=f"调起系统授权失败：{exc}"
-            )
+            primary_err = f"调起系统授权失败：{exc}"
+            proc = None
+        else:
+            primary_err = ""
         stderr = (proc.stderr or "").strip()
-        if proc.returncode != 0 and ("User canceled" in stderr or "-128" in stderr):
+        if proc is not None and proc.returncode != 0 and ("User canceled" in stderr or "-128" in stderr):
             return InstallResult(
                 ok=False, needs_admin=True, error="user canceled", message="用户取消了授权"
             )
-        if proc.returncode != 0:
+        if proc is not None and proc.returncode != 0:
             # 回退：sudo 直接执行（终端场景）
             try:
                 proc2 = _run(
@@ -137,32 +161,43 @@ class MacCaSetup(CaSetup):
                     stderr = (proc2.stderr or stderr).strip()
             except Exception:
                 pass
-            if stderr:
-                return InstallResult(
-                    ok=False,
-                    needs_admin=True,
-                    error=stderr or "unknown",
-                    message=f"证书安装失败：{stderr or 'security 命令非零退出'}",
-                )
+            primary_err = stderr or primary_err or "security 命令非零退出"
         # 关键：add-trusted-cert 在部分 macOS 上不建立显式信任设置 → 补 trust-settings-import
         err = self._import_trust(cert)
-        if err:
-            return InstallResult(
-                ok=False,
-                needs_admin=True,
-                error=err,
-                message=f"证书已加入钥匙串，但信任设置写入失败：{err}",
-            )
+        if err and not primary_err:
+            primary_err = err
         if self.status():
             return InstallResult(
                 ok=True, needs_admin=True, message="CA 已安装并信任（系统钥匙串 + 显式信任设置）"
             )
+        # 降级：登录钥匙串 + 显式信任设置（无需管理员，2026-08-09 兜底）
+        user_err = self._install_login_keychain(cert)
+        if user_err is None and self.status():
+            return InstallResult(
+                ok=True,
+                needs_admin=False,
+                message="CA 已安装并信任（登录钥匙串 + 显式信任设置，无需管理员）",
+            )
         return InstallResult(
             ok=False,
             needs_admin=True,
-            error="trust not effective",
-            message="CA 已加入钥匙串，但系统信任校验未通过，请检查「系统设置 → 隐私与安全性」中的证书信任",
+            error=primary_err or user_err or "trust not effective",
+            message=(
+                f"CA 安装失败：{primary_err or user_err or '系统信任校验未通过'}"
+                "（可点「打开证书文件」手动安装，或查看「系统设置 → 隐私与安全性」）"
+            ),
         )
+
+    def _install_login_keychain(self, cert: Path) -> str | None:
+        """兜底：装进登录钥匙串并设为信任根（用户域，无需管理员）。"""
+        login_kc = str(Path.home() / "Library" / "Keychains" / "login.keychain-db")
+        p = _run(
+            ["security", "add-trusted-cert", "-r", "trustRoot", "-k", login_kc, str(cert)],
+            timeout=120,
+        )
+        if p.returncode != 0:
+            return (p.stderr or "").strip() or "登录钥匙串安装失败"
+        return self._import_trust(cert)
 
     def _import_trust(self, cert: Path) -> str | None:
         """trust-settings-export → 补显式 TrustRoot → import（用户域，无需管理员）。"""

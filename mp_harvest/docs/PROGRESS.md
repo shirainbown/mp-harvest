@@ -103,6 +103,9 @@
 - ✅ 断连根因排查结论落盘：MP Harvest 抓包切换整机系统代理 → 本机助手（Codex）也被吸入
   mitm 中间人且 CA 未信任 → 表现为「正在重新连接」；约定真机抓包短窗口、开发用
   `set_system_proxy=False`（见 TEST_RECORD「事故根因分析」/ USAGE_NOTES §2）。
+- ✅ **CA 状态契约双写（v2.0.3）**：`/api/ca/status` 补 `trusted` 字段（与 `installed`
+  同值），修复前端「CA 永远显示未信任」；新用户模拟（清空 CA + 信任 → 生成 → 安装 →
+  status=True）全链路通过；core 91/91、server 92/92。
 
 ## 下一步（继承者从这里开始）
 

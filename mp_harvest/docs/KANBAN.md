@@ -71,6 +71,7 @@
 | E18 | 应用内升级链路修复（macOS apply）+ v2.0.1 | ✅ | 2026-08-09 | .app 安装目录/管理员授权/开发模式保护；单测 5 条；Release v2.0.1 |
 | E19 | CA 信任精确校验 + 抓包安全守卫（v2.0.2） | ✅ | 2026-08-09 | verify-cert 按证书校验；install 补显式信任设置；未信任拒绝切代理；Release v2.0.2 |
 | E20 | 凭证过期广播 + 打开证书目录 + 更新文案 + README | ✅ | 2026-08-09 | sweep_expired；POST /api/ca/open；UpdateModal 文案；根 README |
+| E21 | CA 状态契约双写（前端永远显示「未信任」修复） | ✅ | 2026-08-09 | /api/ca/status 补 trusted；新用户模拟全链路验证；Release v2.0.3 |
 
 ## Epic C 遗留问题（不阻塞，联调期处理）
 

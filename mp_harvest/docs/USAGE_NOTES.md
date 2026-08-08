@@ -11,13 +11,17 @@
   前提：Python 3.13 + 依赖已装（`uv venv .venv && uv pip install -r requirements.txt`）。
   数据目录始终解析到项目内 `mp_harvest/data/`（开发模式），不会跑到启动时的 cwd。
 - 开发模式数据目录：`mp_harvest/data/`（gitignored）；冻结版：`~/Library/Application Support/MP Harvest/data`（mac）/ `%APPDATA%\MP Harvest\data`（win）。
-- 首次「启动抓包」会自动生成本机全新 mitmproxy CA（`data/mitm_conf/mitmproxy-ca.pem` + 公钥 `data/mitmproxy-ca-cert.cer`），无需手动放证书。
-- 生成后**必须安装信任 CA** 才能抓 https：点「安装 CA 证书」→ macOS 弹系统授权框（需管理员密码）。`/api/ca/status` 显示 `installed:true` 才算装好。
+- 首次「启动抓包」会自动生成本机全新 mitmproxy CA（`data/mitm_conf/mitmproxy-ca.pem` + 公钥 `data/mitmproxy-ca-cert.cer`），无需手动放证书；
+  **「安装 CA 证书」按钮在证书缺失时也会自动生成**，新用户无需先启动抓包（2026-08-09）。
+- **必须安装信任 CA 才能抓 https**：点「安装 CA 证书」→ macOS 弹系统授权框，**输入管理员密码即可，仅此一次**；
+  装完界面显示「✓ 已信任」（`/api/ca/status` 的 `trusted:true`）。若主路径被系统拒绝，会自动降级为登录钥匙串 +
+  显式信任设置（无需管理员），同样显示「已信任」。
 - **安全守卫（v2.0.2 起）**：CA 未被系统信任时，「启动抓包」会**拒绝切换系统代理**并提示
   「请先安装并信任 CA」——不会再出现一开抓包整机 HTTPS 断网/本机助手断连。
   「安装 CA 证书」现在会写入显式信任设置（trust-settings-import），装完即真正受信任；
   状态校验按证书精确验证（verify-cert），开发版与打包版各持一把 CA 不会互相误判。
-- 抓包流程：添加公众号（名称 + 带 `__biz` 的文章链接）→ 安装 CA → 启动抓包 → 微信桌面版刷新该公众号文章 → 凭证页出现「有效 · 29:59」倒计时。
+- 抓包流程（首次三步）：**① 安装 CA（输一次管理员密码）→ ② 启动代理 → ③ 添加公众号（名称 + 带 `__biz` 的文章链接）
+  并在微信桌面版刷新该公众号文章** → 凭证页出现「有效 · 29:59」倒计时。
 
 ## 2. 系统代理（重点）
 

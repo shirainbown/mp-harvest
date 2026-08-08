@@ -49,6 +49,8 @@ def test_patch_trust_plist_inserts_missing_entry():
     assert entry["issuerName"] == subject
     assert entry["serialNumber"] == b"ser"
     assert entry.get("trustSettings")
+    # 新增条目必须带 modDate，否则 trust-settings-import 报 corrupted（2026-08-09）
+    assert entry.get("modDate") is not None
 
 
 def test_patch_trust_plist_bad_structure_returns_false():
