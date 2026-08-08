@@ -41,7 +41,7 @@ MP Harvest 是微信公众号凭证捕获与历史文章管理工具：
 
 ```bash
 # 方式一：Git 克隆
-git clone <仓库地址> mp_harvest
+git clone https://github.com/shirainbown/mp-harvest.git
 
 # 方式二：下载 ZIP 并解压
 ```

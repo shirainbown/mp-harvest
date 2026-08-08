@@ -74,6 +74,9 @@
   UI 侧边栏 + favicon 使用新图标（`frontend/public/icon.png`，200×200）；使用手册
   截图全部重新生成（OCR 核验新品牌、无隐私）；core 82/82、server 90/90、build ✅。
   内部保留 `.reference/schinza-win/` 旧参考目录与手册「致谢」中的原始项目名。
+- ✅ 已上传 GitHub：仓库 **shirainbown/mp-harvest**（private，main，commit 8652076），
+  更新源默认 `shirainbown/mp-harvest`（可用环境变量覆盖）；本地项目目录已建独立
+  git 仓库（外层 Documents 仓库未触碰）；数据/依赖/构建产物均 gitignore 未上传。
 - ✅ 断连根因排查结论落盘：MP Harvest 抓包切换整机系统代理 → 本机助手（Codex）也被吸入
   mitm 中间人且 CA 未信任 → 表现为「正在重新连接」；约定真机抓包短窗口、开发用
   `set_system_proxy=False`（见 TEST_RECORD「事故根因分析」/ USAGE_NOTES §2）。
