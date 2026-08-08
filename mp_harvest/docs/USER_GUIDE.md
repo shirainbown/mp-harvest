@@ -52,7 +52,9 @@ git clone https://github.com/shirainbown/mp-harvest.git
 > [MP Harvest v2.0.0（macOS）](https://github.com/shirainbown/mp-harvest/releases/tag/v2.0.0)
 > 的 **`MP-Harvest-mac-2.0.0.dmg`**（推荐）：双击打开，把 `MP Harvest.app` 拖入「应用程序」即可
 > （`MP-Harvest-mac-2.0.0.zip` 供应用内自动更新使用；当前仅 Apple Silicon；
-> 未签名版本首次打开请右键 → 打开，或执行 `xattr -cr "/Applications/MP Harvest.app"`）。
+> 未签名版本首次打开会提示「无法验证开发者」：**右键点击应用 → 打开 → 再点「打开」**，
+> 或到「系统设置 → 隐私与安全性 → 仍要打开」放行一次；有管理员权限也可执行
+> `sudo xattr -cr "/Applications/MP Harvest.app"`）。
 
 ---
 
