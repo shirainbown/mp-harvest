@@ -1,0 +1,75 @@
+name: build-macos
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        run: |
+          cd mp_harvest/frontend
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -r mp_harvest/requirements.txt
+          pip install pyinstaller
+
+      - name: Build app (PyInstaller)
+        run: |
+          python -m PyInstaller --noconfirm --clean \
+            mp_harvest/packaging/MP_Harvest.spec \
+            --distpath dist --workpath build/work
+          test -d "dist/MP Harvest.app" || { echo "未生成 MP Harvest.app"; exit 1; }
+
+      - name: Create dmg + zip
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          hdiutil create -volname "MP Harvest" \
+            -srcfolder "dist/MP Harvest.app" \
+            -ov -format UDZO "MP-Harvest-mac-${ver}.dmg"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/MP Harvest.app" "MP-Harvest-mac-${ver}.zip"
+          ls -la MP-Harvest-mac-*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP-Harvest-mac
+          path: |
+            MP-Harvest-mac-*.dmg
+            MP-Harvest-mac-*.zip
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            MP-Harvest-mac-*.dmg
+            MP-Harvest-mac-*.zip
+          body: |
+            ## MP Harvest ${{ github.ref_name }}
+
+            - 新增免责声明同意门禁：首次启动需确认声明，不同意则阻止使用
+            - 本次构建由 GitHub Actions 自动完成（macOS）
+
+            下载 dmg 安装或 zip 直接运行；未签名，Gatekeeper 提示时右键打开。
