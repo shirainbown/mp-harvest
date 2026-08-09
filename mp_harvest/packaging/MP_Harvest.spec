@@ -65,6 +65,8 @@ hiddenimports += [
     "ruamel.yaml",
     "zstandard",
     "mitmproxy_rs",
+    "tkinter",
+    "tkinter.messagebox",
 ]
 
 a = Analysis(
