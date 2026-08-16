@@ -27,6 +27,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import re
+import ssl
 import threading
 import time
 import urllib.error
@@ -36,6 +37,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mp_harvest.infra.platform.paths import data_dir
+
+import certifi
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-chat"
@@ -90,6 +93,25 @@ def build_system_prompt(principles: str | None = None) -> str:
 
 DEFAULT_PROMPT = build_system_prompt(DEFAULT_PRINCIPLES)
 DEFAULT_CONTENT_PROMPT = build_system_prompt(DEFAULT_CONTENT_PRINCIPLES)
+
+_SSL_CONTEXT = None
+
+
+def _ssl_context():
+    """certifi 根证书上下文：PyInstaller 冻结版 urllib 默认找不到系统根证书。"""
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    return _SSL_CONTEXT
+
+
+def _urlopen(req: urllib.request.Request, timeout: float) -> Any:
+    """urllib 请求：继续遵循系统代理，但显式使用 certifi 根证书。"""
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler(),
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
+    return opener.open(req, timeout=timeout)
 
 
 def default_principles_path(root_dir: str | Path | None = None) -> Path:
@@ -297,7 +319,7 @@ def _post_chat(cfg: ModelConfig, payload: dict[str, Any]) -> str:
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with _urlopen(req, timeout=180) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return _parse_content(cfg, data)
 
@@ -398,7 +420,7 @@ def fetch_models(cfg: ModelConfig, timeout: int = 15) -> tuple[bool, str | list[
     }
     try:
         req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):

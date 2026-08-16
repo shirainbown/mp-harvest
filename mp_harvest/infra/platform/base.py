@@ -26,7 +26,23 @@ from typing import Any, Callable
 
 from mp_harvest.infra.platform import paths
 
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.3"
+
+_SSL_CONTEXT = None
+
+
+def _make_ssl_context():
+    """返回使用 certifi CA bundle 的 SSLContext（PyInstaller 冻结版默认
+    urllib 找不到系统根证书，必须显式走 certifi，否则检查更新/AI 请求会
+    报 CERTIFICATE_VERIFY_FAILED）。"""
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        import ssl
+
+        import certifi
+
+        _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    return _SSL_CONTEXT
 
 # GitHub Releases 更新源：默认你的仓库 shirainbown/mp-harvest，可用环境变量覆盖。
 # 用法：MP_HARVEST_GITHUB_REPO=用户名/仓库名
@@ -262,8 +278,12 @@ class GithubUpdater(Updater):
             handler = urllib.request.ProxyHandler(
                 {"http": proxy.strip(), "https": proxy.strip()}
             )
-            return urllib.request.build_opener(handler)
-        return urllib.request.build_opener(urllib.request.ProxyHandler())
+        else:
+            handler = urllib.request.ProxyHandler()
+        return urllib.request.build_opener(
+            handler,
+            urllib.request.HTTPSHandler(context=_make_ssl_context()),
+        )
 
     def check(self, proxy: str | None = None) -> UpdateCheckResult:
         import json

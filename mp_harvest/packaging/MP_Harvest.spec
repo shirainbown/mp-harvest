@@ -10,6 +10,7 @@
 产物：<distpath>/MP Harvest.app（未签名；分发需 zip，Gatekeeper 提示时右键打开）。
 """
 
+import re
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -18,6 +19,11 @@ ROOT = Path(SPEC).resolve().parents[1]  # mp_harvest/ 包目录
 PKG_ROOT = ROOT.parent                  # 仓库根（mp_harvest 的父目录）
 FRONTEND = ROOT / "frontend"
 ICON = str(ROOT / "packaging" / "mp_harvest.icns")
+
+# Info.plist 版本号与 base.py 的 APP_VERSION 保持一致，避免 Finder 显示旧版本
+_base_py = (ROOT / "infra" / "platform" / "base.py").read_text(encoding="utf-8")
+_version_match = re.search(r'APP_VERSION = "([^"]+)"', _base_py)
+BUNDLE_VERSION = _version_match.group(1) if _version_match else "0.0.0"
 
 datas = [
     (str(FRONTEND / "dist"), "frontend/dist"),
@@ -41,6 +47,7 @@ for pkg in (
     "h2",
     "jinja2",
     "multipart",
+    "certifi",
 ):
     try:
         d, b, h = collect_all(pkg)
@@ -65,8 +72,6 @@ hiddenimports += [
     "ruamel.yaml",
     "zstandard",
     "mitmproxy_rs",
-    "tkinter",
-    "tkinter.messagebox",
 ]
 
 a = Analysis(
@@ -114,8 +119,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "MP Harvest",
         "CFBundleDisplayName": "MP Harvest",
-        "CFBundleShortVersionString": "2.0.8",
-        "CFBundleVersion": "2.0.8",
+        "CFBundleShortVersionString": BUNDLE_VERSION,
+        "CFBundleVersion": BUNDLE_VERSION,
         "NSHighResolutionCapable": True,
     },
 )
