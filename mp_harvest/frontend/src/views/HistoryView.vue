@@ -34,6 +34,10 @@ function acctExpired(id: string, expiresAt: number | null) {
 function expires_at_ms(e: number) {
   return e * 1000
 }
+const currentExpired = computed(() => {
+  const a = accounts.list.find((x) => x.id === articles.accountId)
+  return a ? acctExpired(a.id, a.expires_at) : false
+})
 watch(
   () => articles.accountId,
   (id) => {
@@ -42,7 +46,10 @@ watch(
 )
 onMounted(async () => {
   if (!accounts.loaded) await accounts.load()
-  if (!articles.accountId && accounts.valid.length) articles.accountId = accounts.valid[0].id
+  // 优先选有效账号；如果全部过期，也允许选中第一个账号查看已缓存的历史文章
+  if (!articles.accountId && accounts.list.length) {
+    articles.accountId = (accounts.valid[0] || accounts.list[0]).id
+  }
   if (articles.accountId) await articles.load()
 })
 
@@ -204,15 +211,18 @@ function toggleAiIncludeContent() {
         <span class="form-label">公众号</span>
         <select v-model="articles.accountId" class="input" style="width:200px">
           <option value="">全部公众号</option>
-          <option v-for="a in accounts.list" :key="a.id" :value="a.id" :disabled="acctExpired(a.id, a.expires_at)">
+          <option v-for="a in accounts.list" :key="a.id" :value="a.id">
             {{ a.name }}{{ acctExpired(a.id, a.expires_at) ? '（需续约）' : '' }}
           </option>
         </select>
         <span class="form-label">范围</span>
         <SegmentedControl v-model="range" :options="rangeOptions" />
-        <SButton variant="primary" :disabled="!articles.accountId || !!fetchTask" @click="articles.fetchHistory()">
+        <SButton variant="primary" :disabled="!articles.accountId || currentExpired || !!fetchTask" @click="articles.fetchHistory()">
           ⟳ 拉取历史
         </SButton>
+        <span v-if="currentExpired" class="tertiary" style="font-size:var(--fs-xs)">
+          凭证已过期，仅显示已缓存的历史文章；续约后可拉取新文章
+        </span>
         <SButton variant="ghost" :disabled="!accounts.list.length || !!articles.batchTaskId" @click="batchOpen = true">
           批量拉取…
         </SButton>
