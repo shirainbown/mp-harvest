@@ -310,7 +310,7 @@ def test_test_connection_retries_without_response_format():
         def read(self):
             return self._data
 
-    original = ai_filter._urlopen
+    original = ai_filter.urllib.request.urlopen
 
     def fake_urlopen(req, timeout=180):
         payload = json.loads(req.data.decode("utf-8"))
@@ -328,11 +328,11 @@ def test_test_connection_retries_without_response_format():
             )
         return _FakeResp(b'{"choices":[{"message":{"content":"OK"}}]}')
 
-    ai_filter._urlopen = fake_urlopen
+    ai_filter.urllib.request.urlopen = fake_urlopen
     try:
         ok, msg = ai_filter.test_connection(_cfg(base="https://api.deepseek.com"))
     finally:
-        ai_filter._urlopen = original
+        ai_filter.urllib.request.urlopen = original
 
     assert ok is True
     assert len(calls) == 2
@@ -347,7 +347,7 @@ def test_fetch_models_ok_and_errors():
 
     from mp_harvest.core import ai_filter
 
-    original = ai_filter._urlopen
+    original = ai_filter.urllib.request.urlopen
 
     class _FakeResp:
         def __enter__(self):
@@ -369,7 +369,7 @@ def test_fetch_models_ok_and_errors():
             )
         return _FakeResp()
 
-    ai_filter._urlopen = fake_urlopen
+    ai_filter.urllib.request.urlopen = fake_urlopen
     try:
         ok, ids = ai_filter.fetch_models(_cfg(base="https://api.deepseek.com"))
         assert ok is True
@@ -388,7 +388,7 @@ def test_fetch_models_ok_and_errors():
         assert ok3 is False
         assert "Anthropic" in msg3
     finally:
-        ai_filter._urlopen = original
+        ai_filter.urllib.request.urlopen = original
 
 
 def test_judge_articles_on_batch_callback():

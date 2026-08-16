@@ -219,17 +219,6 @@ def save_models(path: str | Path, models: list[ModelConfig]) -> None:
     )
 
 
-# AI 模型调用必须绕过系统代理：本应用抓包时会把 macOS 系统代理切到
-# 127.0.0.1:8088，如果 urllib 默认读系统代理，AI 请求会被自身 mitm 拦截并
-# 重签证书，导致 SSL 校验失败（2026-08-16 真机定位）。统一使用空 ProxyHandler。
-_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def _urlopen(req: urllib.request.Request, timeout: float) -> Any:
-    """urllib 直连（不读系统代理）。"""
-    return _NO_PROXY_OPENER.open(req, timeout=timeout)
-
-
 def _model_label(m: ModelConfig) -> str:
     """模型展示名：优先「名称 (模型ID)」，让用户一眼看清实际调用的是哪个模型。"""
     name = (m.name or "").strip()
@@ -308,7 +297,7 @@ def _post_chat(cfg: ModelConfig, payload: dict[str, Any]) -> str:
         headers=headers,
         method="POST",
     )
-    with _urlopen(req, timeout=180) as resp:
+    with urllib.request.urlopen(req, timeout=180) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return _parse_content(cfg, data)
 
@@ -409,7 +398,7 @@ def fetch_models(cfg: ModelConfig, timeout: int = 15) -> tuple[bool, str | list[
     }
     try:
         req = urllib.request.Request(url, headers=headers, method="GET")
-        with _urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):

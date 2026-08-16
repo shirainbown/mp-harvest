@@ -19,6 +19,11 @@ except ImportError:  # platform 层（Epic B）未就绪时的占位常量
     PROXY_HOST = "127.0.0.1"
     PROXY_PORT = 8088
 
+# 只中间人拦截微信公众平台域名，其他 HTTPS 流量（AI 模型、GitHub、浏览器等）
+# 由 mitmproxy 透传，不再重签证书。否则本应用自身 AI 请求 / 用户浏览器都会被
+# 自签 CA 拦截导致 SSL 校验失败（2026-08-16 真机定位）。
+ALLOW_HOSTS = [r"mp\.weixin\.qq\.com"]
+
 
 def prepare_mitm_confdir(app_root: Path) -> tuple[Path, str]:
     """接口占位：CA 准备逻辑由 infra/platform 适配层实现（Epic B，设计稿 §4）。"""
@@ -118,6 +123,7 @@ class MitmCaptureService:
                 listen_host=PROXY_HOST,
                 listen_port=PROXY_PORT,
                 confdir=str(confdir),
+                allow_hosts=list(ALLOW_HOSTS),
             )
             # block_global may be set after construct on some versions
             try:
