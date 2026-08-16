@@ -287,7 +287,7 @@ export const useArticlesStore = defineStore('articles', {
     async exportListText(): Promise<string | null> {
       return call(
         rest.get<string>(
-          `/api/articles/export-list?account_id=${encodeURIComponent(this.accountId)}&view=${this.view}&format=${encodeURIComponent(this.listFormat)}`,
+          `/api/articles/export-list?account_id=${encodeURIComponent(this.accountId)}&view=${this.view}&format=${encodeURIComponent(this.listFormat)}&stage=${this.aiStage}`,
         ),
       )
     },
@@ -314,7 +314,7 @@ export const useArticlesStore = defineStore('articles', {
      *  outDir 指定目标目录，后端会在其中生成 index.html 说明页（2026-08-09） */
     async exportHtml(ids: string[], outDir?: string) {
       // 必须带 account_id，否则后端拿不到文章列表（2026-08-09 修复）
-      const body: Record<string, unknown> = { account_id: this.accountId }
+      const body: Record<string, unknown> = { account_id: this.accountId, stage: this.aiStage }
       if (ids.length) body.ids = ids
       else body.view = this.view
       if (outDir && outDir.trim()) body.out_dir = outDir.trim()

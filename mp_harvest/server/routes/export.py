@@ -33,9 +33,13 @@ def _resolve_articles(
     account_id: str,
     *,
     view: str = "all",
+    stage: str = "final",
     ids: list[str] | None = None,
 ) -> tuple[list[dict], str]:
-    """取导出文章；account_id 为空 = 全部公众号，每篇带 _account_id/account。"""
+    """取导出文章；account_id 为空 = 全部公众号，每篇带 _account_id/account。
+
+    stage 控制 view 的过滤字段：final=keep / title=title_keep / content=content_keep。
+    """
     if account_id:
         account = state.get_store().get(account_id)
         if account is None:
@@ -60,10 +64,26 @@ def _resolve_articles(
     if ids is not None:
         wanted = set(ids)
         articles = [a for a in articles if str(a.get("identity") or "") in wanted]
-    if view == "keep":
-        articles = [a for a in articles if a.get("keep") is True]
-    elif view == "drop":
-        articles = [a for a in articles if a.get("keep") is False]
+
+    if stage == "title":
+        if view == "keep":
+            articles = [a for a in articles if a.get("title_keep") is True]
+        elif view == "drop":
+            articles = [a for a in articles if a.get("title_keep") is False]
+    elif stage == "content":
+        # 内容阶段只导出标题通过的文章
+        articles = [a for a in articles if a.get("title_keep") is True]
+        if view == "keep":
+            articles = [a for a in articles if a.get("content_keep") is True]
+        elif view == "drop":
+            articles = [a for a in articles if a.get("content_keep") is False]
+        elif view == "pending":
+            articles = [a for a in articles if a.get("content_keep") is None]
+    else:
+        if view == "keep":
+            articles = [a for a in articles if a.get("keep") is True]
+        elif view == "drop":
+            articles = [a for a in articles if a.get("keep") is False]
     return articles, account_name
 
 
@@ -78,10 +98,10 @@ def _cred_by_account(articles: list[dict]) -> dict[str, dict]:
 
 
 @router.get("/api/articles/export-list")
-def export_list(account_id: str, view: str = "all", format: str = "json"):
+def export_list(account_id: str, view: str = "all", format: str = "json", stage: str = "final"):
     """列表导出：json/csv/tsv/md/links/title+links → 纯文本返回（前端复制/下载附件）。
 
-    view: all/keep/drop —— 始终只导出当前视图（§5.5）。
+    view: all/keep/drop(/pending，stage=content 时)；stage: final/title/content。
     """
     from mp_harvest.core import history_export
 
@@ -90,9 +110,12 @@ def export_list(account_id: str, view: str = "all", format: str = "json"):
         raise HTTPException(
             status_code=400, detail=f"不支持的格式 {format!r}（可选：{', '.join(_LIST_FORMATS)}）"
         )
-    if view not in ("all", "keep", "drop"):
-        raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
-    articles, account_name = _resolve_articles(account_id, view=view)
+    if stage not in ("final", "title", "content"):
+        raise HTTPException(status_code=400, detail="stage 必须是 final/title/content")
+    allowed_views = ("all", "keep", "drop") if stage != "content" else ("all", "keep", "drop", "pending")
+    if view not in allowed_views:
+        raise HTTPException(status_code=400, detail=f"当前 stage 下 view 必须是 {'/'.join(allowed_views)}")
+    articles, account_name = _resolve_articles(account_id, view=view, stage=stage)
     core_fmt, ext = _FMT_TO_CORE[fmt]
     days = state.get_last_days(account_id) if account_id else 7
     content = history_export.render_export(
@@ -124,10 +147,14 @@ def export_html(body: ExportHtmlIn) -> dict:
 
     account_id = body.account_id or ""
     view = (body.view or "all").lower()
-    if view not in ("all", "keep", "drop"):
-        raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
+    stage = (body.stage or "final").lower()
+    if stage not in ("final", "title", "content"):
+        raise HTTPException(status_code=400, detail="stage 必须是 final/title/content")
+    allowed_views = ("all", "keep", "drop") if stage != "content" else ("all", "keep", "drop", "pending")
+    if view not in allowed_views:
+        raise HTTPException(status_code=400, detail=f"当前 stage 下 view 必须是 {'/'.join(allowed_views)}")
     articles, account_name = _resolve_articles(
-        account_id, view=view, ids=list(body.ids) if body.ids else None
+        account_id, view=view, stage=stage, ids=list(body.ids) if body.ids else None
     )
     if not articles:
         raise HTTPException(status_code=400, detail="没有可导出的文章（请先拉取历史）")
