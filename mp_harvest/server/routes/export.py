@@ -29,6 +29,54 @@ _FMT_TO_CORE = {
 }
 
 
+def _resolve_articles(
+    account_id: str,
+    *,
+    view: str = "all",
+    ids: list[str] | None = None,
+) -> tuple[list[dict], str]:
+    """取导出文章；account_id 为空 = 全部公众号，每篇带 _account_id/account。"""
+    if account_id:
+        account = state.get_store().get(account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        articles = [dict(a) for a in state.get_articles(account_id)]
+        for art in articles:
+            art["_account_id"] = account_id
+            art["account"] = str(account.get("name") or "")
+        account_name = str(account.get("name") or "")
+    else:
+        articles = []
+        for acct in state.get_store().list_accounts():
+            aid = str(acct.get("id") or "")
+            name = str(acct.get("name") or "")
+            for a in state.get_articles(aid):
+                art = dict(a)
+                art["_account_id"] = aid
+                art["account"] = name
+                articles.append(art)
+        account_name = "全部公众号"
+
+    if ids is not None:
+        wanted = set(ids)
+        articles = [a for a in articles if str(a.get("identity") or "") in wanted]
+    if view == "keep":
+        articles = [a for a in articles if a.get("keep") is True]
+    elif view == "drop":
+        articles = [a for a in articles if a.get("keep") is False]
+    return articles, account_name
+
+
+def _cred_by_account(articles: list[dict]) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for art in articles:
+        aid = str(art.get("_account_id") or "")
+        if aid and aid not in out:
+            acct = state.get_store().get(aid) or {}
+            out[aid] = acct.get("credentials") or {}
+    return out
+
+
 @router.get("/api/articles/export-list")
 def export_list(account_id: str, view: str = "all", format: str = "json"):
     """列表导出：json/csv/tsv/md/links/title+links → 纯文本返回（前端复制/下载附件）。
@@ -44,21 +92,14 @@ def export_list(account_id: str, view: str = "all", format: str = "json"):
         )
     if view not in ("all", "keep", "drop"):
         raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
-    account = state.get_store().get(account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    articles = state.get_articles(account_id)
-    if view == "keep":
-        articles = [a for a in articles if a.get("keep") is True]
-    elif view == "drop":
-        articles = [a for a in articles if a.get("keep") is False]
+    articles, account_name = _resolve_articles(account_id, view=view)
     core_fmt, ext = _FMT_TO_CORE[fmt]
-    days = state.get_last_days(account_id)
+    days = state.get_last_days(account_id) if account_id else 7
     content = history_export.render_export(
-        articles, fmt=core_fmt, account_name=str(account.get("name") or ""), days=days
+        articles, fmt=core_fmt, account_name=account_name, days=days
     )
     filename = history_export.default_export_filename(
-        account_name=str(account.get("name") or "export"), days=days, ext=ext
+        account_name=account_name or "export", days=days, ext=ext
     )
     from urllib.parse import quote
 
@@ -82,30 +123,21 @@ def export_html(body: ExportHtmlIn) -> dict:
     from mp_harvest.core import article_reader
 
     account_id = body.account_id or ""
-    account = state.get_store().get(account_id) if account_id else None
-    if account_id and account is None:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    articles = state.get_articles(account_id) if account_id else []
-    if body.ids:
-        wanted = set(body.ids)
-        articles = [
-            a for a in articles if str(a.get("identity") or "") in wanted
-        ]
-    else:
-        view = (body.view or "all").lower()
-        if view not in ("all", "keep", "drop"):
-            raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
-        if view == "keep":
-            articles = [a for a in articles if a.get("keep") is True]
-        elif view == "drop":
-            articles = [a for a in articles if a.get("keep") is False]
+    view = (body.view or "all").lower()
+    if view not in ("all", "keep", "drop"):
+        raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
+    articles, account_name = _resolve_articles(
+        account_id, view=view, ids=list(body.ids) if body.ids else None
+    )
     if not articles:
         raise HTTPException(status_code=400, detail="没有可导出的文章（请先拉取历史）")
-    cred = (account or {}).get("credentials") or {}
+    cred_by_account = _cred_by_account(articles)
+    for art in articles:
+        art["_cred"] = cred_by_account.get(str(art.get("_account_id") or ""), {})
     if body.out_dir and str(body.out_dir).strip():
         out_dir = Path(str(body.out_dir).strip()).expanduser()
     else:
-        out_dir = paths.data_dir() / "exports" / (account.get("name") if account else "articles")
+        out_dir = paths.data_dir() / "exports" / (account_name or "articles")
 
     def work(task: Task) -> dict:
         total = len(articles)
@@ -121,8 +153,8 @@ def export_html(body: ExportHtmlIn) -> dict:
         result = article_reader.batch_export_articles(
             articles,
             out_dir=out_dir,
-            cred=cred or None,
-            account_name=str((account or {}).get("name") or ""),
+            cred=None,
+            account_name=account_name,
             on_progress=on_progress,
         )
         task.check_cancelled()

@@ -578,8 +578,10 @@ def batch_export_articles(
             failed_n += 1
             errors.append(f"{title}: 无链接")
             continue
+        row_cred = row.get("_cred")
+        fetch_cred = row_cred if isinstance(row_cred, dict) else cred
         try:
-            parsed = fetch(link, cred=cred)
+            parsed = fetch(link, cred=fetch_cred)
             if not parsed.get("publish_at") and row.get("publish_at"):
                 parsed["publish_at"] = row.get("publish_at")
             if not parsed.get("publish_ts") and row.get("publish_ts"):

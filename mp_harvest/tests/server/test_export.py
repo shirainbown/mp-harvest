@@ -103,6 +103,33 @@ def test_export_html_by_ids(client, auth):
     assert task.result["ok"] == 1
 
 
+def test_export_html_all_accounts(client, auth):
+    """account_id 为空 = 导出全部公众号当前视图的文章。"""
+    from mp_harvest.server import state
+
+    acc1 = add_account(client, auth)
+    acc2 = add_account(client, auth)
+    give_credential(acc1["id"])
+    give_credential(acc2["id"])
+    state.set_articles(
+        acc1["id"],
+        [{"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "art-0", "keep": True}],
+    )
+    state.set_articles(
+        acc2["id"],
+        [{"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1", "keep": False}],
+    )
+    resp = client.post(
+        "/api/articles/export-html",
+        params=auth,
+        json={"account_id": "", "view": "keep"},
+    )
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "done"
+    assert task.result["ok"] == 1
+
+
 def test_export_html_custom_dir_and_view(client, auth, tmp_path):
     """指定目录 + 视图过滤（2026-08-09）：out_dir 生效且生成 index.html 说明页。"""
     acc = _prepare_articles(client, auth)

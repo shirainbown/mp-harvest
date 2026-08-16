@@ -271,12 +271,12 @@ function toggleAiIncludeContent() {
         <select v-model="articles.listFormat" class="input btn-sm" style="height:24px;font-size:var(--fs-xs)">
           <option v-for="f in LIST_FORMATS" :key="f.value" :value="f.value">{{ f.label }}</option>
         </select>
-        <SButton size="sm" :disabled="!articles.accountId" @click="articles.copyList()">复制</SButton>
+        <SButton size="sm" :disabled="!articles.visible.length" @click="articles.copyList()">复制</SButton>
         <STooltip text="始终只导出当前视图">
-          <SButton size="sm" :disabled="!articles.accountId" @click="articles.exportList()">导出</SButton>
+          <SButton size="sm" :disabled="!articles.visible.length" @click="articles.exportList()">导出</SButton>
         </STooltip>
         <SButton size="sm" variant="ghost" :disabled="!articles.accountId" @click="suppOpen = true">+ 补录链接</SButton>
-        <SButton size="sm" variant="ghost" :disabled="!articles.accountId" @click="articles.load()">刷新</SButton>
+        <SButton size="sm" variant="ghost" :disabled="!accounts.list.length" @click="articles.load()">刷新</SButton>
         <span class="muted" style="font-size:var(--fs-sm)">排序：</span>
         <select
           class="input btn-sm"
@@ -292,8 +292,8 @@ function toggleAiIncludeContent() {
         <span class="muted" style="font-size:var(--fs-sm)">正文：</span>
         <SButton size="sm" variant="ghost" @click="articles.selectAllVisible()">全选</SButton>
         <SButton size="sm" variant="ghost" @click="articles.clearSelection()">取消选择</SButton>
-        <SButton size="sm" variant="primary" :disabled="!articles.accountId || !articles.visible.length" @click="clickExportHtml()">{{ exportBtnText }}</SButton>
-        <SButton size="sm" variant="ghost" :disabled="!articles.accountId || !articles.visible.length" @click="openExportDir">导出到目录…</SButton>
+        <SButton size="sm" variant="primary" :disabled="!articles.visible.length" @click="clickExportHtml()">{{ exportBtnText }}</SButton>
+        <SButton size="sm" variant="ghost" :disabled="!articles.visible.length" @click="openExportDir">导出到目录…</SButton>
         <ProgressInline
           v-if="exportTask"
           :text="exportTask.message || '导出中…'"
