@@ -96,6 +96,30 @@ def test_ai_filter_unknown_account_404(client, auth):
     assert resp.status_code == 404
 
 
+def test_ai_filter_all_accounts(client, auth):
+    """account_id 为空 = 全部公众号批量筛选（2026-08-16 新增）。"""
+    from mp_harvest.server import state
+
+    acc1 = _prepare_articles(client, auth)
+    acc2 = _prepare_articles(client, auth)
+    state.set_articles(
+        acc1["id"],
+        [{"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "art-0"}],
+    )
+    state.set_articles(
+        acc2["id"],
+        [{"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1"}],
+    )
+    resp = client.post("/api/ai/filter", params=auth, json={"account_id": ""})
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "done"
+    assert task.result["kept"] == 2
+
+    resp = client.get("/api/articles", params={**auth, "view": "keep"})
+    assert len(resp.json()) == 2
+
+
 def test_models_get_put(client, auth):
     resp = client.get("/api/ai/models", params=auth)
     assert resp.status_code == 200

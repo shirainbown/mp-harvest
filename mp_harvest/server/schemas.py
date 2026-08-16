@@ -64,7 +64,7 @@ class ExportHtmlIn(BaseModel):
 
 
 class AiFilterIn(BaseModel):
-    account_id: str = Field(min_length=1)
+    account_id: str = ""  # 空 = 全部公众号
     # 并行判定控制（2026-08-09）：每批多少篇 / 同时提交几批；不传用 core 默认（30 / 4）
     batch_size: int | None = Field(default=None, ge=1, le=200)
     workers: int | None = Field(default=None, ge=1, le=16)
@@ -73,7 +73,7 @@ class AiFilterIn(BaseModel):
 class AiContentFilterIn(BaseModel):
     """内容筛选（第二阶段）：仅对当前 keep=True 的文章拉正文并判定。"""
 
-    account_id: str = Field(min_length=1)
+    account_id: str = ""  # 空 = 全部公众号
     batch_size: int | None = Field(default=None, ge=1, le=200)
     workers: int | None = Field(default=None, ge=1, le=16)
 

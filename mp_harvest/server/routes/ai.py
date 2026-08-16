@@ -80,15 +80,42 @@ def _invalidate_cache(path: str | Path) -> None:
         pass
 
 
+def _articles_for(account_id: str) -> list[dict]:
+    """取待筛选文章，每篇带 ``_account_id``；account_id 为空 = 全部公众号。"""
+    if account_id:
+        if state.get_store().get(account_id) is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        return [dict(a, _account_id=account_id) for a in state.get_articles(account_id)]
+
+    rows: list[dict] = []
+    for acct in state.get_store().list_accounts():
+        aid = str(acct.get("id") or "")
+        if not aid:
+            continue
+        rows.extend(dict(a, _account_id=aid) for a in state.get_articles(aid))
+    return rows
+
+
+def _merge_verdicts(account_id: str, rows: list[dict]) -> None:
+    if account_id:
+        state.merge_article_verdicts(account_id, rows)
+    else:
+        state.merge_article_verdicts_by_account(rows)
+
+
+def _merge_bodies(account_id: str, rows: list[dict]) -> None:
+    if account_id:
+        state.merge_article_bodies(account_id, rows)
+    else:
+        state.merge_article_bodies_by_account(rows)
+
+
 @router.post("/api/ai/filter", status_code=202)
 def ai_filter(body: AiFilterIn) -> dict:
     """AI 筛选 → task_id；判定结果合并回文章缓存（批次边界响应取消）。"""
     from mp_harvest.core import ai_filter as ai_mod
 
-    account = state.get_store().get(body.account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    articles = state.get_articles(body.account_id)
+    articles = _articles_for(body.account_id)
     if not articles:
         raise HTTPException(status_code=400, detail="没有可筛选的文章（请先拉取历史）")
 
@@ -105,7 +132,7 @@ def ai_filter(body: AiFilterIn) -> dict:
 
         def on_batch(rows: list[dict], err: str | None) -> None:
             """每批完成即合并缓存 + WS 推送，前端实时刷新判定结果。"""
-            state.merge_article_verdicts(body.account_id, rows)
+            _merge_verdicts(body.account_id, rows)
             broadcast_event(
                 "ai.batch",
                 {
@@ -127,7 +154,7 @@ def ai_filter(body: AiFilterIn) -> dict:
         )
         task.check_cancelled()
         judged = list(result.get("kept") or []) + list(result.get("dropped") or [])
-        state.merge_article_verdicts(body.account_id, judged)
+        _merge_verdicts(body.account_id, judged)
         return {
             "account_id": body.account_id,
             "kept": len(result.get("kept") or []),
@@ -152,10 +179,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
     from mp_harvest.core import ai_filter as ai_mod
     from mp_harvest.core import article_reader
 
-    account = state.get_store().get(body.account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    articles = state.get_articles(body.account_id)
+    articles = _articles_for(body.account_id)
     if not articles:
         raise HTTPException(status_code=400, detail="没有可筛选的文章（请先拉取历史）")
     kept = [a for a in articles if a.get("title_keep") is True]
@@ -164,7 +188,12 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             status_code=400,
             detail="没有通过标题筛选的文章（请先执行 AI 标题筛选）",
         )
-    cred = account.get("credentials") or {}
+    cred_by_account: dict[str, dict] = {}
+    for a in kept:
+        aid = str(a.get("_account_id") or "")
+        if aid and aid not in cred_by_account:
+            acct = state.get_store().get(aid) or {}
+            cred_by_account[aid] = acct.get("credentials") or {}
 
     def work(task: Task) -> dict:
         models = ai_mod.load_models(_models_path())
@@ -194,7 +223,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                 row["content_reason"] = "无链接，无法获取正文，按丢弃处理"
                 fetch_failed += 1
                 fetch_errors.append(f"{art.get('title', '')}: 无链接")
-                state.merge_article_verdicts(body.account_id, [row])
+                _merge_verdicts(body.account_id, [row])
                 broadcast_event(
                     "ai.batch",
                     {
@@ -204,6 +233,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                     },
                 )
                 continue
+            cred = cred_by_account.get(str(art.get("_account_id") or ""), {})
             try:
                 parsed = article_reader.fetch_and_parse_article(link, cred=cred)
             except Exception as exc:  # noqa: BLE001
@@ -211,7 +241,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                 row["content_reason"] = f"正文获取失败，按丢弃处理：{exc}"
                 fetch_failed += 1
                 fetch_errors.append(f"{art.get('title', '')}: {exc}")
-                state.merge_article_verdicts(body.account_id, [row])
+                _merge_verdicts(body.account_id, [row])
                 broadcast_event(
                     "ai.batch",
                     {
@@ -227,7 +257,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                 row["content_reason"] = "正文过短或无实质内容，按丢弃处理"
                 fetch_failed += 1
                 fetch_errors.append(f"{art.get('title', '')}: 正文过短")
-                state.merge_article_verdicts(body.account_id, [row])
+                _merge_verdicts(body.account_id, [row])
                 broadcast_event(
                     "ai.batch",
                     {
@@ -241,7 +271,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             if parsed.get("body_html"):
                 art["body_html"] = str(parsed["body_html"])
         if to_fetch:
-            state.merge_article_bodies(
+            _merge_bodies(
                 body.account_id,
                 [a for a in to_fetch if str(a.get("body_text") or "").strip()],
             )
@@ -270,7 +300,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             task.update(percent=pct, message=f"内容判定中 {done}/{total}")
 
         def on_batch(rows: list[dict], err: str | None) -> None:
-            state.merge_article_verdicts(body.account_id, rows)
+            _merge_verdicts(body.account_id, rows)
             broadcast_event(
                 "ai.batch",
                 {
@@ -295,7 +325,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
         )
         task.check_cancelled()
         judged = list(result.get("kept") or []) + list(result.get("dropped") or [])
-        state.merge_article_verdicts(body.account_id, judged)
+        _merge_verdicts(body.account_id, judged)
         return {
             "account_id": body.account_id,
             "kept": len(result.get("kept") or []),

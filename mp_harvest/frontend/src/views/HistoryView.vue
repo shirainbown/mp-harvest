@@ -301,7 +301,7 @@ function toggleAiIncludeContent() {
           @cancel="articles.cancelExport()"
         />
         <span style="width:8px"></span>
-        <SButton size="sm" :disabled="!articles.accountId || !!articles.aiTaskId" @click="aiFilterOpen = true">✦ AI 筛选</SButton>
+        <SButton size="sm" :disabled="!accounts.list.length || !!articles.aiTaskId" @click="aiFilterOpen = true">✦ AI 筛选</SButton>
         <SButton size="sm" variant="ghost" @click="ui.go('ai')">⚙ 模型设置</SButton>
       </div>
     </div>

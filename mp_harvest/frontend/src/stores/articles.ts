@@ -193,7 +193,7 @@ export const useArticlesStore = defineStore('articles', {
     },
     /** AI 标题筛选：batch_size/workers 可调；includeContent=true 时标题完成后继续内容筛选（2026-08-16）。 */
     async aiFilter(batchSize = 50, workers = 4, includeContent = false) {
-      if (!this.accountId || this.aiTaskId) return
+      if (this.aiTaskId) return
       const bs = Math.max(1, Math.min(200, Math.round(Number(batchSize) || 50)))
       const wk = Math.max(1, Math.min(16, Math.round(Number(workers) || 4)))
       const r = await call(
@@ -237,7 +237,7 @@ export const useArticlesStore = defineStore('articles', {
     },
     /** AI 内容筛选（第二阶段）：只对当前 keep=true 的文章拉正文并判定（2026-08-16）。 */
     async contentFilter(batchSize = 30, workers = 4) {
-      if (!this.accountId || this.aiTaskId) return
+      if (this.aiTaskId) return
       const bs = Math.max(1, Math.min(200, Math.round(Number(batchSize) || 30)))
       const wk = Math.max(1, Math.min(16, Math.round(Number(workers) || 4)))
       const r = await call(

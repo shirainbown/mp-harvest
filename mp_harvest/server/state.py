@@ -179,6 +179,32 @@ def merge_article_bodies(account_id: str, bodies: list[dict[str, Any]]) -> None:
         _save_articles_to_disk(key)
 
 
+def _account_of(row: dict[str, Any]) -> str:
+    return str(row.get("_account_id") or row.get("account_id") or "")
+
+
+def merge_article_verdicts_by_account(judged: list[dict[str, Any]]) -> None:
+    """把 AI 判定结果按 _account_id 分账号合并回缓存（支持全部公众号批量筛选）。"""
+    by_account: dict[str, list[dict[str, Any]]] = {}
+    for j in judged:
+        aid = _account_of(j)
+        if aid:
+            by_account.setdefault(aid, []).append(j)
+    for aid, rows in by_account.items():
+        merge_article_verdicts(aid, rows)
+
+
+def merge_article_bodies_by_account(bodies: list[dict[str, Any]]) -> None:
+    """把正文拉取结果按 _account_id 分账号合并回缓存。"""
+    by_account: dict[str, list[dict[str, Any]]] = {}
+    for b in bodies:
+        aid = _account_of(b)
+        if aid:
+            by_account.setdefault(aid, []).append(b)
+    for aid, rows in by_account.items():
+        merge_article_bodies(aid, rows)
+
+
 def drop_articles(account_id: str) -> None:
     """删除账号时清空内存与磁盘文章缓存。"""
     with _lock:

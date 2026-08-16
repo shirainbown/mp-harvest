@@ -568,6 +568,7 @@ def judge_articles(
             "link": str(art.get("link") or ""),
             "publish_at": str(art.get("publish_at") or ""),
             "identity": str(art.get("identity") or ""),
+            "_account_id": str(art.get("_account_id") or ""),
             "_source": art,
         }
         key = article_key(art)
