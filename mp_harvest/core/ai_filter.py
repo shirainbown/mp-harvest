@@ -1,4 +1,9 @@
-"""AI 标题过滤引擎：多模型（OpenAI 兼容 chat/completions）并行判定。
+"""AI 文章过滤引擎：多模型（OpenAI 兼容 chat/completions）并行判定。
+
+支持两个阶段：
+- 标题筛选：用户编辑「筛选原则」（DEFAULT_PRINCIPLES / data/ai_principles.txt）；
+- 内容筛选：标题通过后按正文再筛（DEFAULT_CONTENT_PRINCIPLES /
+  data/ai_content_principles.txt），由 ``judge_articles(content_field="body_text")`` 驱动。
 
 纯逻辑模块，不依赖 GUI；API 风格参考本地项目 tools/judge_titles.py：
 - 配置从本地 JSON 文件读取（api_key 不写入仓库，data/*.json 已 gitignore）；
@@ -55,6 +60,19 @@ DEFAULT_PRINCIPLES = """你是一位半导体与计算机体系结构领域的�
 【保留标准】不属于任何硬性排除，且 relevance_score >= 8，且 technical_depth >= 4。
 判断依据只有标题时请保守判断（宁缺毋滥），信息不足一律 drop。"""
 
+DEFAULT_CONTENT_PRINCIPLES = """你是一位半导体与计算机体系结构领域的资深专家，负责对已经通过标题筛选的公众号文章做正文终审。
+目标：基于文章正文，判断这篇文章是否真的值得保留，只保留有实质技术增量、有深入分析、方法或数据可复用的知识型内容。
+
+【硬性排除，命中任意一条直接 drop】
+- 正文只是摘要、标题党或新闻快讯，无实质技术内容
+- 正文大量为广告/营销/推广：卖课、卖板卡、咨询接单、培训招生、资料包
+- 招聘类：招聘、校招、社招、内推、实习、加入我们
+- 正文为纯个人感想、随笔、调试吐槽，无技术细节
+- 正文信息量很低：只有概念罗列、名词堆砌或空泛介绍，无方法/数据/代码/图表
+
+【保留标准】不属于任何硬性排除，且 relevance_score >= 8，且 technical_depth >= 4。
+请结合标题与正文综合判断：正文有具体技术内容（方法、数据、图表、代码、案例、可复现经验）才可 keep；正文信息不足或与标题不符时一律 drop。"""
+
 FIXED_OUTPUT_REQUIREMENTS = """【输出格式（必须严格遵守，软件固定，不可更改）】
 只输出严格 JSON，不要 Markdown 代码块，不要任何多余文字：
 {"items":[{"idx":0,"title":"原文标题","category":"fpga|chip_design|ai_chip_design|chip_process|other","keep":true,"relevance_score":1-10,"technical_depth":1-10,"confidence":"high|medium|low","reason":"20-60字具体中文理由"}]}
@@ -71,12 +89,19 @@ def build_system_prompt(principles: str | None = None) -> str:
 
 
 DEFAULT_PROMPT = build_system_prompt(DEFAULT_PRINCIPLES)
+DEFAULT_CONTENT_PROMPT = build_system_prompt(DEFAULT_CONTENT_PRINCIPLES)
 
 
 def default_principles_path(root_dir: str | Path | None = None) -> Path:
     """默认解析到 data_dir()；显式传 root_dir 时兼容旧布局 root/data/。"""
     base = (Path(root_dir) / "data") if root_dir else data_dir()
     return base / "ai_principles.txt"
+
+
+def default_content_principles_path(root_dir: str | Path | None = None) -> Path:
+    """内容筛选原则路径：data_dir()/ai_content_principles.txt。"""
+    base = (Path(root_dir) / "data") if root_dir else data_dir()
+    return base / "ai_content_principles.txt"
 
 
 def save_principles(path: str | Path, text: str) -> None:
@@ -94,6 +119,23 @@ def load_principles(path: str | Path) -> str:
     except Exception:
         return DEFAULT_PRINCIPLES
     return text or DEFAULT_PRINCIPLES
+
+
+def save_content_principles(path: str | Path, text: str) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text or DEFAULT_CONTENT_PRINCIPLES, encoding="utf-8")
+
+
+def load_content_principles(path: str | Path) -> str:
+    p = Path(path)
+    if not p.exists():
+        return DEFAULT_CONTENT_PRINCIPLES
+    try:
+        text = p.read_text(encoding="utf-8").strip()
+    except Exception:
+        return DEFAULT_CONTENT_PRINCIPLES
+    return text or DEFAULT_CONTENT_PRINCIPLES
 
 
 @dataclass
@@ -177,6 +219,17 @@ def save_models(path: str | Path, models: list[ModelConfig]) -> None:
     )
 
 
+# AI 模型调用必须绕过系统代理：本应用抓包时会把 macOS 系统代理切到
+# 127.0.0.1:8088，如果 urllib 默认读系统代理，AI 请求会被自身 mitm 拦截并
+# 重签证书，导致 SSL 校验失败（2026-08-16 真机定位）。统一使用空 ProxyHandler。
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _urlopen(req: urllib.request.Request, timeout: float) -> Any:
+    """urllib 直连（不读系统代理）。"""
+    return _NO_PROXY_OPENER.open(req, timeout=timeout)
+
+
 def _model_label(m: ModelConfig) -> str:
     """模型展示名：优先「名称 (模型ID)」，让用户一眼看清实际调用的是哪个模型。"""
     name = (m.name or "").strip()
@@ -255,7 +308,7 @@ def _post_chat(cfg: ModelConfig, payload: dict[str, Any]) -> str:
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with _urlopen(req, timeout=180) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return _parse_content(cfg, data)
 
@@ -356,7 +409,7 @@ def fetch_models(cfg: ModelConfig, timeout: int = 15) -> tuple[bool, str | list[
     }
     try:
         req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):
@@ -442,11 +495,15 @@ def judge_articles(
     batch_size: int = 50,
     workers: int = 4,
     max_retries: int = 3,
+    content_field: str | None = None,
+    max_content_chars: int = 6000,
     on_progress: Callable[[int, int], None] | None = None,
     on_batch: Callable[[list[dict[str, Any]], str | None], None] | None = None,
 ) -> dict[str, Any]:
-    """用多个已启用模型并发判定标题。
+    """用多个已启用模型并发判定文章（默认按标题，可加正文）。
 
+    ``content_field`` 指定文章 dict 中正文文本字段（如 ``body_text``）时，每条
+    输入会附带截断后的正文内容，用于「标题筛选通过后再按内容筛选」的第二阶段。
     返回：
       {"ok": bool, "kept": [...], "dropped": [...], "errors": [...],
        "used_models": [...], "cached": int, "judged": int}
@@ -518,17 +575,20 @@ def judge_articles(
         start, end, model_idx = batch
         cfg = enabled[model_idx]
         batch_rows = pending[start:end]
-        user = json.dumps(
-            [
-                {
-                    "idx": r["idx"],
-                    "account": r["account"],
-                    "title": r["title"],
-                }
-                for r in batch_rows
-            ],
-            ensure_ascii=False,
-        )
+        user_items: list[dict[str, Any]] = []
+        for r in batch_rows:
+            item: dict[str, Any] = {
+                "idx": r["idx"],
+                "account": r["account"],
+                "title": r["title"],
+            }
+            if content_field:
+                text = str(r["_source"].get(content_field) or "").strip()
+                if max_content_chars and len(text) > max_content_chars:
+                    text = text[: max(1, int(max_content_chars))]
+                item["content"] = text
+            user_items.append(item)
+        user = json.dumps(user_items, ensure_ascii=False)
         try:
             content = _call_model(cfg, prompt, user, max_retries=max_retries)
             verdicts = parse_model_output(content)

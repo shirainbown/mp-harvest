@@ -177,3 +177,71 @@ def test_principles_get_put(client, auth):
     assert resp.status_code == 200
     resp = client.get("/api/ai/principles", params=auth)
     assert resp.json()["text"] == "只要技术文"
+
+
+def test_content_principles_get_put(client, auth):
+    resp = client.get("/api/ai/content-principles", params=auth)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["text"] == "默认内容原则"
+    assert data["default"] == "内置默认内容原则"
+
+    resp = client.put("/api/ai/content-principles", params=auth, json={"text": "正文必须有代码"})
+    assert resp.status_code == 200
+    resp = client.get("/api/ai/content-principles", params=auth)
+    assert resp.json()["text"] == "正文必须有代码"
+
+
+def test_ai_filter_content_task_and_merge(client, auth):
+    """内容筛选：仅对标题筛选 keep=True 的文章拉正文并判定，结果合并回缓存。"""
+    from mp_harvest.server import state
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(
+        acc["id"],
+        [
+            {"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "art-0", "keep": True},
+            {"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1", "keep": False},
+        ],
+    )
+    resp = client.post(
+        "/api/ai/filter-content", params=auth, json={"account_id": acc["id"]}
+    )
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "done"
+    assert task.result["kept"] == 1
+    assert task.result["dropped"] == 0
+
+    # 内容判定结果已合并回缓存 → view=keep 只有 art-0
+    resp = client.get(
+        "/api/articles", params={**auth, "account_id": acc["id"], "view": "keep"}
+    )
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["id"] == "art-0"
+
+
+def test_ai_filter_content_requires_title_keep(client, auth):
+    """没有 keep=True 的文章时，内容筛选接口返回 400（先做标题筛选）。"""
+    from mp_harvest.server import state
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(
+        acc["id"],
+        [
+            {"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1", "keep": False},
+        ],
+    )
+    resp = client.post(
+        "/api/ai/filter-content", params=auth, json={"account_id": acc["id"]}
+    )
+    assert resp.status_code == 400
+    assert "标题筛选" in resp.json()["detail"]
+
+
+def test_ai_filter_content_unknown_account_404(client, auth):
+    resp = client.post(
+        "/api/ai/filter-content", params=auth, json={"account_id": "nope"}
+    )
+    assert resp.status_code == 404

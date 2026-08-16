@@ -70,6 +70,14 @@ class AiFilterIn(BaseModel):
     workers: int | None = Field(default=None, ge=1, le=16)
 
 
+class AiContentFilterIn(BaseModel):
+    """内容筛选（第二阶段）：仅对当前 keep=True 的文章拉正文并判定。"""
+
+    account_id: str = Field(min_length=1)
+    batch_size: int | None = Field(default=None, ge=1, le=200)
+    workers: int | None = Field(default=None, ge=1, le=16)
+
+
 class AiModelIn(BaseModel):
     """与 core.ai_filter.ModelConfig 对齐。"""
 

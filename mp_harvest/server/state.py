@@ -147,6 +147,26 @@ def merge_article_verdicts(account_id: str, judged: list[dict[str, Any]]) -> Non
         _save_articles_to_disk(key)
 
 
+def merge_article_bodies(account_id: str, bodies: list[dict[str, Any]]) -> None:
+    """把拉取到的正文（body_text/body_html）按 identity/link 合并回缓存，供内容筛选复用。"""
+    key_of = lambda a: str(a.get("identity") or a.get("link") or "")  # noqa: E731
+    with _lock:
+        key = str(account_id)
+        rows = _articles.get(key)
+        if not rows:
+            return
+        updates = {
+            key_of(b): {k: v for k, v in b.items() if k in ("body_text", "body_html") and v}
+            for b in bodies
+            if key_of(b)
+        }
+        for row in rows:
+            up = updates.get(key_of(row))
+            if up:
+                row.update(up)
+        _save_articles_to_disk(key)
+
+
 def drop_articles(account_id: str) -> None:
     """删除账号时清空内存与磁盘文章缓存。"""
     with _lock:

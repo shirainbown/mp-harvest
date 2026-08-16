@@ -16,6 +16,8 @@ export const useSettingsStore = defineStore('settings', {
     models: [] as AiModel[],
     principles: '',
     defaultPrinciples: '',
+    contentPrinciples: '',
+    defaultContentPrinciples: '',
     network: { mode: 'direct', proxy_url: '' } as NetworkSettings,
     platform: null as PlatformInfo | null,
     testResults: {} as Record<string, ModelTestResult | 'testing'>,
@@ -33,9 +35,10 @@ export const useSettingsStore = defineStore('settings', {
   }),
   actions: {
     async load() {
-      const [models, principles, network, platform] = await Promise.all([
+      const [models, principles, contentPrinciples, network, platform] = await Promise.all([
         call(rest.get<{ models: AiModel[] }>('/api/ai/models')),
         call(rest.get<{ text: string; default: string }>('/api/ai/principles')),
+        call(rest.get<{ text: string; default: string }>('/api/ai/content-principles')),
         call(rest.get<{ settings: Partial<NetworkSettings> & { proxy?: string } }>('/api/settings')),
         call(rest.get<PlatformInfo>('/api/platform')),
       ])
@@ -43,6 +46,10 @@ export const useSettingsStore = defineStore('settings', {
       if (principles) {
         this.principles = principles.text
         this.defaultPrinciples = principles.default ?? principles.text
+      }
+      if (contentPrinciples) {
+        this.contentPrinciples = contentPrinciples.text
+        this.defaultContentPrinciples = contentPrinciples.default ?? contentPrinciples.text
       }
       if (network) {
         const s = network.settings || {}
@@ -109,6 +116,14 @@ export const useSettingsStore = defineStore('settings', {
     restorePrinciples() {
       this.principles = this.defaultPrinciples
       useUiStore().toast('已恢复默认原则')
+    },
+    async saveContentPrinciples() {
+      const r = await call(rest.put('/api/ai/content-principles', { text: this.contentPrinciples }))
+      if (r !== null) useUiStore().toast('内容筛选原则已保存（ai_content_principles.txt）')
+    },
+    restoreContentPrinciples() {
+      this.contentPrinciples = this.defaultContentPrinciples
+      useUiStore().toast('已恢复默认内容原则')
     },
     async saveNetwork() {
       // 服务端 settings 存储用 proxy 字段（更新下载走 settings.proxy）

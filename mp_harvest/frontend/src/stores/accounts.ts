@@ -78,9 +78,13 @@ export const useAccountsStore = defineStore('accounts', {
       }
     },
     async installCa() {
-      const r = await call(rest.post<{ needs_admin: boolean }>('/api/ca/install'))
+      const r = await call(rest.post<{ ok: boolean; message: string; needs_admin: boolean }>('/api/ca/install'))
       if (r) {
-        useUiStore().toast(r.needs_admin ? '系统将请求管理员密码以信任抓包证书' : 'CA 证书已安装并信任')
+        if (r.ok) {
+          useUiStore().toast(r.message || 'CA 证书已安装并信任')
+        } else {
+          useUiStore().error(r.message || 'CA 证书安装失败')
+        }
         const ca = await call(rest.get<CaStatus>('/api/ca/status'))
         if (ca) this.ca = ca
       }

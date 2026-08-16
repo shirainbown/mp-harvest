@@ -105,6 +105,8 @@ export type WsEvent =
       type: 'ai.batch'
       account_id: string
       articles: Array<{ id: string; verdict: 'keep' | 'drop' | null; reason: string }>
+      /** 'title' = 标题筛选批次；'content' = 内容筛选批次（2026-08-16 新增） */
+      stage?: 'title' | 'content'
     }
   | { type: 'credential.captured'; account_id: string; expires_at: number }
   | { type: 'credential.expired'; account_id: string }

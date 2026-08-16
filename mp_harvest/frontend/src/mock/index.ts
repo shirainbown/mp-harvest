@@ -81,6 +81,18 @@ const DEFAULT_PRINCIPLES = `请判断以下公众号文章标题是否值得阅�
 - 标题党但正文信息量低的软文
 - 与上述领域无关的泛娱乐内容`
 let principles = DEFAULT_PRINCIPLES
+const DEFAULT_CONTENT_PRINCIPLES = `请根据文章正文判断是否值得保留。
+
+值得保留（keep=true）的标准：
+- 正文有具体技术内容：方法、数据、图表、代码、案例
+- 有实质技术增量、深度分析或可复用的工程经验
+- 与半导体 / AI / 互联网产品硬核内容相关
+
+应当过滤（keep=false）的标准：
+- 正文只是摘要、新闻快讯、活动预告、招聘启事
+- 正文为广告软文、课程售卖、咨询接单
+- 正文信息量低或与标题不符`
+let contentPrinciples = DEFAULT_CONTENT_PRINCIPLES
 const settings: NetworkSettings = { mode: 'direct', proxy_url: '' }
 const platform: PlatformInfo = {
   os: 'mac',
@@ -233,7 +245,11 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
 
   // ai
   if (p === '/api/ai/filter' && method === 'POST') {
-    const task_id = simulateTask('ai', ['模型 A 34/620', '模型 A 128/620 · 模型 B 96/620', '模型 A 300/620 · 模型 B 260/620', '模型 A 620/620 ✓ · 模型 B 620/620 ✓'], 700, { keep: 280, drop: 340, cached: 203 })
+    const task_id = simulateTask('ai', ['模型 A 34/620', '模型 A 128/620 · 模型 B 96/620', '模型 A 300/620 · 模型 B 260/620', '模型 A 620/620 ✓ · 模型 B 620/620 ✓'], 700, { kept: 280, drop: 340, cached: 203 })
+    return { task_id } as T
+  }
+  if (p === '/api/ai/filter-content' && method === 'POST') {
+    const task_id = simulateTask('ai', ['获取正文 12/280', '获取正文 280/280', '内容判定 280/280 ✓'], 600, { kept: 221, dropped: 59, cached: 18, fetch_failed: 0 })
     return { task_id } as T
   }
   if (p === '/api/ai/models' && method === 'GET') return { models } as T
@@ -256,6 +272,11 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   if (p === '/api/ai/principles' && method === 'GET') return { text: principles, default: DEFAULT_PRINCIPLES } as T
   if (p === '/api/ai/principles' && method === 'PUT') {
     principles = String(b.text ?? principles)
+    return { ok: true } as T
+  }
+  if (p === '/api/ai/content-principles' && method === 'GET') return { text: contentPrinciples, default: DEFAULT_CONTENT_PRINCIPLES } as T
+  if (p === '/api/ai/content-principles' && method === 'PUT') {
+    contentPrinciples = String(b.text ?? contentPrinciples)
     return { ok: true } as T
   }
 

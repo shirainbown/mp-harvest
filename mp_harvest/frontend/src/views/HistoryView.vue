@@ -169,10 +169,16 @@ const totalSize = computed(() => virtualizer.value.getTotalSize())
 
 // AI 筛选弹层内原则预览
 const principlesPreview = computed(() => settings.principles.slice(0, 200) + (settings.principles.length > 200 ? '…' : ''))
+const contentPrinciplesPreview = computed(() => settings.contentPrinciples.slice(0, 200) + (settings.contentPrinciples.length > 200 ? '…' : ''))
 
 // 并行判定控制（2026-08-09）：每批篇数（默认 50）/ 并发批数
 const aiBatchSize = ref(50)
 const aiWorkers = ref(4)
+// 标题筛选完成后是否继续内容筛选（2026-08-16）
+const aiIncludeContent = ref(localStorage.getItem('mp_harvest.ai_include_content') !== '0')
+function toggleAiIncludeContent() {
+  localStorage.setItem('mp_harvest.ai_include_content', aiIncludeContent.value ? '1' : '0')
+}
 </script>
 
 <template>
@@ -273,6 +279,14 @@ const aiWorkers = ref(4)
               将按筛选原则判定全部文章：<br />
               <span class="tertiary mono" style="white-space:pre-wrap">{{ principlesPreview || '（未配置原则）' }}</span>
             </div>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer">
+              <input v-model="aiIncludeContent" type="checkbox" class="cb" @change="toggleAiIncludeContent" />
+              <span>标题判定后继续按内容判定</span>
+            </label>
+            <div v-if="aiIncludeContent" style="margin-bottom:8px">
+              内容筛选原则：<br />
+              <span class="tertiary mono" style="white-space:pre-wrap">{{ contentPrinciplesPreview || '（未配置内容原则）' }}</span>
+            </div>
             <div class="toolbar" style="margin-bottom:8px">
               <span class="form-label">每批篇数</span>
               <input v-model.number="aiBatchSize" type="number" min="1" max="200" class="input" style="width:72px" />
@@ -282,7 +296,7 @@ const aiWorkers = ref(4)
             </div>
             <div style="display:flex;justify-content:flex-end;gap:8px">
               <SButton size="sm" @click="close()">取消</SButton>
-              <SButton size="sm" variant="primary" @click="close(); articles.aiFilter(aiBatchSize, aiWorkers)">开始判定</SButton>
+              <SButton size="sm" variant="primary" @click="close(); articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)">{{ aiIncludeContent ? '开始标题+内容判定' : '开始判定' }}</SButton>
             </div>
           </template>
         </SPopover>

@@ -117,6 +117,18 @@ function modelListId(m: AiModel): string {
         <SButton size="sm" variant="primary" @click="settings.savePrinciples()">保存</SButton>
       </div>
     </div>
+
+    <div class="panel">
+      <div class="panel-title">
+        内容筛选原则 <span class="tertiary" style="font-weight:400">— 标题判定通过后，按正文做第二阶段筛选</span>
+      </div>
+      <textarea v-model="settings.contentPrinciples" class="principles" spellcheck="false"></textarea>
+      <div class="toolbar" style="margin-top:var(--sp-2)">
+        <span class="spacer"></span>
+        <SButton size="sm" variant="ghost" @click="settings.restoreContentPrinciples()">恢复默认</SButton>
+        <SButton size="sm" variant="primary" @click="settings.saveContentPrinciples()">保存</SButton>
+      </div>
+    </div>
   </div>
   </section>
 </template>

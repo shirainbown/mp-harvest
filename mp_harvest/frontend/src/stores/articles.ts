@@ -128,8 +128,8 @@ export const useArticlesStore = defineStore('articles', {
     toggleSortDir() {
       this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc'
     },
-    /** AI 筛选：每模型迷你进度经 task.message 内联展示（§5.5）；batch_size/workers 可调 */
-    async aiFilter(batchSize = 50, workers = 4) {
+    /** AI 标题筛选：batch_size/workers 可调；includeContent=true 时标题完成后继续内容筛选（2026-08-16）。 */
+    async aiFilter(batchSize = 50, workers = 4, includeContent = false) {
       if (!this.accountId || this.aiTaskId) return
       const bs = Math.max(1, Math.min(200, Math.round(Number(batchSize) || 50)))
       const wk = Math.max(1, Math.min(16, Math.round(Number(workers) || 4)))
@@ -150,8 +150,59 @@ export const useArticlesStore = defineStore('articles', {
         onDone: async (t) => {
           this.aiTaskId = ''
           this.aiProgress = ''
-          const res = (t.result || {}) as { keep?: number; drop?: number; cached?: number }
-          ui.toast(`AI 筛选完成：通过 ${res.keep ?? '?'} / 过滤 ${res.drop ?? '?'}${res.cached ? `（缓存命中 ${res.cached}）` : ''}`)
+          const res = (t.result || {}) as { kept?: number; keep?: number; drop?: number; cached?: number }
+          const kept = res.kept ?? res.keep ?? 0
+          if (includeContent) {
+            if (kept > 0) {
+              ui.toast(`标题筛选完成：通过 ${kept} / 过滤 ${res.drop ?? '?'}，继续内容筛选…`)
+              await this.contentFilter(bs, wk)
+            } else {
+              ui.toast(`标题筛选完成：通过 0 篇，跳过内容筛选`)
+              await this.load()
+            }
+          } else {
+            ui.toast(`AI 筛选完成：通过 ${kept} / 过滤 ${res.drop ?? '?'}${res.cached ? `（缓存命中 ${res.cached}）` : ''}`)
+            await this.load()
+          }
+        },
+        onError: () => {
+          this.aiTaskId = ''
+          this.aiProgress = ''
+        },
+      })
+    },
+    /** AI 内容筛选（第二阶段）：只对当前 keep=true 的文章拉正文并判定（2026-08-16）。 */
+    async contentFilter(batchSize = 30, workers = 4) {
+      if (!this.accountId || this.aiTaskId) return
+      const bs = Math.max(1, Math.min(200, Math.round(Number(batchSize) || 30)))
+      const wk = Math.max(1, Math.min(16, Math.round(Number(workers) || 4)))
+      const r = await call(
+        rest.post<{ task_id: string }>('/api/ai/filter-content', {
+          account_id: this.accountId,
+          batch_size: bs,
+          workers: wk,
+        }),
+      )
+      if (!r) return
+      this.aiTaskId = r.task_id
+      const ui = useUiStore()
+      useTasksStore().track(r.task_id, 'ai', {
+        onProgress: (t) => {
+          this.aiProgress = t.message
+        },
+        onDone: async (t) => {
+          this.aiTaskId = ''
+          this.aiProgress = ''
+          const res = (t.result || {}) as {
+            kept?: number
+            dropped?: number
+            cached?: number
+            fetch_failed?: number
+          }
+          const parts = [`内容筛选完成：通过 ${res.kept ?? '?'} / 过滤 ${res.dropped ?? '?'}`]
+          if (res.cached) parts.push(`缓存命中 ${res.cached}`)
+          if (res.fetch_failed) parts.push(`正文获取失败 ${res.fetch_failed}（已过滤）`)
+          ui.toast(parts.join(' · '))
           await this.load()
         },
         onError: () => {

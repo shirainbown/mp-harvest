@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from mp_harvest.core.ai_filter import (  # noqa: E402
+    DEFAULT_CONTENT_PRINCIPLES,
+    DEFAULT_CONTENT_PROMPT,
     DEFAULT_PRINCIPLES,
     DEFAULT_PROMPT,
     FIXED_OUTPUT_REQUIREMENTS,
@@ -21,11 +23,14 @@ from mp_harvest.core.ai_filter import (  # noqa: E402
     _parse_content,
     article_key,
     build_system_prompt,
+    default_content_principles_path,
     default_principles_path,
     distribute_batches,
     judge_articles,
+    load_content_principles,
     load_models,
     load_principles,
+    save_content_principles,
     parse_model_output,
     save_models,
     save_principles,
@@ -263,6 +268,25 @@ def test_principles_persistence():
         assert load_principles(path) == DEFAULT_PRINCIPLES
 
 
+def test_content_principles_persistence():
+    with tempfile.TemporaryDirectory() as td:
+        path = default_content_principles_path(Path(td))
+        assert path.name == "ai_content_principles.txt"
+        # 未保存时返回默认内容原则
+        assert load_content_principles(path) == DEFAULT_CONTENT_PRINCIPLES
+        custom = "自定义内容原则：正文必须有代码或数据"
+        save_content_principles(path, custom)
+        assert load_content_principles(path) == custom
+        # 空内容回退默认
+        save_content_principles(path, "   ")
+        assert load_content_principles(path) == DEFAULT_CONTENT_PRINCIPLES
+
+
+def test_content_prompt_builds_from_content_principles():
+    assert FIXED_OUTPUT_REQUIREMENTS in DEFAULT_CONTENT_PROMPT
+    assert DEFAULT_CONTENT_PRINCIPLES in DEFAULT_CONTENT_PROMPT
+
+
 def test_test_connection_retries_without_response_format():
     """DeepSeek 等模型对 json_object 要求 prompt 含 "json"：首次 400 应去掉
     response_format 重试成功（2026-08-09 真机：max_retries=1 会把兜底掐掉）。"""
@@ -286,7 +310,7 @@ def test_test_connection_retries_without_response_format():
         def read(self):
             return self._data
 
-    original = ai_filter.urllib.request.urlopen
+    original = ai_filter._urlopen
 
     def fake_urlopen(req, timeout=180):
         payload = json.loads(req.data.decode("utf-8"))
@@ -304,11 +328,11 @@ def test_test_connection_retries_without_response_format():
             )
         return _FakeResp(b'{"choices":[{"message":{"content":"OK"}}]}')
 
-    ai_filter.urllib.request.urlopen = fake_urlopen
+    ai_filter._urlopen = fake_urlopen
     try:
         ok, msg = ai_filter.test_connection(_cfg(base="https://api.deepseek.com"))
     finally:
-        ai_filter.urllib.request.urlopen = original
+        ai_filter._urlopen = original
 
     assert ok is True
     assert len(calls) == 2
@@ -323,7 +347,7 @@ def test_fetch_models_ok_and_errors():
 
     from mp_harvest.core import ai_filter
 
-    original = ai_filter.urllib.request.urlopen
+    original = ai_filter._urlopen
 
     class _FakeResp:
         def __enter__(self):
@@ -345,7 +369,7 @@ def test_fetch_models_ok_and_errors():
             )
         return _FakeResp()
 
-    ai_filter.urllib.request.urlopen = fake_urlopen
+    ai_filter._urlopen = fake_urlopen
     try:
         ok, ids = ai_filter.fetch_models(_cfg(base="https://api.deepseek.com"))
         assert ok is True
@@ -364,7 +388,7 @@ def test_fetch_models_ok_and_errors():
         assert ok3 is False
         assert "Anthropic" in msg3
     finally:
-        ai_filter.urllib.request.urlopen = original
+        ai_filter._urlopen = original
 
 
 def test_judge_articles_on_batch_callback():
@@ -401,3 +425,36 @@ def test_judge_articles_on_batch_callback():
     assert res["judged"] == 2
     assert sorted(n for n, _ in batches) == [1, 1]
     assert all(err is None for _, err in batches)
+
+
+def test_judge_articles_content_field_truncates_and_sends_content():
+    """内容筛选阶段：输入携带截断后的正文内容（2026-08-16 新增）。"""
+    import json as _json
+
+    from mp_harvest.core import ai_filter
+
+    arts = [{"identity": "id1", "link": "u", "title": "t", "body_text": "ABCDEFGHIJ"}]
+    captured: list[str] = []
+    original = ai_filter._call_model
+
+    def fake_call(cfg, system_prompt, user_content, max_retries=3):
+        captured.append(user_content)
+        return '{"items":[{"idx":0,"keep":true}]}'
+
+    ai_filter._call_model = fake_call
+    try:
+        res = judge_articles(
+            arts,
+            [_cfg("m")],
+            content_field="body_text",
+            max_content_chars=4,
+            batch_size=1,
+            workers=1,
+        )
+    finally:
+        ai_filter._call_model = original
+
+    assert res["judged"] == 1
+    user = _json.loads(captured[0])
+    assert user[0]["content"] == "ABCD"
+    assert "title" in user[0]

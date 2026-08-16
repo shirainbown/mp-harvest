@@ -227,6 +227,16 @@ def _fake_article_reader() -> types.ModuleType:
         }
 
     mod.batch_export_articles = batch_export_articles
+
+    def fetch_and_parse_article(url, *, cred=None, timeout=25.0):
+        return {
+            "title": "fake title",
+            "body_text": "这是用于内容筛选的正文，包含足够的技术细节与实现方法，长度超过二十个字。",
+            "body_html": "<p>这是用于内容筛选的正文，包含足够的技术细节与实现方法，长度超过二十个字。</p>",
+            "link": url,
+        }
+
+    mod.fetch_and_parse_article = fetch_and_parse_article
     return mod
 
 
@@ -268,8 +278,10 @@ def _fake_ai_filter() -> types.ModuleType:
 
     mod.ModelConfig = ModelConfig
     mod.DEFAULT_PRINCIPLES = "内置默认原则"
+    mod.DEFAULT_CONTENT_PRINCIPLES = "内置默认内容原则"
     mod._models: list = [ModelConfig(name="m1", api_key="k")]
     mod._principles = "默认原则"
+    mod._content_principles = "默认内容原则"
 
     mod.load_models = lambda path: list(mod._models)
 
@@ -283,6 +295,12 @@ def _fake_ai_filter() -> types.ModuleType:
         mod._principles = text
 
     mod.save_principles = save_principles
+    mod.load_content_principles = lambda path: mod._content_principles
+
+    def save_content_principles(path, text):
+        mod._content_principles = text
+
+    mod.save_content_principles = save_content_principles
     mod.build_system_prompt = lambda principles=None: f"PROMPT:{principles}"
 
     def test_connection(cfg):
