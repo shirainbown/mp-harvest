@@ -59,6 +59,10 @@ const articles: Article[] = []
       source,
       verdict,
       reason,
+      title_verdict: verdict,
+      title_reason: reason,
+      content_verdict: null,
+      content_reason: '',
     })
   }
 }
@@ -232,6 +236,10 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
       source: '补',
       verdict: null,
       reason: '',
+      title_verdict: null,
+      title_reason: '',
+      content_verdict: null,
+      content_reason: '',
     }
     articles.unshift(art)
     return art as T

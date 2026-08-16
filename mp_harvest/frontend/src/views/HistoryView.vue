@@ -86,11 +86,18 @@ function confirmBatch() {
 }
 
 // ---- 视图切换 ----
-const viewTabs: Array<{ v: ArticleView; label: string }> = [
-  { v: 'all', label: '全部' },
-  { v: 'keep', label: '通过' },
-  { v: 'drop', label: '过滤掉' },
+const stageTabs = [
+  { value: 'final', label: '最终结果' },
+  { value: 'title', label: '标题筛选' },
+  { value: 'content', label: '内容筛选' },
 ]
+const viewTabs = computed(() => articles.stageTabs)
+
+function rowReason(a: Article) {
+  if (articles.aiStage === 'title') return a.title_reason || '未做标题筛选'
+  if (articles.aiStage === 'content') return a.content_reason || '未做内容筛选'
+  return a.reason
+}
 
 // ---- 选择 & 导出 HTML ----
 const selectedCount = computed(() => articles.selectedInView.length)
@@ -225,6 +232,16 @@ function toggleAiIncludeContent() {
     <!-- 工具条 -->
     <div class="panel" style="padding:var(--sp-2) var(--sp-4)">
       <div class="toolbar" style="border-bottom:1px solid var(--border);padding-bottom:var(--sp-2)">
+        <span class="muted" style="font-size:var(--fs-sm)">阶段：</span>
+        <SegmentedControl
+          :model-value="articles.aiStage"
+          :options="stageTabs"
+          @update:model-value="articles.setStage($event as 'final' | 'title' | 'content')"
+        />
+        <span class="spacer"></span>
+        <span v-if="articles.aiProgress" class="ai-progress"><span class="spinner"></span>{{ articles.aiProgress }}</span>
+      </div>
+      <div class="toolbar" style="padding-top:var(--sp-2)">
         <div class="view-tabs">
           <span
             v-for="t in viewTabs"
@@ -236,8 +253,6 @@ function toggleAiIncludeContent() {
             {{ t.label }} <span class="cnt">{{ articles.counts[t.v] }}</span>
           </span>
         </div>
-        <span class="spacer"></span>
-        <span v-if="articles.aiProgress" class="ai-progress"><span class="spinner"></span>{{ articles.aiProgress }}</span>
       </div>
       <div class="toolbar" style="padding-top:var(--sp-2)">
         <span class="muted" style="font-size:var(--fs-sm)">列表：</span>
@@ -307,8 +322,8 @@ function toggleAiIncludeContent() {
             <STooltip :text="articles.visible[vr.index].title" style="min-width:0">
               <span class="art-title">{{ articles.visible[vr.index].title }}</span>
             </STooltip>
-            <STooltip v-if="articles.visible[vr.index].reason" :text="articles.visible[vr.index].reason" style="min-width:0">
-              <span class="art-reason">{{ articles.visible[vr.index].reason }}</span>
+            <STooltip v-if="rowReason(articles.visible[vr.index])" :text="rowReason(articles.visible[vr.index])" style="min-width:0">
+              <span class="art-reason">{{ rowReason(articles.visible[vr.index]) }}</span>
             </STooltip>
             <span v-else class="art-reason"></span>
             <span class="mono muted">{{ mmdd(articles.visible[vr.index]) }}</span>
@@ -337,7 +352,7 @@ function toggleAiIncludeContent() {
               {{ a.account_name || '—' }}
             </span>
             <STooltip :text="a.title" style="min-width:0"><span class="art-title">{{ a.title }}</span></STooltip>
-            <STooltip v-if="a.reason" :text="a.reason" style="min-width:0"><span class="art-reason">{{ a.reason }}</span></STooltip>
+            <STooltip v-if="rowReason(a)" :text="rowReason(a)" style="min-width:0"><span class="art-reason">{{ rowReason(a) }}</span></STooltip>
             <span v-else class="art-reason"></span>
             <span class="mono muted">{{ mmdd(a) }}</span>
             <STooltip :text="badgeTip[a.source]"><SBadge :variant="badgeVariant[a.source]">{{ a.source }}</SBadge></STooltip>
@@ -393,20 +408,16 @@ function toggleAiIncludeContent() {
     </template>
   </SModal>
 
-  <!-- AI 筛选 Modal（2026-08-16 由 Popover 改为 Modal，避免内容过多显示不全） -->
+  <!-- AI 筛选 Modal（两阶段：标题筛选 → 内容筛选） -->
   <SModal :open="aiFilterOpen" @close="aiFilterOpen = false">
     <template #head>AI 筛选</template>
     <div style="display:flex;flex-direction:column;gap:var(--sp-2)">
       <div>
-        <span class="form-label">标题筛选原则</span>
+        <span class="form-label">第一阶段：标题筛选原则</span>
         <div class="ai-principle-preview">{{ principlesPreview || '（未配置原则）' }}</div>
       </div>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input v-model="aiIncludeContent" type="checkbox" class="cb" @change="toggleAiIncludeContent" />
-        <span>标题判定后继续按内容判定</span>
-      </label>
-      <div v-if="aiIncludeContent">
-        <span class="form-label">内容筛选原则</span>
+      <div>
+        <span class="form-label">第二阶段：内容筛选原则（只对标题通过的文章生效）</span>
         <div class="ai-principle-preview">{{ contentPrinciplesPreview || '（未配置内容原则）' }}</div>
       </div>
       <div class="toolbar">
@@ -416,10 +427,15 @@ function toggleAiIncludeContent() {
         <input v-model.number="aiWorkers" type="number" min="1" max="16" class="input" style="width:64px" />
         <span class="tertiary" style="font-size:var(--fs-xs)">同时提交的批数越多，并发请求越多</span>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input v-model="aiIncludeContent" type="checkbox" class="cb" @change="toggleAiIncludeContent" />
+        <span>标题筛选完成后自动继续内容筛选</span>
+      </label>
     </div>
     <template #foot>
       <SButton variant="ghost" @click="aiFilterOpen = false">取消</SButton>
-      <SButton variant="primary" @click="aiFilterOpen = false; articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)">{{ aiIncludeContent ? '开始标题+内容判定' : '开始判定' }}</SButton>
+      <SButton variant="ghost" @click="aiFilterOpen = false; articles.contentFilter(aiBatchSize, aiWorkers)">仅内容筛选</SButton>
+      <SButton variant="primary" @click="aiFilterOpen = false; articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)">开始标题筛选{{ aiIncludeContent ? ' + 内容' : '' }}</SButton>
     </template>
   </SModal>
 

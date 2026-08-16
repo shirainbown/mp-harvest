@@ -70,7 +70,11 @@ def article_out(row: dict[str, Any], *, account_id: str = "", account_name: str 
     ``reason``（缺省空串）。
     """
     keep = row.get("keep")
+    title_keep = row.get("title_keep")
+    content_keep = row.get("content_keep")
     verdict = "keep" if keep is True else ("drop" if keep is False else None)
+    title_verdict = "keep" if title_keep is True else ("drop" if title_keep is False else None)
+    content_verdict = "keep" if content_keep is True else ("drop" if content_keep is False else None)
     ts = int(row.get("publish_ts") or 0)
     if ts:
         date = datetime.fromtimestamp(ts).isoformat(timespec="seconds")
@@ -87,6 +91,10 @@ def article_out(row: dict[str, Any], *, account_id: str = "", account_name: str 
         "source": article_source(row.get("source")),
         "verdict": verdict,
         "reason": str(row.get("reason") or ""),
+        "title_verdict": title_verdict,
+        "title_reason": str(row.get("title_reason") or ""),
+        "content_verdict": content_verdict,
+        "content_reason": str(row.get("content_reason") or ""),
     }
 
 

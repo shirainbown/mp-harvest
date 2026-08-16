@@ -5,6 +5,7 @@
 Account: id / name / url / __biz? / expires_at(epoch 秒|null) / pending?
 Article: id / account_id / title / url / date(可解析日期串) / source(M|G|补)
          / verdict(keep|drop|null) / reason
+         / title_verdict / title_reason / content_verdict / content_reason
 """
 
 from __future__ import annotations
@@ -14,7 +15,11 @@ from datetime import datetime
 from mp_harvest.tests.server.conftest import add_account, give_credential
 
 ACCOUNT_KEYS = {"id", "name", "url", "expires_at", "pending", "__biz", "mitm_message"}
-ARTICLE_KEYS = {"id", "account_id", "account_name", "title", "url", "date", "source", "verdict", "reason"}
+ARTICLE_KEYS = {
+    "id", "account_id", "account_name", "title", "url", "date", "source",
+    "verdict", "reason",
+    "title_verdict", "title_reason", "content_verdict", "content_reason",
+}
 
 
 def _fetch_history(client, auth, account_id):
@@ -99,6 +104,10 @@ def test_articles_bare_array_shape(client, auth):
         assert art["source"] == "G"  # 拉历史来的（缺省 source）→ getmsg
         assert art["verdict"] is None  # 未判定
         assert art["reason"] == ""
+        assert art["title_verdict"] is None
+        assert art["title_reason"] == ""
+        assert art["content_verdict"] is None
+        assert art["content_reason"] == ""
 
 
 def test_articles_verdict_and_source_mapping(client, auth):
@@ -148,4 +157,8 @@ def test_supplement_bare_article_shape(client, auth):
     assert datetime.fromisoformat(art["date"])
     assert art["source"] == "补"
     assert art["verdict"] is None
+    assert art["title_verdict"] is None
+    assert art["title_reason"] == ""
+    assert art["content_verdict"] is None
+    assert art["content_reason"] == ""
     assert art["reason"] == ""

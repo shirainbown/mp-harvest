@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { Article, ArticleView } from '../types'
+import type { AiStage, Article, ArticleView } from '../types'
 import { call, rest } from '../api/rest'
 import { useAccountsStore } from './accounts'
 import { useTasksStore } from './tasks'
@@ -20,6 +20,7 @@ export const useArticlesStore = defineStore('articles', {
     rangeDays: 7,
     list: [] as Article[],
     view: 'all' as ArticleView,
+    aiStage: 'final' as AiStage,
     sortBy: 'time' as 'time' | 'name',
     sortDir: 'desc' as 'desc' | 'asc',
     selected: new Set<string>() as Set<string>,
@@ -32,15 +33,73 @@ export const useArticlesStore = defineStore('articles', {
     listFormat: 'md' as string,
   }),
   getters: {
+    /** 当前阶段的统计标签（all/keep/drop/pending） */
     counts(): Record<ArticleView, number> {
+      const finalBase = this.list
+      const titleBase = this.list
+      const contentBase = this.list.filter((a) => a.title_verdict === 'keep')
+      if (this.aiStage === 'title') {
+        return {
+          all: titleBase.length,
+          keep: titleBase.filter((a) => a.title_verdict === 'keep').length,
+          drop: titleBase.filter((a) => a.title_verdict === 'drop').length,
+          pending: titleBase.filter((a) => a.title_verdict == null).length,
+        }
+      }
+      if (this.aiStage === 'content') {
+        return {
+          all: contentBase.length,
+          keep: contentBase.filter((a) => a.content_verdict === 'keep').length,
+          drop: contentBase.filter((a) => a.content_verdict === 'drop').length,
+          pending: contentBase.filter((a) => a.content_verdict == null).length,
+        }
+      }
       return {
-        all: this.list.length,
-        keep: this.list.filter((a) => a.verdict === 'keep').length,
-        drop: this.list.filter((a) => a.verdict === 'drop').length,
+        all: finalBase.length,
+        keep: finalBase.filter((a) => a.verdict === 'keep').length,
+        drop: finalBase.filter((a) => a.verdict === 'drop').length,
+        pending: finalBase.filter((a) => a.verdict == null).length,
       }
     },
+    /** 当前阶段的视图标签定义 */
+    stageTabs(): Array<{ v: ArticleView; label: string }> {
+      if (this.aiStage === 'title') {
+        return [
+          { v: 'all', label: '全部' },
+          { v: 'keep', label: '标题通过' },
+          { v: 'drop', label: '标题过滤' },
+        ]
+      }
+      if (this.aiStage === 'content') {
+        return [
+          { v: 'all', label: '标题通过' },
+          { v: 'keep', label: '内容通过' },
+          { v: 'drop', label: '内容过滤' },
+          { v: 'pending', label: '待内容筛选' },
+        ]
+      }
+      return [
+        { v: 'all', label: '全部' },
+        { v: 'keep', label: '通过' },
+        { v: 'drop', label: '过滤掉' },
+      ]
+    },
+    /** 当前阶段某行展示的判定字段 */
+    verdictOf(): (a: Article) => 'keep' | 'drop' | null {
+      if (this.aiStage === 'title') return (a) => a.title_verdict
+      if (this.aiStage === 'content') return (a) => a.content_verdict
+      return (a) => a.verdict
+    },
     visible(): Article[] {
-      const rows = this.view === 'all' ? [...this.list] : this.list.filter((a) => a.verdict === this.view)
+      const verdictOf = this.verdictOf
+      let rows: Article[]
+      if (this.aiStage === 'content') {
+        const base = this.list.filter((a) => a.title_verdict === 'keep')
+        rows = this.view === 'all' ? [...base] : base.filter((a) => verdictOf(a) === this.view)
+        if (this.view === 'pending') rows = base.filter((a) => a.content_verdict == null)
+      } else {
+        rows = this.view === 'all' ? [...this.list] : this.list.filter((a) => verdictOf(a) === this.view)
+      }
       rows.sort((a, b) => {
         if (this.sortBy === 'name') {
           const byName = (a.account_name || '').localeCompare(b.account_name || '', 'zh')
@@ -128,6 +187,10 @@ export const useArticlesStore = defineStore('articles', {
     toggleSortDir() {
       this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc'
     },
+    setStage(stage: AiStage) {
+      this.aiStage = stage
+      this.view = 'all'
+    },
     /** AI 标题筛选：batch_size/workers 可调；includeContent=true 时标题完成后继续内容筛选（2026-08-16）。 */
     async aiFilter(batchSize = 50, workers = 4, includeContent = false) {
       if (!this.accountId || this.aiTaskId) return
@@ -152,6 +215,7 @@ export const useArticlesStore = defineStore('articles', {
           this.aiProgress = ''
           const res = (t.result || {}) as { kept?: number; keep?: number; drop?: number; cached?: number }
           const kept = res.kept ?? res.keep ?? 0
+          this.aiStage = 'title'
           if (includeContent) {
             if (kept > 0) {
               ui.toast(`标题筛选完成：通过 ${kept} / 过滤 ${res.drop ?? '?'}，继续内容筛选…`)
@@ -161,7 +225,7 @@ export const useArticlesStore = defineStore('articles', {
               await this.load()
             }
           } else {
-            ui.toast(`AI 筛选完成：通过 ${kept} / 过滤 ${res.drop ?? '?'}${res.cached ? `（缓存命中 ${res.cached}）` : ''}`)
+            ui.toast(`标题筛选完成：通过 ${kept} / 过滤 ${res.drop ?? '?'}${res.cached ? `（缓存命中 ${res.cached}）` : ''}`)
             await this.load()
           }
         },
@@ -193,6 +257,7 @@ export const useArticlesStore = defineStore('articles', {
         onDone: async (t) => {
           this.aiTaskId = ''
           this.aiProgress = ''
+          this.aiStage = 'content'
           const res = (t.result || {}) as {
             kept?: number
             dropped?: number
@@ -280,16 +345,42 @@ export const useArticlesStore = defineStore('articles', {
     setView(v: ArticleView) {
       this.view = v
     },
-    /** 每批 AI 判定完成即实时合并（2026-08-09）：只更新 verdict/reason，不动其他字段 */
+    /** 每批 AI 判定完成即实时合并：更新对应阶段字段，并重算最终 verdict/reason */
     onAiBatch(
       account_id: string,
-      articles: Array<{ id: string; verdict: Article['verdict']; reason: string }>,
+      articles: Array<{
+        id: string
+        verdict: Article['verdict']
+        reason: string
+        title_verdict?: Article['title_verdict']
+        title_reason?: string
+        content_verdict?: Article['content_verdict']
+        content_reason?: string
+      }>,
     ) {
       if (account_id !== this.accountId || !articles.length) return
       const byId = new Map(articles.map((a) => [a.id, a]))
       for (const row of this.list) {
         const p = byId.get(row.id)
-        if (p) {
+        if (!p) continue
+        if (p.title_verdict !== undefined) {
+          row.title_verdict = p.title_verdict
+          row.title_reason = p.title_reason || row.title_reason
+        }
+        if (p.content_verdict !== undefined) {
+          row.content_verdict = p.content_verdict
+          row.content_reason = p.content_reason || row.content_reason
+        }
+        // 重算最终判定：内容优先，标题其次
+        const contentVerdict = row.content_verdict
+        const titleVerdict = row.title_verdict
+        if (contentVerdict !== null && contentVerdict !== undefined) {
+          row.verdict = contentVerdict
+          row.reason = row.content_reason || ''
+        } else if (titleVerdict !== null && titleVerdict !== undefined) {
+          row.verdict = titleVerdict
+          row.reason = row.title_reason || ''
+        } else {
           row.verdict = p.verdict
           row.reason = p.reason
         }

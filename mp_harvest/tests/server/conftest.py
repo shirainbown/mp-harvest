@@ -324,11 +324,14 @@ def _fake_ai_filter() -> types.ModuleType:
     def judge_articles(articles, models, *, prompt="", cache_path=None, on_progress=None, on_batch=None, **kw):
         if not [m for m in models if m.enabled]:
             raise ValueError("没有启用的 AI 模型")
+        prefix = kw.get("prefix") or ""
+        keep_key = f"{prefix}keep" if prefix else "keep"
+        reason_key = f"{prefix}reason" if prefix else "reason"
         kept = []
         for i, a in enumerate(articles):
             if on_progress:
                 on_progress(i + 1, len(articles))
-            row = {**a, "keep": True, "reason": "fake"}
+            row = {**a, keep_key: True, reason_key: "fake"}
             kept.append(row)
             if on_batch:
                 on_batch([row], None)

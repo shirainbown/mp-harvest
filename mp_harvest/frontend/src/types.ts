@@ -12,7 +12,8 @@ export interface Account {
 }
 
 export type ArticleSource = 'M' | 'G' | '补'
-export type ArticleView = 'all' | 'keep' | 'drop'
+export type ArticleView = 'all' | 'keep' | 'drop' | 'pending'
+export type AiStage = 'final' | 'title' | 'content'
 
 export interface Article {
   id: string
@@ -24,10 +25,16 @@ export interface Article {
   /** ISO 日期或 epoch 秒，渲染为 MM-DD */
   date: string
   source: ArticleSource
-  /** AI 判定：keep / drop / null（未判定） */
+  /** 最终 AI 判定：keep / drop / null（未判定） */
   verdict: 'keep' | 'drop' | null
-  /** AI 理由 */
+  /** 最终 AI 理由 */
   reason: string
+  /** 标题筛选判定（第一阶段） */
+  title_verdict: 'keep' | 'drop' | null
+  title_reason: string
+  /** 内容筛选判定（第二阶段；未做内容筛选为 null） */
+  content_verdict: 'keep' | 'drop' | null
+  content_reason: string
 }
 
 export interface TaskInfo {
@@ -106,8 +113,16 @@ export type WsEvent =
   | {
       type: 'ai.batch'
       account_id: string
-      articles: Array<{ id: string; verdict: 'keep' | 'drop' | null; reason: string }>
-      /** 'title' = 标题筛选批次；'content' = 内容筛选批次（2026-08-16 新增） */
+      articles: Array<{
+        id: string
+        verdict: 'keep' | 'drop' | null
+        reason: string
+        title_verdict?: 'keep' | 'drop' | null
+        title_reason?: string
+        content_verdict?: 'keep' | 'drop' | null
+        content_reason?: string
+      }>
+      /** 'title' = 标题筛选批次；'content' = 内容筛选批次 */
       stage?: 'title' | 'content'
     }
   | { type: 'credential.captured'; account_id: string; expires_at: number }

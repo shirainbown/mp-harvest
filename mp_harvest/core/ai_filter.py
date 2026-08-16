@@ -467,31 +467,37 @@ def distribute_batches(
     return out
 
 
-_FALLBACK_VERDICT = {
-    "keep": False,
-    "category": "other",
-    "relevance_score": 0,
-    "technical_depth": 0,
-    "confidence": "low",
-    "reason": "模型未返回判定",
-}
+_VERDICT_SUFFIXES = (
+    "keep",
+    "category",
+    "relevance_score",
+    "technical_depth",
+    "confidence",
+    "reason",
+    "at",
+    "model",
+)
 
 
-def _verdict_fields(row: dict[str, Any]) -> dict[str, Any]:
+def _fallback_verdict(prefix: str = "") -> dict[str, Any]:
+    def key(k: str) -> str:
+        return f"{prefix}{k}" if prefix else k
+
     return {
-        k: row.get(k)
-        for k in (
-            "keep",
-            "category",
-            "relevance_score",
-            "technical_depth",
-            "confidence",
-            "reason",
-            "at",
-            "model",
-        )
-        if k in row
+        key("keep"): False,
+        key("category"): "other",
+        key("relevance_score"): 0,
+        key("technical_depth"): 0,
+        key("confidence"): "low",
+        key("reason"): "模型未返回判定",
     }
+
+
+def _verdict_fields(row: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    def key(k: str) -> str:
+        return f"{prefix}{k}" if prefix else k
+
+    return {key(k): row.get(key(k)) for k in _VERDICT_SUFFIXES if key(k) in row}
 
 
 # ── 判定主流程 ──────────────────────────────────────────────────────
@@ -508,6 +514,7 @@ def judge_articles(
     max_retries: int = 3,
     content_field: str | None = None,
     max_content_chars: int = 6000,
+    prefix: str = "",
     on_progress: Callable[[int, int], None] | None = None,
     on_batch: Callable[[list[dict[str, Any]], str | None], None] | None = None,
 ) -> dict[str, Any]:
@@ -515,11 +522,14 @@ def judge_articles(
 
     ``content_field`` 指定文章 dict 中正文文本字段（如 ``body_text``）时，每条
     输入会附带截断后的正文内容，用于「标题筛选通过后再按内容筛选」的第二阶段。
+    ``prefix`` 指定判定字段前缀：
+      - ``""``        → keep / category / reason / ...
+      - ``"title_"``  → title_keep / title_reason / ...
+      - ``"content_"``→ content_keep / content_reason / ...
     返回：
       {"ok": bool, "kept": [...], "dropped": [...], "errors": [...],
        "used_models": [...], "cached": int, "judged": int}
-    判定结果（keep/category/relevance_score/technical_depth/confidence/
-    reason/at）合并进每条文章条目。``on_batch(rows, err)`` 每完成一批回调一次
+    判定结果按前缀合并进每条文章条目。``on_batch(rows, err)`` 每完成一批回调一次
     （rows 已带判定字段），供服务层实时推送/刷新（2026-08-09）。
     """
     enabled = [m for m in models if getattr(m, "enabled", True)]
@@ -614,20 +624,27 @@ def judge_articles(
                 continue
             by_idx[i] = v
         now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        def pk(k: str) -> str:
+            return f"{prefix}{k}" if prefix else k
+
         for r in batch_rows:
             v = by_idx.get(r["idx"])
             if v is None:
-                v = dict(_FALLBACK_VERDICT)
-            verdict = {
-                "keep": bool(v.get("keep", False)),
-                "category": str(v.get("category", "other")),
-                "relevance_score": int(v.get("relevance_score", 0) or 0),
-                "technical_depth": int(v.get("technical_depth", 0) or 0),
-                "confidence": str(v.get("confidence", "low")),
-                "reason": str(v.get("reason", "")),
-                "at": now,
-                "model": cfg.model,
-            }
+                verdict = dict(_fallback_verdict(prefix))
+                verdict[pk("at")] = now
+                verdict[pk("model")] = cfg.model
+            else:
+                verdict = {
+                    pk("keep"): bool(v.get("keep", False)),
+                    pk("category"): str(v.get("category", "other")),
+                    pk("relevance_score"): int(v.get("relevance_score", 0) or 0),
+                    pk("technical_depth"): int(v.get("technical_depth", 0) or 0),
+                    pk("confidence"): str(v.get("confidence", "low")),
+                    pk("reason"): str(v.get("reason", "")),
+                    pk("at"): now,
+                    pk("model"): cfg.model,
+                }
             r.update(verdict)
             key = article_key(r["_source"])
             if key:
@@ -648,16 +665,20 @@ def judge_articles(
                 errors.append(err)
                 # 失败批次统一按 drop 兜底
                 now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+                def pk(k: str) -> str:
+                    return f"{prefix}{k}" if prefix else k
+
                 for r in rows:
-                    if "keep" not in r:
-                        r.update(dict(_FALLBACK_VERDICT))
-                        r["reason"] = "模型调用失败，按丢弃处理"
-                        r["at"] = now
-                        r["model"] = enabled[midx].model
+                    if pk("keep") not in r:
+                        r.update(_fallback_verdict(prefix))
+                        r[pk("reason")] = "模型调用失败，按丢弃处理"
+                        r[pk("at")] = now
+                        r[pk("model")] = enabled[midx].model
                     key = article_key(r["_source"])
                     if key:
                         with cache_lock:
-                            cache[key] = _verdict_fields(r)
+                            cache[key] = _verdict_fields(r, prefix)
             else:
                 used_models.append(_model_label(enabled[midx]))
             if on_batch:
@@ -677,13 +698,14 @@ def judge_articles(
         except Exception:
             pass
 
+    keep_key = f"{prefix}keep" if prefix else "keep"
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for row in items:
         art = dict(row["_source"])
-        for k, v in _verdict_fields(row).items():
+        for k, v in _verdict_fields(row, prefix).items():
             art[k] = v
-        (kept if row.get("keep") else dropped).append(art)
+        (kept if row.get(keep_key) else dropped).append(art)
 
     cached_n = sum(1 for r in items if r.get("_cached"))
     return {

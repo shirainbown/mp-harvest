@@ -22,13 +22,31 @@ from mp_harvest.server.ws import broadcast_event
 router = APIRouter(tags=["ai"])
 
 
+def _verdict_of(keep: object) -> str | None:
+    return "keep" if keep is True else ("drop" if keep is False else None)
+
+
 def _partial_verdict(row: dict) -> dict:
-    """core 判定行 → 前端可合并的最小 Article 片断（只含 id/verdict/reason）。"""
-    keep = row.get("keep")
+    """core 判定行 → 前端可合并的 Article 判定片断（含两阶段字段）。"""
+    title_keep = row.get("title_keep")
+    content_keep = row.get("content_keep")
+    final_keep = content_keep if content_keep is not None else title_keep
+    if final_keep is None:
+        final_keep = row.get("keep")
+    reason = str(
+        row.get("content_reason")
+        or row.get("title_reason")
+        or row.get("reason")
+        or ""
+    )
     return {
         "id": str(row.get("identity") or row.get("link") or ""),
-        "verdict": "keep" if keep is True else ("drop" if keep is False else None),
-        "reason": str(row.get("reason") or ""),
+        "verdict": _verdict_of(final_keep),
+        "reason": reason,
+        "title_verdict": _verdict_of(title_keep),
+        "title_reason": str(row.get("title_reason") or ""),
+        "content_verdict": _verdict_of(content_keep),
+        "content_reason": str(row.get("content_reason") or ""),
     }
 
 
@@ -102,6 +120,7 @@ def ai_filter(body: AiFilterIn) -> dict:
             cache_path=_cache_path(),
             batch_size=body.batch_size if body.batch_size is not None else 50,
             workers=body.workers if body.workers is not None else 4,
+            prefix="title_",
             on_progress=on_progress,
             on_batch=on_batch,
         )
@@ -138,7 +157,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
     articles = state.get_articles(body.account_id)
     if not articles:
         raise HTTPException(status_code=400, detail="没有可筛选的文章（请先拉取历史）")
-    kept = [a for a in articles if a.get("keep") is True]
+    kept = [a for a in articles if a.get("title_keep") is True]
     if not kept:
         raise HTTPException(
             status_code=400,
@@ -169,8 +188,8 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             row.pop("body_text", None)
             row.pop("body_html", None)
             if not link:
-                row["keep"] = False
-                row["reason"] = "无链接，无法获取正文，按丢弃处理"
+                row["content_keep"] = False
+                row["content_reason"] = "无链接，无法获取正文，按丢弃处理"
                 fetch_failed += 1
                 fetch_errors.append(f"{art.get('title', '')}: 无链接")
                 state.merge_article_verdicts(body.account_id, [row])
@@ -186,8 +205,8 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             try:
                 parsed = article_reader.fetch_and_parse_article(link, cred=cred)
             except Exception as exc:  # noqa: BLE001
-                row["keep"] = False
-                row["reason"] = f"正文获取失败，按丢弃处理：{exc}"
+                row["content_keep"] = False
+                row["content_reason"] = f"正文获取失败，按丢弃处理：{exc}"
                 fetch_failed += 1
                 fetch_errors.append(f"{art.get('title', '')}: {exc}")
                 state.merge_article_verdicts(body.account_id, [row])
@@ -202,8 +221,8 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                 continue
             body_text = str(parsed.get("body_text") or "").strip()
             if len(body_text) < 20:
-                row["keep"] = False
-                row["reason"] = "正文过短或无实质内容，按丢弃处理"
+                row["content_keep"] = False
+                row["content_reason"] = "正文过短或无实质内容，按丢弃处理"
                 fetch_failed += 1
                 fetch_errors.append(f"{art.get('title', '')}: 正文过短")
                 state.merge_article_verdicts(body.account_id, [row])
@@ -268,6 +287,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             workers=body.workers if body.workers is not None else 4,
             content_field="body_text",
             max_content_chars=6000,
+            prefix="content_",
             on_progress=on_progress,
             on_batch=on_batch,
         )

@@ -206,8 +206,8 @@ def test_ai_filter_content_task_and_merge(client, auth):
     state.set_articles(
         acc["id"],
         [
-            {"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "art-0", "keep": True},
-            {"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1", "keep": False},
+            {"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "art-0", "title_keep": True},
+            {"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1", "title_keep": False},
         ],
     )
     resp = client.post(
@@ -236,7 +236,7 @@ def test_ai_filter_content_requires_title_keep(client, auth):
     state.set_articles(
         acc["id"],
         [
-            {"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1", "keep": False},
+            {"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1", "title_keep": False},
         ],
     )
     resp = client.post(

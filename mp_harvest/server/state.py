@@ -128,7 +128,11 @@ def get_articles(account_id: str) -> list[dict[str, Any]]:
 
 
 def merge_article_verdicts(account_id: str, judged: list[dict[str, Any]]) -> None:
-    """把 AI 判定字段（keep/category/...）按 identity/link 合并回缓存。"""
+    """把 AI 判定字段（title_*/content_*/keep 等）按 identity/link 合并回缓存。
+
+    合并后自动计算最终 ``keep/reason``：内容筛选有结果时优先生效，否则用标题筛选
+    结果；两阶段都没有则保持未判定。
+    """
     key_of = lambda a: str(a.get("identity") or a.get("link") or "")  # noqa: E731
     with _lock:
         key = str(account_id)
@@ -144,6 +148,14 @@ def merge_article_verdicts(account_id: str, judged: list[dict[str, Any]]) -> Non
             v = verdicts.get(key_of(row))
             if v:
                 row.update(v)
+            content_keep = row.get("content_keep")
+            title_keep = row.get("title_keep")
+            if content_keep is not None:
+                row["keep"] = content_keep
+                row["reason"] = str(row.get("content_reason") or "")
+            elif title_keep is not None:
+                row["keep"] = title_keep
+                row["reason"] = str(row.get("title_reason") or "")
         _save_articles_to_disk(key)
 
 
