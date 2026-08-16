@@ -260,7 +260,7 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   }
   if (p === '/api/ai/models/test' && method === 'POST') {
     await delay(1000)
-    if (String(b.base_url || '').includes('anthropic')) return { ok: false, error: 'HTTP 401：authentication_error · invalid x-api-key' } as T
+    if (String(b.base_url || '').includes('anthropic')) return { ok: false, message: 'HTTP 401：authentication_error · invalid x-api-key', error: 'HTTP 401：authentication_error · invalid x-api-key' } as T
     return { ok: true, latency_ms: 212 } as T
   }
   if (p === '/api/ai/models/fetch' && method === 'POST') {

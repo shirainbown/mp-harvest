@@ -313,7 +313,8 @@ def test_model(body: AiModelIn) -> dict:
 
     cfg = ai_mod.ModelConfig.from_dict(body.model_dump())
     ok, message = ai_mod.test_connection(cfg)
-    return {"ok": bool(ok), "message": str(message)}
+    # error 与 message 同内容：前端测试结果直接读 error，保留 message 兼容旧客户端
+    return {"ok": bool(ok), "message": str(message), "error": str(message)}
 
 
 @router.post("/api/ai/models/fetch")

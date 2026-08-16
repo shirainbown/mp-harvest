@@ -85,7 +85,13 @@ export const useSettingsStore = defineStore('settings', {
     async testModel(m: AiModel) {
       this.testResults[m.id] = 'testing'
       const r = await call(rest.post<ModelTestResult>('/api/ai/models/test', { ...m }))
-      this.testResults[m.id] = r ?? { ok: false, error: '请求失败' }
+      this.testResults[m.id] = r
+        ? {
+            ok: r.ok,
+            latency_ms: r.latency_ms,
+            error: r.error || r.message || (r.ok ? undefined : '测试失败'),
+          }
+        : { ok: false, error: '请求失败' }
     },
     /** 按 base_url + api_key 拉取可用模型列表（OpenAI 兼容 /models） */
     async fetchModels(m: AiModel) {

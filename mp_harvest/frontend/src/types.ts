@@ -53,6 +53,7 @@ export interface AiModel {
 export interface ModelTestResult {
   ok: boolean
   latency_ms?: number
+  message?: string
   error?: string
 }
 

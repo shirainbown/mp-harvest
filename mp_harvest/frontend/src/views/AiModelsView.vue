@@ -4,15 +4,16 @@ import { onMounted, ref } from 'vue'
 import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
 import SPopover from '../components/SPopover.vue'
-import STooltip from '../components/STooltip.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
 import SSwitch from '../components/SSwitch.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { useSettingsStore } from '../stores/settings'
+import { useUiStore } from '../stores/ui'
 import type { AiModel } from '../types'
 
 const settings = useSettingsStore()
+const ui = useUiStore()
 
 onMounted(() => {
   if (!settings.loaded) settings.load()
@@ -32,6 +33,24 @@ function toggleKey(id: string) {
 
 function testResultOf(m: AiModel) {
   return settings.testResults[m.id]
+}
+
+function testErrorOf(m: AiModel): string {
+  const r = testResultOf(m)
+  if (!r || r === 'testing') return ''
+  const rr = r as { ok: boolean; error?: string; message?: string }
+  return rr.error || rr.message || (rr.ok ? '' : '测试失败')
+}
+
+async function copyTestError(m: AiModel) {
+  const text = testErrorOf(m)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    ui.toast('错误信息已复制')
+  } catch {
+    ui.error('复制失败，请手动选择错误文本')
+  }
 }
 
 function fetchingOf(m: AiModel) {
@@ -98,9 +117,11 @@ function modelListId(m: AiModel): string {
           <span v-if="modelErrorOf(m)" class="status-fail">{{ modelErrorOf(m) }}</span>
           <template v-if="testResultOf(m) && testResultOf(m) !== 'testing'">
             <span v-if="(testResultOf(m) as any).ok" class="status-ok">● 可用 · {{ (testResultOf(m) as any).latency_ms }}ms</span>
-            <STooltip v-else :text="(testResultOf(m) as any).error || '测试失败'">
-              <span class="status-fail">● 失败 · {{ ((testResultOf(m) as any).error || '').match(/\d{3}/)?.[0] || '错误' }}</span>
-            </STooltip>
+            <span v-else class="status-fail model-test-fail">
+              <span>● 失败 · </span>
+              <code class="model-test-error">{{ testErrorOf(m) }}</code>
+              <SButton size="sm" variant="ghost" @click="copyTestError(m)">复制</SButton>
+            </span>
           </template>
         </div>
       </div>
@@ -132,3 +153,25 @@ function modelListId(m: AiModel): string {
   </div>
   </section>
 </template>
+
+<style scoped>
+.model-test-fail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.model-test-error {
+  user-select: all;
+  cursor: text;
+  word-break: break-all;
+  white-space: normal;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  background: var(--bg-hover);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}
+</style>

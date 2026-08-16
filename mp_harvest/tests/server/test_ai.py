@@ -125,10 +125,16 @@ def test_model_test_ok_and_fail(client, auth):
         "/api/ai/models/test", params=auth, json={"name": "m", "api_key": "k"}
     )
     assert resp.status_code == 200
-    assert resp.json()["ok"] is True
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["message"] == "连接成功"
+    assert data["error"] == data["message"]
 
     resp = client.post("/api/ai/models/test", params=auth, json={"name": "m"})
-    assert resp.json()["ok"] is False
+    data = resp.json()
+    assert data["ok"] is False
+    assert data["error"] == "缺少 api_key"
+    assert data["message"] == data["error"]
 
 
 def test_models_fetch_list(client, auth):

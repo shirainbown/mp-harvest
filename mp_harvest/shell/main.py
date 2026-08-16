@@ -126,6 +126,15 @@ def cleanup(server: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    try:
+        from mp_harvest.core.consent import require_consent
+
+        if not require_consent():
+            # 未同意免责声明：静默退出，不启动服务/窗口
+            return 2
+    except Exception as exc:  # noqa: BLE001
+        print(f"[mp_harvest] 免责声明门禁异常，按未同意处理：{exc}", flush=True)
+        return 2
     if not args.dev:
         ensure_frontend_dist()
     recover_stale_proxy()
