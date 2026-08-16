@@ -424,6 +424,12 @@ function toggleAiIncludeContent() {
   <SModal :open="aiFilterOpen" @close="aiFilterOpen = false">
     <template #head>AI 筛选</template>
     <div style="display:flex;flex-direction:column;gap:var(--sp-2)">
+      <span class="muted" style="font-size:var(--fs-sm)">
+        AI 筛选针对当前列表（具体公众号或「全部公众号」）自动执行，不需要勾选文章；表格勾选仅用于导出。
+      </span>
+      <span class="muted" style="font-size:var(--fs-sm)">
+        当前文章 {{ articles.list.length }} 篇；标题通过 {{ titleKeepCount }} 篇。
+      </span>
       <div>
         <span class="form-label">第一阶段：标题筛选原则</span>
         <div class="ai-principle-preview">{{ principlesPreview || '（未配置原则）' }}</div>
@@ -455,6 +461,7 @@ function toggleAiIncludeContent() {
       <SButton
         variant="primary"
         :disabled="!articles.list.length"
+        :title="articles.list.length ? '' : '请先拉取历史，列表中还没有文章'"
         @click="aiFilterOpen = false; articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)"
       >开始标题筛选{{ aiIncludeContent ? ' + 内容' : '' }}</SButton>
     </template>
