@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from mp_harvest.infra.platform import paths
 
-APP_VERSION = "2.1.6"
+APP_VERSION = "2.1.7"
 
 _SSL_CONTEXT = None
 

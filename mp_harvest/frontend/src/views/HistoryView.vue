@@ -174,6 +174,8 @@ const contentPrinciplesPreview = computed(() => settings.contentPrinciples.slice
 // 并行判定控制（2026-08-09）：每批篇数（默认 50）/ 并发批数
 const aiBatchSize = ref(50)
 const aiWorkers = ref(4)
+// AI 筛选弹窗开关（2026-08-16 由 Popover 改为 Modal，避免内容过多显示不全）
+const aiFilterOpen = ref(false)
 // 标题筛选完成后是否继续内容筛选（2026-08-16）
 const aiIncludeContent = ref(localStorage.getItem('mp_harvest.ai_include_content') !== '0')
 function toggleAiIncludeContent() {
@@ -272,34 +274,7 @@ function toggleAiIncludeContent() {
           @cancel="articles.cancelExport()"
         />
         <span style="width:8px"></span>
-        <SPopover>
-          <template #anchor><SButton size="sm" :disabled="!articles.accountId || !!articles.aiTaskId">✦ AI 筛选</SButton></template>
-          <template #default="{ close }">
-            <div style="margin-bottom:8px">
-              将按筛选原则判定全部文章：<br />
-              <span class="tertiary mono" style="white-space:pre-wrap">{{ principlesPreview || '（未配置原则）' }}</span>
-            </div>
-            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer">
-              <input v-model="aiIncludeContent" type="checkbox" class="cb" @change="toggleAiIncludeContent" />
-              <span>标题判定后继续按内容判定</span>
-            </label>
-            <div v-if="aiIncludeContent" style="margin-bottom:8px">
-              内容筛选原则：<br />
-              <span class="tertiary mono" style="white-space:pre-wrap">{{ contentPrinciplesPreview || '（未配置内容原则）' }}</span>
-            </div>
-            <div class="toolbar" style="margin-bottom:8px">
-              <span class="form-label">每批篇数</span>
-              <input v-model.number="aiBatchSize" type="number" min="1" max="200" class="input" style="width:72px" />
-              <span class="form-label">并发批数</span>
-              <input v-model.number="aiWorkers" type="number" min="1" max="16" class="input" style="width:64px" />
-              <span class="tertiary" style="font-size:var(--fs-xs)">同时提交的批数越多，并发请求越多</span>
-            </div>
-            <div style="display:flex;justify-content:flex-end;gap:8px">
-              <SButton size="sm" @click="close()">取消</SButton>
-              <SButton size="sm" variant="primary" @click="close(); articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)">{{ aiIncludeContent ? '开始标题+内容判定' : '开始判定' }}</SButton>
-            </div>
-          </template>
-        </SPopover>
+        <SButton size="sm" :disabled="!articles.accountId || !!articles.aiTaskId" @click="aiFilterOpen = true">✦ AI 筛选</SButton>
         <SButton size="sm" variant="ghost" @click="ui.go('ai')">⚙ 模型设置</SButton>
       </div>
     </div>
@@ -415,6 +390,36 @@ function toggleAiIncludeContent() {
     <template #foot>
       <SButton variant="ghost" @click="exportDirOpen = false">取消</SButton>
       <SButton variant="primary" @click="confirmExportDir">导出到目录</SButton>
+    </template>
+  </SModal>
+
+  <!-- AI 筛选 Modal（2026-08-16 由 Popover 改为 Modal，避免内容过多显示不全） -->
+  <SModal :open="aiFilterOpen" @close="aiFilterOpen = false">
+    <template #head>AI 筛选</template>
+    <div style="display:flex;flex-direction:column;gap:var(--sp-2)">
+      <div>
+        <span class="form-label">标题筛选原则</span>
+        <div class="ai-principle-preview">{{ principlesPreview || '（未配置原则）' }}</div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input v-model="aiIncludeContent" type="checkbox" class="cb" @change="toggleAiIncludeContent" />
+        <span>标题判定后继续按内容判定</span>
+      </label>
+      <div v-if="aiIncludeContent">
+        <span class="form-label">内容筛选原则</span>
+        <div class="ai-principle-preview">{{ contentPrinciplesPreview || '（未配置内容原则）' }}</div>
+      </div>
+      <div class="toolbar">
+        <span class="form-label">每批篇数</span>
+        <input v-model.number="aiBatchSize" type="number" min="1" max="200" class="input" style="width:72px" />
+        <span class="form-label">并发批数</span>
+        <input v-model.number="aiWorkers" type="number" min="1" max="16" class="input" style="width:64px" />
+        <span class="tertiary" style="font-size:var(--fs-xs)">同时提交的批数越多，并发请求越多</span>
+      </div>
+    </div>
+    <template #foot>
+      <SButton variant="ghost" @click="aiFilterOpen = false">取消</SButton>
+      <SButton variant="primary" @click="aiFilterOpen = false; articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)">{{ aiIncludeContent ? '开始标题+内容判定' : '开始判定' }}</SButton>
     </template>
   </SModal>
 

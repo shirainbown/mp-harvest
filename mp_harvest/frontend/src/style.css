@@ -133,6 +133,7 @@ select.input{cursor:pointer}
 .art-row:hover .row-actions{opacity:1}
 .cb{width:14px;height:14px;accent-color:var(--accent);cursor:pointer}
 .ai-progress{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--text-secondary)}
+.ai-principle-preview{max-height:140px;overflow-y:auto;white-space:pre-wrap;background:var(--bg-hover);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--sp-2);font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--text-tertiary);line-height:1.6}
 
 /* ============ AI 模型页 ============ */
 .model-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-3) var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-2)}
