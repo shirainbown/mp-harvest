@@ -44,8 +44,12 @@ jobs:
       - name: Create dmg + zip
         run: |
           ver="${GITHUB_REF_NAME#v}"
+          rm -rf dmg-stage
+          mkdir -p dmg-stage
+          cp -R "dist/MP Harvest.app" "dmg-stage/MP Harvest.app"
+          ln -s /Applications "dmg-stage/Applications"
           hdiutil create -volname "MP Harvest" \
-            -srcfolder "dist/MP Harvest.app" \
+            -srcfolder dmg-stage \
             -ov -format UDZO "MP-Harvest-mac-${ver}.dmg"
           ditto -c -k --sequesterRsrc --keepParent \
             "dist/MP Harvest.app" "MP-Harvest-mac-${ver}.zip"
