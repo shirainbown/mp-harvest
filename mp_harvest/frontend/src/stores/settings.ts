@@ -144,7 +144,11 @@ export const useSettingsStore = defineStore('settings', {
       this.updateChecking = true
       const r = await call(rest.get<UpdateCheckResult>('/api/update/check'))
       this.updateChecking = false
-      if (!r || r.ok === false) return 'fail'
+      if (!r) return 'fail'
+      if (r.ok === false) {
+        useUiStore().error(r.message || '检查更新失败')
+        return 'fail'
+      }
       this.update = r
       return r.available ? 'modal' : 'latest'
     },

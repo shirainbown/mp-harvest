@@ -93,6 +93,7 @@ export interface UpdateCheckResult {
   notes?: string // markdown
   current_version?: string
   zip_url?: string
+  message?: string
   error?: string | null
 }
 
