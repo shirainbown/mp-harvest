@@ -40,9 +40,44 @@ export const useTasksStore = defineStore('tasks', {
           clearTimeout(timer)
           delete pendingTimers[task_id]
         }
-        if (pending.kind === 'done') this.onDone(task_id, pending.result)
-        else if (pending.kind === 'error') this.onError(task_id, pending.error)
-        else this.onProgress(task_id, pending.percent, pending.message)
+        if (pending.kind === 'done') {
+          this.onDone(task_id, pending.result)
+        } else if (pending.kind === 'error') {
+          this.onError(task_id, pending.error)
+        } else {
+          this.onProgress(task_id, pending.percent, pending.message)
+          setTimeout(() => this._poll(task_id), 1000)
+        }
+        return
+      }
+      // 兜底：若 WS 事件因连接/竞态丢失，稍后查询任务状态
+      setTimeout(() => this._poll(task_id), 300)
+    },
+    /** 任务状态兜底查询：WS 不可用或事件被丢弃时，仍能拿到 done/error */
+    async _poll(task_id: string) {
+      const t = this.tasks[task_id]
+      if (!t || t.status !== 'running') return
+      const r = await call(
+        rest.get<{
+          id: string
+          status: string
+          percent: number
+          message: string
+          result?: unknown
+          error?: string
+        }>(`/api/tasks/${task_id}`),
+      )
+      if (!r) return
+      const cur = this.tasks[task_id]
+      if (!cur || cur.status !== 'running') return
+      cur.percent = r.percent
+      cur.message = r.message
+      if (r.status === 'done') {
+        this.onDone(task_id, r.result)
+      } else if (r.status === 'error' || r.status === 'cancelled') {
+        this.onError(task_id, r.error || '任务失败')
+      } else {
+        setTimeout(() => this._poll(task_id), 1000)
       }
     },
     async cancel(task_id: string) {
