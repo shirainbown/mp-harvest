@@ -181,6 +181,14 @@ export const useSettingsStore = defineStore('settings', {
         },
       })
     },
+    async cancelUpdateDownload() {
+      if (!this.updateTaskId) return
+      const taskId = this.updateTaskId
+      this.updateTaskId = ''
+      this.updateProgress = 0
+      await useTasksStore().cancel(taskId)
+      useUiStore().toast('已停止下载')
+    },
     async applyUpdate() {
       const r = await call(rest.post('/api/update/apply'))
       if (r !== null) useUiStore().toast('即将退出并自动替换重启')

@@ -99,7 +99,7 @@ def test_update_download_failure_task_error(client, auth, fake_platform, monkeyp
     monkeypatch.setattr(
         fake_platform.updater,
         "download",
-        lambda url, *, proxy=None, on_progress=None: DownloadResult(ok=False, error="网络中断"),
+        lambda url, *, proxy=None, on_progress=None, should_cancel=None: DownloadResult(ok=False, error="网络中断"),
     )
     resp = client.post(
         "/api/update/download", params=auth, json={"zip_url": "https://x/y.zip"}

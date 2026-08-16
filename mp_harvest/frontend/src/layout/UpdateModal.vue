@@ -24,6 +24,9 @@ async function restart() {
   await settings.applyUpdate()
   ui.updateOpen = false
 }
+async function stopDownload() {
+  await settings.cancelUpdateDownload()
+}
 </script>
 
 <template>
@@ -44,7 +47,8 @@ async function restart() {
     </template>
 
     <template #foot>
-      <SButton variant="ghost" @click="later">稍后</SButton>
+      <SButton v-if="downloading" variant="ghost" @click="stopDownload">停止下载</SButton>
+      <SButton v-else variant="ghost" @click="later">稍后</SButton>
       <SButton v-if="settings.updateReady" variant="primary" @click="restart">重启以应用</SButton>
       <SButton v-else variant="primary" :loading="downloading" @click="update">立即更新</SButton>
     </template>

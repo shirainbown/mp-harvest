@@ -440,7 +440,7 @@ class FakePlatform:
             disable=lambda: ProxyResult(ok=True, message="代理已关闭"),
         )
 
-        def _download(url, *, proxy=None, on_progress=None):
+        def _download(url, *, proxy=None, on_progress=None, should_cancel=None):
             if on_progress:
                 on_progress(1, 1)
             return DownloadResult(ok=True, path="/fake/pkg.zip")

@@ -40,7 +40,15 @@ def update_download(body: UpdateDownloadIn) -> dict:
             pct = (done / total * 100.0) if total else 0.0
             task.update(percent=pct, message=f"下载更新包 {done // 1024}KB/{total // 1024}KB")
 
-        result = updater.download(body.zip_url, proxy=proxy, on_progress=on_progress)
+        def should_cancel() -> bool:
+            return task.cancel_event.is_set()
+
+        result = updater.download(
+            body.zip_url,
+            proxy=proxy,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+        )
         task.check_cancelled()
         if not result.ok:
             raise RuntimeError(result.error or result.message or "下载失败")

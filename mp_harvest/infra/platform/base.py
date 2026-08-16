@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from mp_harvest.infra.platform import paths
 
-APP_VERSION = "2.1.12"
+APP_VERSION = "2.1.13"
 
 _SSL_CONTEXT = None
 
@@ -331,6 +331,7 @@ class GithubUpdater(Updater):
         *,
         proxy: str | None = None,
         on_progress: Callable[[int, int], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> DownloadResult:
         import urllib.request
 
@@ -347,6 +348,12 @@ class GithubUpdater(Updater):
                 done = 0
                 with open(out, "wb") as fh:
                     while True:
+                        if should_cancel and should_cancel():
+                            return DownloadResult(
+                                ok=False,
+                                error="cancelled",
+                                message="下载已取消",
+                            )
                         chunk = resp.read(65536)
                         if not chunk:
                             break
