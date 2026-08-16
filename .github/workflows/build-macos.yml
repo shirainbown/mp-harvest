@@ -69,7 +69,6 @@ jobs:
           body: |
             ## MP Harvest ${{ github.ref_name }}
 
-            - 新增免责声明同意门禁：首次启动需确认声明，不同意则阻止使用
-            - 本次构建由 GitHub Actions 自动完成（macOS）
+            本次构建由 GitHub Actions 自动完成（macOS）。
 
             下载 dmg 安装或 zip 直接运行；未签名，Gatekeeper 提示时右键打开。
