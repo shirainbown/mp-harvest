@@ -59,6 +59,8 @@ const range = computed({
 // ---- 拉取进度（内联） ----
 const fetchTask = computed(() => (articles.fetchTaskId ? tasks.tasks[articles.fetchTaskId] : null))
 const exportTask = computed(() => (articles.exportTaskId ? tasks.tasks[articles.exportTaskId] : null))
+const aiTask = computed(() => (articles.aiTaskId ? tasks.tasks[articles.aiTaskId] : null))
+const titleKeepCount = computed(() => articles.list.filter((a) => a.title_verdict === 'keep').length)
 
 // ---- 批量拉取（2026-08-09）----
 const batchOpen = ref(false)
@@ -239,7 +241,7 @@ function toggleAiIncludeContent() {
           @update:model-value="articles.setStage($event as 'final' | 'title' | 'content')"
         />
         <span class="spacer"></span>
-        <span v-if="articles.aiProgress" class="ai-progress"><span class="spinner"></span>{{ articles.aiProgress }}</span>
+        <span v-if="aiTask" class="ai-progress"><span class="spinner"></span>{{ articles.aiProgress || aiTask.message }} {{ Math.round(aiTask.percent) }}%</span>
       </div>
       <div class="toolbar" style="padding-top:var(--sp-2)">
         <div class="view-tabs">
@@ -434,8 +436,17 @@ function toggleAiIncludeContent() {
     </div>
     <template #foot>
       <SButton variant="ghost" @click="aiFilterOpen = false">取消</SButton>
-      <SButton variant="ghost" @click="aiFilterOpen = false; articles.contentFilter(aiBatchSize, aiWorkers)">仅内容筛选</SButton>
-      <SButton variant="primary" @click="aiFilterOpen = false; articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)">开始标题筛选{{ aiIncludeContent ? ' + 内容' : '' }}</SButton>
+      <SButton
+        variant="ghost"
+        :disabled="!titleKeepCount || !articles.list.length"
+        :title="titleKeepCount ? '只对标题通过的文章执行' : '请先执行标题筛选'"
+        @click="aiFilterOpen = false; articles.contentFilter(aiBatchSize, aiWorkers)"
+      >仅内容筛选（{{ titleKeepCount }}）</SButton>
+      <SButton
+        variant="primary"
+        :disabled="!articles.list.length"
+        @click="aiFilterOpen = false; articles.aiFilter(aiBatchSize, aiWorkers, aiIncludeContent)"
+      >开始标题筛选{{ aiIncludeContent ? ' + 内容' : '' }}</SButton>
     </template>
   </SModal>
 

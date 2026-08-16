@@ -96,6 +96,7 @@ def ai_filter(body: AiFilterIn) -> dict:
         models = ai_mod.load_models(_models_path())
         principles = ai_mod.load_principles(_principles_path())
         prompt = ai_mod.build_system_prompt(principles)
+        task.update(percent=0.0, message=f"AI 判定中 0/{len(articles)}")
 
         def on_progress(done: int, total: int) -> None:
             task.check_cancelled()  # 每个模型批次一个边界
@@ -169,6 +170,7 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
         models = ai_mod.load_models(_models_path())
         principles = ai_mod.load_content_principles(_content_principles_path())
         prompt = ai_mod.build_system_prompt(principles)
+        task.update(percent=0.0, message="内容筛选准备中…")
 
         # 1) 逐篇获取正文：已缓存 body_text 的复用，没有的现拉
         fetch_failed = 0
