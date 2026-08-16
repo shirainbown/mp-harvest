@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
@@ -125,15 +126,6 @@ def cleanup(server: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    try:
-        from mp_harvest.core.consent import require_consent
-
-        if not require_consent():
-            # 未同意免责声明：静默退出，不启动服务/窗口
-            return 2
-    except Exception as exc:  # noqa: BLE001
-        print(f"[mp_harvest] 免责声明门禁异常，按未同意处理：{exc}", flush=True)
-        return 2
     if not args.dev:
         ensure_frontend_dist()
     recover_stale_proxy()
@@ -158,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         # pywebview 无原生 hidden-titlebar 参数，无边框窗口是最接近形态
         window_kwargs["frameless"] = True
 
-    webview.create_window(
+    window = webview.create_window(
         "MP Harvest",
         url,
         width=1180,
@@ -166,11 +158,22 @@ def main(argv: list[str] | None = None) -> int:
         min_size=(960, 640),
         **window_kwargs,
     )
+
+    # 窗口关闭后，pywebview/Cocoa 事件循环的收尾可能很慢。这里在 closed
+    # 事件触发时立即启动后台线程执行清理，并在清理完成后直接 os._exit(0)，
+    # 确保进程能快速退出，不等 Cocoa runloop 慢慢停（2026-08-16 用户反馈）。
+    cleanup_lock = threading.Lock()
+
+    def _cleanup_and_exit() -> None:
+        with cleanup_lock:
+            cleanup(server)
+        os._exit(0)
+
+    window.events.closed += _cleanup_and_exit
     try:
         webview.start()  # 阻塞至窗口关闭（macOS 必须在主线程）
     finally:
-        cleanup(server)
-    return 0
+        _cleanup_and_exit()
 
 
 def recover_stale_proxy() -> None:
