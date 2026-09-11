@@ -53,6 +53,74 @@ RELEASE_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 RELEASES_ATOM = f"https://github.com/{GITHUB_REPO}/releases.atom"
 
 
+def _html_notes_to_markdown(fragment: str) -> str:
+    """把 atom feed 里的 HTML 正文转成 markdown。
+
+    为什么必须转：前端的检查更新弹窗用 markdown-it 且 ``html: false``（防 XSS），
+    直接把 HTML 塞进 ``notes`` 会被**转义成字面文本** —— 用户看到的就是一堆
+    ``<h2>``（2026-09 实测）。GitHub API 路径返回的 ``body`` 本来就是 markdown，
+    这里对齐成同一种格式，前端契约保持单一。
+    """
+    try:
+        from bs4 import BeautifulSoup, Tag
+    except Exception:  # noqa: BLE001
+        return fragment
+
+    soup = BeautifulSoup(fragment or "", "html.parser")
+
+    def render(el: Any) -> list[str]:
+        if not isinstance(el, Tag):
+            text = str(el).strip()
+            return [text] if text else []
+        name = (el.name or "").lower()
+        if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            title = el.get_text(" ", strip=True)
+            return [f"{'#' * int(name[1])} {title}"] if title else []
+        if name in ("ul", "ol"):
+            out: list[str] = []
+            for i, li in enumerate(el.find_all("li", recursive=False), start=1):
+                item = li.get_text(" ", strip=True)
+                if item:
+                    out.append(f"{i}. {item}" if name == "ol" else f"- {item}")
+            return out
+        if name == "hr":
+            return ["---"]
+        if name == "pre":
+            return ["```", el.get_text(), "```"]
+        if name == "blockquote":
+            text = el.get_text(" ", strip=True)
+            return [f"> {text}"] if text else []
+        if name == "p":
+            text = el.get_text(" ", strip=True)
+            return [text] if text else []
+        # 其它容器（div/section/…）递归到子节点
+        out = []
+        for child in el.children:
+            out.extend(render(child))
+        return out
+
+    import re as _re
+
+    blocks: list[str] = []
+    for top in soup.children:
+        blocks.extend(render(top))
+    if not blocks:
+        return soup.get_text("\n", strip=True)
+
+    # 空行分段，让 markdown-it 正确识别标题/段落；但**连续的列表项之间不能有空行**，
+    # 否则每个条目会被当成独立的列表（渲染成一堆松散段落）
+    merged: list[str] = []
+    item_re = _re.compile(r"^([-*]|\d+\.)\s")
+    for block in (x.strip() for x in blocks):
+        if not block:
+            continue
+        if merged and item_re.match(block) and item_re.match(merged[-1]):
+            merged[-1] = f"{merged[-1]}\n{block}"
+        else:
+            merged.append(block)
+    return "\n\n".join(merged)
+
+
 def _system_proxy() -> str:
     """当前系统代理（返回 ``http://host:port``，取不到返回空串）。
 
@@ -373,7 +441,8 @@ class GithubUpdater(Updater):
         notes = ""
         content_m = re.search(r'<content type="html">(.*?)</content>', entry, re.S)
         if content_m:
-            notes = html_mod.unescape(content_m.group(1)).strip()
+            # atom 给的是 HTML；统一转成 markdown，避免前端把它当纯文本显示出一堆标签
+            notes = _html_notes_to_markdown(html_mod.unescape(content_m.group(1))).strip()
 
         zip_url = ""
         if self.asset_prefix:

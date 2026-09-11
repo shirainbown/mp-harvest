@@ -723,3 +723,73 @@ def test_update_proxy_respects_three_modes(data_dir, monkeypatch):
         json.dumps({"mode": "custom", "proxy": "http://127.0.0.1:7897"}), encoding="utf-8"
     )
     assert _settings_proxy() == "http://127.0.0.1:7897"
+
+
+def test_atom_notes_are_markdown_not_html(monkeypatch):
+    """atom 兜底返回的 notes 必须是 markdown —— 前端用 markdown-it(html:false)
+    渲染，塞 HTML 进去会被转义成字面文本，用户看到一堆 `<h2>`（2026-09 实测）。
+    """
+    import re
+    import urllib.error
+
+    from mp_harvest.infra.platform import base as pb
+    from mp_harvest.infra.platform.mac import MacUpdater
+
+    atom = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/123456/v9.9.9</id>
+    <title>v9.9.9</title>
+    <content type="html">&lt;h2&gt;修复&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;第一条&lt;/li&gt;&lt;li&gt;第二条&lt;/li&gt;&lt;/ul&gt;</content>
+  </entry>
+</feed>"""
+
+    class _Resp:
+        status = 200
+
+        def __init__(self, body: str) -> None:
+            self._body = body.encode()
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a) -> None:
+            return None
+
+    class _Opener:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            url = getattr(req, "full_url", str(req))
+            if "api.github.com" in url:
+                raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+            return _Resp(atom)
+
+    monkeypatch.setattr(pb.GithubUpdater, "_opener", lambda self, proxy: _Opener())
+
+    result = MacUpdater().check(proxy=None)
+
+    assert result.ok is True, result
+    assert not re.search(r"<[a-zA-Z/][^>]*>", result.notes), result.notes
+    assert "## 修复" in result.notes, result.notes
+    # 连续列表项之间不能有空行，否则会被渲染成多个列表
+    assert "- 第一条\n- 第二条" in result.notes, result.notes
+
+
+def test_html_notes_to_markdown_structure():
+    """HTML→markdown 的结构保留：标题/有序无序列表/引用/代码块。"""
+    from mp_harvest.infra.platform.base import _html_notes_to_markdown
+
+    md = _html_notes_to_markdown(
+        "<h2>标题</h2><ul><li>甲</li><li>乙</li></ul>"
+        "<ol><li>一</li></ol><p>正文</p><hr/><blockquote>引用</blockquote>"
+        "<pre>a\nb</pre>"
+    )
+    assert "## 标题" in md
+    assert "- 甲\n- 乙" in md
+    assert "1. 一" in md
+    assert "正文" in md
+    assert "---" in md
+    assert "> 引用" in md
+    assert "```" in md

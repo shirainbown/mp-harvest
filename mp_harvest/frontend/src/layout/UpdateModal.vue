@@ -5,6 +5,7 @@ import MarkdownIt from 'markdown-it'
 import SModal from '../components/SModal.vue'
 import SButton from '../components/SButton.vue'
 import { useSettingsStore } from '../stores/settings'
+import { openExternal } from '../api/desktop'
 import { useUiStore } from '../stores/ui'
 
 const ui = useUiStore()
@@ -13,6 +14,21 @@ const md = new MarkdownIt({ html: false, linkify: true })
 
 const notesHtml = computed(() => (settings.update?.notes ? md.render(settings.update.notes) : ''))
 const downloading = computed(() => !!settings.updateTaskId)
+
+/**
+ * 更新说明里的链接必须走 shell 打开外部浏览器。
+ *
+ * pywebview/Cocoa 只在 target="_blank" 时才交给系统浏览器；普通 <a href> 点击走的是
+ * 「normal navigation, allow」——**会把应用窗口本身导航走**，而 pywebview 窗口没有
+ * 后退按钮，用户就卡在网页上了（2026-09）。
+ */
+function onNotesClick(e: MouseEvent) {
+  const anchor = (e.target as HTMLElement | null)?.closest?.('a')
+  const href = anchor?.getAttribute('href') || ''
+  if (!href) return
+  e.preventDefault()
+  if (!openExternal(href)) ui.error('打开链接失败，请手动复制到浏览器')
+}
 
 function later() {
   ui.updateOpen = false
@@ -35,7 +51,7 @@ async function stopDownload() {
       发现新版本 <span class="badge m" style="margin-left:4px">{{ settings.update?.version }}</span>
     </template>
 
-    <div v-if="notesHtml" v-html="notesHtml"></div>
+    <div v-if="notesHtml" v-html="notesHtml" @click="onNotesClick"></div>
     <template v-if="downloading || settings.updateReady">
       <div class="progress-track">
         <div class="progress-fill" :style="`width:${settings.updateProgress}%`"></div>
