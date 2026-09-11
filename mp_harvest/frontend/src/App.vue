@@ -5,6 +5,7 @@ import UpdateModal from './layout/UpdateModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import CredentialView from './views/CredentialView.vue'
 import HistoryView from './views/HistoryView.vue'
+import ExternalView from './views/ExternalView.vue'
 import AiModelsView from './views/AiModelsView.vue'
 import NetworkView from './views/NetworkView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -28,6 +29,7 @@ onMounted(() => {
     <div class="main">
       <CredentialView v-show="ui.view === 'credentials'" />
       <HistoryView v-show="ui.view === 'history'" />
+      <ExternalView v-show="ui.view === 'external'" />
       <AiModelsView v-show="ui.view === 'ai'" />
       <NetworkView v-show="ui.view === 'network'" />
       <SettingsView v-show="ui.view === 'settings'" />

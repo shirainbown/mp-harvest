@@ -92,6 +92,16 @@ def _fetch_one_account(
     cred = account.get("credentials") or {}
     biz = str(account.get("biz") or cred.get("__biz") or "")
     sightings = state.get_sightings().list_for_biz(biz)
+    # 断点拉取（2026-09）：把已入库文章的 identity/link 交给翻页逻辑，
+    # 某页窗口内全是老熟人就不再往更旧的页发请求 —— 这是省掉重复请求的大头。
+    cached = state.get_articles(account_id)
+    known_keys = {str(a.get("identity") or "") for a in cached}
+    known_keys |= {str(a.get("link") or "") for a in cached}
+    known_keys.discard("")
+    # 窗口下界：自定义范围用 start_ts，按天数则换算（与 fetch_history_days 一致）
+    win_start = int(start_ts) if start_ts else max(0, int(time.time()) - int(days) * 86400)
+    win_end = int(end_ts) if start_ts else 0
+    stamped = int(time.time())
     if start_ts:
         result = history_client.fetch_history_range(
             cred,
@@ -99,6 +109,7 @@ def _fetch_one_account(
             end_ts=end_ts,
             on_progress=on_progress,
             sightings=sightings,
+            known_keys=known_keys,
         )
     else:
         result = history_client.fetch_history_days(
@@ -106,6 +117,7 @@ def _fetch_one_account(
             days=days,
             on_progress=on_progress,
             sightings=sightings,
+            known_keys=known_keys,
         )
     task.check_cancelled()
     articles = list(result.get("articles") or [])
@@ -114,10 +126,16 @@ def _fetch_one_account(
     merge = state.merge_articles(
         account_id,
         articles,
-        fetched_ts=int(time.time()),
+        fetched_ts=stamped,
         days=days,
         advance_last_fetch=ok,
     )
+    # 提前停止时，窗口内那些「没重新请求」的老文章也要补上本次标记，
+    # 否则「最近拉取」会只剩最新几页（保持改造前的含义，纯本地不发请求）
+    if ok and result.get("stopped_early"):
+        state.touch_fetched_in_window(
+            account_id, start_ts=win_start, end_ts=win_end, fetched_ts=stamped
+        )
     # 2026-08-09：默认「未命名公众号」时，用 getmsg 返回的官方昵称自动覆盖
     nickname = str(result.get("nickname") or "").strip()
     if nickname:
@@ -139,6 +157,8 @@ def _fetch_one_account(
         "truncated": bool(result.get("truncated")),
         "notice": str(result.get("notice") or ""),
         "error": result.get("error") or "",
+        # 断点拉取命中：没重复翻页（前端可据此提示「已是最新」而不是让用户困惑页数变少）
+        "stopped_early": bool(result.get("stopped_early")),
     }
 
 

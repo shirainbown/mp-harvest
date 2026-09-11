@@ -878,7 +878,9 @@ def test_export_rejects_page_without_body(tmp_path):
     """拿不到正文容器（微信环境校验页）时判失败，不能把整页文字当正文存下来。"""
     out = tmp_path / "out"
     db = ExportRecords(out / "db")
-    arts = [dict(_art(1), _cred_error="凭证缺失或已过期：测试号")]
+    # body_html 必须清空：本地已有正文时导出会直接复用、根本不联网（2026-09），
+    # 这条用例要测的是「抓回来的页面没有正文容器」，得走抓取路径
+    arts = [dict(_art(1, body_html=""), _cred_error="凭证缺失或已过期：测试号")]
 
     def fetch_no_content(url: str, cred=None):
         # 模拟环境校验页：有文字、但没有 #js_content
@@ -901,3 +903,160 @@ def test_export_rejects_page_without_body(tmp_path):
     assert any("凭证" in e for e in res["errors"]), res["errors"]
     # 不写盘
     assert not [p for p in out.rglob("*.html") if p.name != "index.html"]
+
+
+# ── 断点拉取：不重复向微信发请求（2026-09）────────────────────────────
+
+
+def test_export_reuses_cached_body_without_fetch(tmp_path):
+    """正文已在文章缓存里（内容筛选拉过）→ 导出不再联网。
+
+    原先导出只认「导出记录 + 文件还在」，正文缓存完全没被利用：文件被手动删过、
+    或先把正文筛完再导出的场景，都要白白重拉一次 mp.weixin.qq.com。
+    """
+    out = tmp_path / "out"
+    db = ExportRecords(out / "db")
+    fetched: list[str] = []
+
+    def counting_fetch(url: str, cred=None):
+        fetched.append(url)
+        return _fetch(url, cred)
+
+    arts = [dict(_art(1), body_html="<p>本地已有的正文</p>", body_text="本地已有的正文")]
+    res = batch_export_articles(arts, out_dir=out, fetch_article=counting_fetch, records=db)
+
+    assert res["exported"] == 1, res
+    assert res["reused_body"] == 1, res
+    assert fetched == [], f"不该发起任何抓取，却请求了 {fetched}"
+    body = next(p for p in out.rglob("*.html") if p.name != "index.html")
+    assert "本地已有的正文" in body.read_text(encoding="utf-8")
+
+
+def test_export_fetches_when_no_cached_body(tmp_path):
+    """没有正文缓存时照常联网（不能因为加了跳过就把正文丢了）。"""
+    out = tmp_path / "out"
+    db = ExportRecords(out / "db")
+    fetched: list[str] = []
+
+    def counting_fetch(url: str, cred=None):
+        fetched.append(url)
+        return _fetch(url, cred)
+
+    arts = [dict(_art(1), body_html="", body_text="")]
+    res = batch_export_articles(arts, out_dir=out, fetch_article=counting_fetch, records=db)
+
+    assert res["exported"] == 1, res
+    assert res["reused_body"] == 0, res
+    assert len(fetched) == 1, fetched
+
+
+def test_touch_fetched_in_window_keeps_recent_filter_meaning(data_dir):
+    """翻页提前停止后，窗口内没重新请求的老文章也要补上本次 fetched_ts。
+
+    否则「最近拉取」筛选会突然只剩最新几页 —— 用户以为文章丢了。
+    """
+    from mp_harvest.server import state
+
+    old_ts = 1754400000          # 窗口内、上一轮拉到的
+    older_ts = 1754000000        # 窗口外
+    state.merge_articles("acc1", [
+        {"identity": "in", "link": "https://x/in", "title": "窗口内", "publish_ts": old_ts},
+        {"identity": "out", "link": "https://x/out", "title": "窗口外", "publish_ts": older_ts},
+    ], fetched_ts=1000)
+
+    stamp = 9999
+    touched = state.touch_fetched_in_window(
+        "acc1", start_ts=old_ts - 10, end_ts=old_ts + 10, fetched_ts=stamp
+    )
+    assert touched == 1
+    rows = {r["identity"]: r for r in state.get_articles("acc1")}
+    assert rows["in"]["fetched_ts"] == stamp
+    assert rows["out"]["fetched_ts"] == 1000, "窗口外的文章不该被补标记"
+    # 「最近拉取」应仍能看到窗口内那篇
+    assert [r["identity"] for r in state.time_filter(
+        state.get_articles("acc1"), latest_ts=stamp)] == ["in"]
+
+
+def test_touch_fetched_never_moves_backwards(data_dir):
+    """只往前推：比目标时间还新的 fetched_ts 不能被改小。"""
+    from mp_harvest.server import state
+
+    ts = 1754400000
+    state.merge_articles("acc1", [
+        {"identity": "a", "link": "https://x/a", "title": "A", "publish_ts": ts},
+    ], fetched_ts=5000)
+
+    assert state.touch_fetched_in_window("acc1", start_ts=0, end_ts=0, fetched_ts=1000) == 0
+    assert state.get_articles("acc1")[0]["fetched_ts"] == 5000
+
+
+def test_localize_images_reuses_existing_files(tmp_path, monkeypatch):
+    """重复导出同一篇时不再重下已经在本地的图片（mmbiz.qpic.cn 同样会被限流）。"""
+    from mp_harvest.core import article_reader as ar
+
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            self.content = body
+            self.headers = {"Content-Type": "image/jpeg"}
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class _Session:
+        def __init__(self, *a, **k) -> None:
+            self.trust_env = True
+
+        def get(self, url, **k):
+            calls.append(url)
+            return _Resp(b"BYTES")
+
+    monkeypatch.setattr(ar.requests, "Session", _Session)
+
+    assets = tmp_path / "assets"
+    body = '<p><img src="https://mmbiz.qpic.cn/A.jpg"><img src="https://mmbiz.qpic.cn/B.jpg"></p>'
+
+    first = ar.localize_images(body, assets, prefix="deadbeef")
+    assert len(calls) == 2, calls
+    assert "deadbeef_001.jpg" in first and "deadbeef_002.jpg" in first
+
+    # 再跑一次：两张都已存在 → 一次网络请求都不该发
+    calls.clear()
+    second = ar.localize_images(body, assets, prefix="deadbeef")
+    assert calls == [], f"不该重下已存在的图片，却请求了 {calls}"
+    assert "deadbeef_001.jpg" in second and "deadbeef_002.jpg" in second
+    assert sorted(p.name for p in assets.iterdir()) == ["deadbeef_001.jpg", "deadbeef_002.jpg"]
+
+
+def test_localize_images_redownloads_empty_file(tmp_path, monkeypatch):
+    """上次下载只落了 0 字节（中断）时不能当成「已缓存」。"""
+    from mp_harvest.core import article_reader as ar
+
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            self.content = body
+            self.headers = {"Content-Type": "image/jpeg"}
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class _Session:
+        def __init__(self, *a, **k) -> None:
+            self.trust_env = True
+
+        def get(self, url, **k):
+            calls.append(url)
+            return _Resp(b"BYTES")
+
+    monkeypatch.setattr(ar.requests, "Session", _Session)
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "deadbeef_001.jpg").write_bytes(b"")  # 上次中断留下的空文件
+
+    ar.localize_images('<img src="https://mmbiz.qpic.cn/A.jpg">', assets, prefix="deadbeef")
+    assert len(calls) == 1, calls
+    assert (assets / "deadbeef_001.jpg").read_bytes() == b"BYTES"

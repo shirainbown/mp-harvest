@@ -127,6 +127,43 @@ class PrinciplesIn(BaseModel):
     text: str = ""
 
 
+# ── external（其他来源目录，2026-09）──────────────────────────────
+
+
+class ExternalSourceIn(BaseModel):
+    """登记一个外部来源目录；name 留空则用目录名。"""
+
+    name: str = ""
+    path: str = Field(min_length=1)
+
+
+class ExternalSourcePatchIn(BaseModel):
+    """改名 / 启停；两个字段都可选（None = 不改）。"""
+
+    name: str | None = None
+    enabled: bool | None = None
+
+
+class ExternalFilterIn(BaseModel):
+    """外部条目的 AI 筛选；ids 为空 = 该来源全部。"""
+
+    source_id: str = ""
+    ids: list[str] | None = None
+    stage: str = "title"  # title | content
+    batch_size: int | None = Field(default=None, ge=1, le=200)
+    workers: int | None = Field(default=None, ge=1, le=16)
+
+
+class ExternalExportIn(BaseModel):
+    """把条目按 arXiv 格式写回目录（元数据 + 逐篇正文）。"""
+
+    source_id: str = ""
+    ids: list[str] | None = None
+    out_dir: str = ""
+    # 非空 = 强制全部写进这个日期子目录；必须是 YYYY-MM-DD（防路径穿越）
+    date_dir: str = ""
+
+
 # ── settings ──────────────────────────────────────────────────────
 
 

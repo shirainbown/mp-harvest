@@ -232,3 +232,152 @@ def test_normal_completion_is_not_truncated():
 
     assert res["truncated"] is False, res
     assert res["warning"] == ""
+
+
+# ── 断点拉取：整页已入库则停止继续请求（2026-09）────────────────────
+
+
+def _patch_pages_counting(pages):
+    """同 _patch_pages，但记录实际请求了几页（断点拉取的核心断言）。"""
+    it = iter(pages)
+    calls = {"n": 0}
+    orig_page = history_client.fetch_getmsg_page
+    orig_nick = history_client.fetch_profile_nickname
+
+    def _fake(cred, *, offset=0, count=10, session=None):
+        calls["n"] += 1
+        return next(it, _mk_page([]))
+
+    history_client.fetch_getmsg_page = _fake
+    history_client.fetch_profile_nickname = lambda cred, session=None: "测试号"
+    return (orig_page, orig_nick), calls
+
+
+def test_stops_paging_when_page_fully_known():
+    """第二页全是老熟人 → 不再请求第三页。
+
+    不这么做的话，「近 90 天」每次拉取都会把几十页从头重新请求一遍，
+    全打在微信上 —— 这正是封控风险的主要来源。
+    """
+    pages = [
+        _mk_page([_mk_art(9, TS["d20"])]),                       # 新文章，未知
+        _mk_page([_mk_art(2, TS["d15"]), _mk_art(3, TS["d10"])]),  # 全已知
+        _mk_page([_mk_art(4, TS["d05"])]),                       # 不该被请求
+    ]
+    saved, calls = _patch_pages_counting(pages)
+    try:
+        res = fetch_history_range(
+            CRED,
+            start_ts=TS["d01"],
+            sleep_s=0,
+            known_keys={"mid:2|idx:1|sn:s2", "mid:3|idx:1|sn:s3"},
+        )
+    finally:
+        _restore(saved)
+
+    assert res["ok"] is True
+    assert calls["n"] == 2, f"应只请求 2 页，实际 {calls['n']}"
+    assert res["stopped_early"] is True
+    # 停下的那一页本身仍要被收录（内容已经拿到，不发多余请求）
+    assert {a["title"] for a in res["articles"]} == {"文章9", "文章2", "文章3"}
+
+
+def test_keeps_paging_while_page_has_unknown():
+    """页面里还有没见过的文章就继续翻 —— 不能提前停掉漏数据。"""
+    pages = [
+        _mk_page([_mk_art(9, TS["d20"])]),
+        _mk_page([_mk_art(8, TS["d15"])]),  # 未知
+        _mk_page([_mk_art(2, TS["d10"])]),  # 已知
+    ]
+    saved, calls = _patch_pages_counting(pages)
+    try:
+        res = fetch_history_range(
+            CRED, start_ts=TS["d01"], sleep_s=0, known_keys={"mid:2|idx:1|sn:s2"}
+        )
+    finally:
+        _restore(saved)
+
+    assert calls["n"] == 3
+    assert res["stopped_early"] is True  # 第 3 页触发停止
+
+
+def test_stop_ignores_out_of_window_articles():
+    """比 end_ts 新的文章本轮本就要跳过，不能因为它们「未知」就一路翻下去。
+
+    **同页混合**才是判别用例：窗口外未知 + 窗口内已知。真实场景是账号今天又推了
+    新文章，而用户拉的是上周的区间 —— 翻到「新文章 + 上周已知文章」混排的那一页时
+    就该停。把窗口外的文章单独放一页是测不出问题的：那种页面两边都会继续翻。
+    """
+    pages = [
+        _mk_page([_mk_art(99, TS["d20"]), _mk_art(2, TS["d10"])]),  # 同页：窗外未知 + 窗内已知
+        _mk_page([_mk_art(3, TS["d05"])]),                          # 不该被请求
+    ]
+    saved, calls = _patch_pages_counting(pages)
+    try:
+        res = fetch_history_range(
+            CRED,
+            start_ts=TS["d01"],
+            end_ts=TS["d15"],
+            sleep_s=0,
+            known_keys={"mid:2|idx:1|sn:s2"},
+        )
+    finally:
+        _restore(saved)
+
+    assert calls["n"] == 1, f"窗口外文章不该阻止提前停止，实际请求 {calls['n']} 页"
+    assert res["stopped_early"] is True
+    assert {a["title"] for a in res["articles"]} == {"文章2"}  # 窗口外的 99 不收录
+
+
+def test_page_with_no_in_window_article_does_not_stop():
+    """整页都在窗口外 → 无从判断是否到过断点，必须继续翻。"""
+    pages = [
+        _mk_page([_mk_art(99, TS["d20"])]),  # 全在窗口外（晚于 end_ts）
+        _mk_page([_mk_art(2, TS["d10"])]),   # 窗口内、已知 → 在这里停
+        _mk_page([_mk_art(3, TS["d05"])]),
+    ]
+    saved, calls = _patch_pages_counting(pages)
+    try:
+        res = fetch_history_range(
+            CRED,
+            start_ts=TS["d01"],
+            end_ts=TS["d15"],
+            sleep_s=0,
+            known_keys={"mid:2|idx:1|sn:s2"},
+        )
+    finally:
+        _restore(saved)
+
+    assert calls["n"] == 2, "全窗口外的页面不能触发停止"
+    assert res["stopped_early"] is True
+
+
+def test_without_known_keys_behaves_as_before():
+    """不传 known_keys（老调用方 / 首次拉取）→ 行为与改造前一致，绝不提前停。"""
+    pages = [
+        _mk_page([_mk_art(1, TS["d05"])]),
+        _mk_page([_mk_art(2, TS["d10"])]),
+        _mk_page([_mk_art(3, TS["d15"])]),
+    ]
+    saved, calls = _patch_pages_counting(pages)
+    try:
+        res = fetch_history_range(CRED, start_ts=TS["d01"], sleep_s=0)
+    finally:
+        _restore(saved)
+
+    assert calls["n"] == 4, "没有已知集合时应一路翻到空页"
+    assert res["stopped_early"] is False
+
+
+def test_stopped_early_false_on_normal_completion():
+    """翻到「整页都老于 start_ts」自然结束 → 不算断点命中，别让前端误报。"""
+    pages = [_mk_page([_mk_art(1, TS["d20"])]), _mk_page([_mk_art(2, TS["d01"])])]
+    saved, calls = _patch_pages_counting(pages)
+    try:
+        res = fetch_history_range(
+            CRED, start_ts=TS["d10"], sleep_s=0, known_keys={"mid:2|idx:1|sn:s2"}
+        )
+    finally:
+        _restore(saved)
+
+    assert res["stopped_early"] is False

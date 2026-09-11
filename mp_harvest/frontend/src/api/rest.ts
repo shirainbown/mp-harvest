@@ -94,5 +94,7 @@ export const rest = {
   get: <T>(path: string, opts?: RestOptions) => request<T>('GET', path, undefined, opts),
   post: <T>(path: string, body?: unknown, opts?: RestOptions) => request<T>('POST', path, body, opts),
   put: <T>(path: string, body?: unknown, opts?: RestOptions) => request<T>('PUT', path, body, opts),
+  // PATCH：局部更新（其他来源目录的改名/启停用它，见 /api/external/sources/{id}）
+  patch: <T>(path: string, body?: unknown, opts?: RestOptions) => request<T>('PATCH', path, body, opts),
   del: <T>(path: string, opts?: RestOptions) => request<T>('DELETE', path, undefined, opts),
 }

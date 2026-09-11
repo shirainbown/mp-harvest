@@ -589,6 +589,37 @@ def _load_cache(cp: Path, prefix: str) -> tuple[dict[str, dict[str, Any]], bool]
     return migrated, bool(migrated)
 
 
+def load_verdicts(cache_path: str | Path, prefix: str = "") -> dict[str, dict[str, Any]]:
+    """只读地取判定缓存（**保证无副作用**），供展示端点合并判定结果用。
+
+    与 ``_load_cache`` 的关键区别：后者遇到旧格式会复制一个 ``.bak-`` 备份
+    —— 那是判定流程该做的事。展示端点只是读一下渲染理由，绝不能因此往用户
+    数据目录里写文件；所以旧格式这里只做**内存内**字段前缀转换，不落盘。
+
+    取不到 / 格式不认识一律返回空字典（调用方按「都没判定过」渲染）。
+    """
+    try:
+        raw = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    entries = raw.get("entries")
+    if raw.get("__version__") == _CACHE_VERSION and isinstance(entries, dict):
+        return {str(k): v for k, v in entries.items() if isinstance(v, dict)}
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in raw.items():
+        if str(k).startswith("__") or not isinstance(v, dict):
+            continue
+        row: dict[str, Any] = {}
+        for f in _VERDICT_SUFFIXES:
+            if f in v:
+                row[f"{prefix}{f}" if prefix else f] = v[f]
+        if row:
+            out[str(k)] = row
+    return out
+
+
 # ── 判定主流程 ──────────────────────────────────────────────────────
 
 

@@ -13,6 +13,7 @@ const groups: Array<Array<{ id: ViewId; label: string }>> = [
   [
     { id: 'credentials', label: '凭证管理' },
     { id: 'history', label: '历史文章' },
+    { id: 'external', label: '其他来源' },
   ],
   [
     { id: 'ai', label: 'AI 模型' },

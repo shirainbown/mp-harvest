@@ -13,6 +13,7 @@ import ProgressInline from '../components/ProgressInline.vue'
 import EmptyState from '../components/EmptyState.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import { LIST_FORMATS, useArticlesStore } from '../stores/articles'
+import { useExternalStore } from '../stores/external'
 import { copyText, openExternal } from '../api/desktop'
 import { useAccountsStore } from '../stores/accounts'
 import { useTasksStore } from '../stores/tasks'
@@ -22,11 +23,67 @@ import { useTicker } from '../composables/useTicker'
 import type { Article, ArticleView } from '../types'
 
 const articles = useArticlesStore()
+const ext = useExternalStore()
 const accounts = useAccountsStore()
 const tasks = useTasksStore()
 const settings = useSettingsStore()
 const ui = useUiStore()
 const now = useTicker()
+
+// ---- 来源筛选：公众号 / 其他来源 / 全部（2026-09）----
+//
+// 回流是**纯前端**的：GET /api/articles 一行不改，切到「其他来源」时表格换数据源。
+// 这样微信那条链路（含它全部的测试）行为完全不变，回归面最小。
+const sourceScope = ref<'wechat' | 'external' | 'all'>('wechat')
+const sourceScopeOptions = [
+  { value: 'wechat', label: '公众号' },
+  { value: 'external', label: '其他来源' },
+  { value: 'all', label: '全部' },
+]
+/** 外部条目的 id 集合：勾选/判定路由靠它区分一行属于哪边，比猜 id 格式可靠 */
+const extIds = computed(() => new Set(ext.items.map((i) => i.id)))
+const rowIsExternal = (a: { id: string }) => extIds.value.has(a.id)
+
+/** 表格数据源。仅公众号时与改造前完全一致 */
+const rows = computed<Article[]>(() => {
+  if (sourceScope.value === 'wechat') return articles.visible
+  if (sourceScope.value === 'external') return ext.visible
+  // 全部：两边合并后按时间统一排序（外部条目的 date 与微信一样是 ISO）
+  return [...articles.visible, ...ext.visible].sort(
+    (a, b) => Date.parse(b.date || '') - Date.parse(a.date || ''),
+  )
+})
+
+/** 「全部」下动作按钮无处可去（导出/AI 都要先确定来源），一律禁用并说明 */
+const mixedScope = computed(() => sourceScope.value === 'all')
+const wechatOnly = computed(() => sourceScope.value === 'external')
+
+function setSourceScope(v: string) {
+  sourceScope.value = v as 'wechat' | 'external' | 'all'
+  // 切来源时清空勾选：两个 Set 各自独立，留着旧来源的 id 会串味
+  articles.clearSelection()
+  ext.clearSelection()
+  if (v !== 'wechat' && !ext.sources.length) void ext.loadAll()
+  else if (v !== 'wechat') void ext.load()
+}
+
+function toggleRow(a: Article, on: boolean) {
+  if (rowIsExternal(a)) ext.toggleSelect(a.id, on)
+  else articles.toggleSelect(a.id, on)
+}
+
+function selectAllRows() {
+  if (sourceScope.value === 'external') ext.selectAllVisible()
+  else if (sourceScope.value === 'wechat') articles.selectAllVisible()
+  else rows.value.forEach((a) => toggleRow(a, true))
+}
+
+/** 已选数量：按当前来源范围取（两个 store 的勾选各自独立） */
+const selectedCount = computed(() => {
+  if (sourceScope.value === 'external') return ext.selectedInView.length
+  if (sourceScope.value === 'all') return articles.selectedInView.length + ext.selectedInView.length
+  return articles.selectedInView.length
+})
 
 // ---- 公众号下拉：过期的灰显「需续约」（§5.5） ----
 function acctExpired(id: string, expiresAt: number | null) {
@@ -167,13 +224,14 @@ const stageTabs = [
 const viewTabs = computed(() => articles.stageTabs)
 
 function rowReason(a: Article) {
+  // 外部条目不参与「阶段」切换（那是公众号两阶段筛选的概念），直接取最有信息量的一条
+  if (rowIsExternal(a)) return a.content_reason || a.title_reason || a.reason || '未判定'
   if (articles.aiStage === 'title') return a.title_reason || '未做标题筛选'
   if (articles.aiStage === 'content') return a.content_reason || '未做内容筛选'
   return a.reason
 }
 
 // ---- 选择 & 导出 HTML ----
-const selectedCount = computed(() => articles.selectedInView.length)
 const confirmAllOpen = ref(false)
 // B5：计数与载荷一致——都基于 selectedInView（导出当前视图所选项）
 function clickExportHtml() {
@@ -186,6 +244,12 @@ function confirmExportAll() {
   articles.exportHtml([])
 }
 function exportSingle(a: Article) {
+  // 外部条目不能走 /api/articles/export-html：那条路会用公众号解析器去抓
+  // arxiv.org 的链接，产出一堆垃圾或直接报错。写回请到「其他来源」页做。
+  if (rowIsExternal(a)) {
+    ui.error('外部来源条目请到「其他来源」页写回目录')
+    return
+  }
   articles.exportHtml([a.id])
 }
 
@@ -225,8 +289,12 @@ function mmdd(a: Article) {
   if (isNaN(d.getTime())) return a.date
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
-const badgeVariant: Record<Article['source'], 'm' | 'g' | 'bu'> = { M: 'm', G: 'g', 补: 'bu' }
-const badgeTip: Record<Article['source'], string> = { M: 'MITM 目击', G: 'getmsg 拉取', 补: '手动补录' }
+const badgeVariant: Record<Article['source'], 'm' | 'g' | 'bu' | 'x'> = {
+  M: 'm', G: 'g', 补: 'bu', 外: 'x',
+}
+const badgeTip: Record<Article['source'], string> = {
+  M: 'MITM 目击', G: 'getmsg 拉取', 补: '手动补录', 外: '其他来源（外部目录）',
+}
 
 async function copyLink(a: Article) {
   // 原先是「不 await + 无条件弹『已复制』」——剪贴板被拒时会骗用户。改为看真实结果
@@ -239,10 +307,11 @@ function openArticle(a: Article) {
 
 // ---- 虚拟滚动：>500 条启用，行高固定 36px（§5.5/§5.10） ----
 const scrollRef = ref<HTMLElement>()
-const useVirtual = computed(() => articles.visible.length > 500)
+// 行高以 rows（当前来源范围的数据源）为准 —— 外部条目也要能虚拟滚动
+const useVirtual = computed(() => rows.value.length > 500)
 const virtualizer = useVirtualizer(
   computed(() => ({
-    count: useVirtual.value ? articles.visible.length : 0,
+    count: useVirtual.value ? rows.value.length : 0,
     getScrollElement: () => scrollRef.value ?? null,
     estimateSize: () => 36,
     overscan: 10,
@@ -285,6 +354,13 @@ function toggleAiIncludeContent() {
     <!-- 拉取控制 -->
     <div class="panel">
       <div class="fetch-bar">
+        <span class="form-label">来源</span>
+        <SegmentedControl
+          :model-value="sourceScope"
+          :options="sourceScopeOptions"
+          @update:model-value="setSourceScope($event)"
+        />
+        <template v-if="sourceScope === 'wechat'">
         <span class="form-label">公众号</span>
         <select v-model="articles.accountId" class="input" style="width:200px">
           <option value="">全部公众号</option>
@@ -320,12 +396,17 @@ function toggleAiIncludeContent() {
           cancellable
           @cancel="articles.cancelBatch()"
         />
+        </template>
+        <span v-else class="tertiary" style="font-size:var(--fs-xs)">
+          非公众号来源在这里只读浏览；登记目录、扫描、写回请到
+          <a href="#" style="color:var(--accent)" @click.prevent="ui.go('external')">「其他来源」</a>页
+        </span>
       </div>
     </div>
 
     <!-- 工具条 -->
     <div class="panel" style="padding:var(--sp-2) var(--sp-4)">
-      <div class="toolbar" style="border-bottom:1px solid var(--border);padding-bottom:var(--sp-2)">
+      <div v-if="sourceScope === 'wechat'" class="toolbar" style="border-bottom:1px solid var(--border);padding-bottom:var(--sp-2)">
         <span class="muted" style="font-size:var(--fs-sm)">阶段：</span>
         <SegmentedControl
           :model-value="articles.aiStage"
@@ -335,7 +416,7 @@ function toggleAiIncludeContent() {
         <span class="spacer"></span>
         <span v-if="aiTask" class="ai-progress"><span class="spinner"></span>{{ articles.aiProgress || aiTask.message }} {{ Math.round(aiTask.percent) }}%</span>
       </div>
-      <div class="toolbar" style="padding-top:var(--sp-2)">
+      <div v-if="sourceScope === 'wechat'" class="toolbar" style="padding-top:var(--sp-2)">
         <div class="view-tabs">
           <span
             v-for="t in viewTabs"
@@ -351,6 +432,7 @@ function toggleAiIncludeContent() {
         </div>
       </div>
       <div class="toolbar" style="padding-top:var(--sp-2)">
+        <template v-if="sourceScope === 'wechat'">
         <span class="muted" style="font-size:var(--fs-sm)">列表：</span>
         <select v-model="articles.listFormat" class="input btn-sm" style="height:24px;font-size:var(--fs-xs)">
           <option v-for="f in LIST_FORMATS" :key="f.value" :value="f.value">{{ f.label }}</option>
@@ -392,11 +474,21 @@ function toggleAiIncludeContent() {
           <option value="name">按名称</option>
         </select>
         <SButton size="sm" variant="ghost" @click="articles.toggleSortDir()">{{ sortDirLabel }} ▾</SButton>
+        </template>
         <span class="spacer"></span>
-        <span class="muted" style="font-size:var(--fs-sm)">正文：</span>
-        <SButton size="sm" variant="ghost" @click="articles.selectAllVisible()">全选</SButton>
-        <SButton size="sm" variant="ghost" @click="articles.clearSelection()">取消选择</SButton>
+        <span v-if="mixedScope" class="tertiary" style="font-size:var(--fs-xs)">
+          「全部」下只能浏览；导出与 AI 筛选请先选定来源
+        </span>
+        <SButton size="sm" variant="ghost" @click="selectAllRows()">全选</SButton>
+        <SButton
+          size="sm"
+          variant="ghost"
+          @click="sourceScope === 'external' ? ext.clearSelection() : articles.clearSelection()"
+        >
+          取消选择
+        </SButton>
         <span class="badge sel-badge" title="当前视图已选">{{ selectedCount }}</span>
+        <template v-if="sourceScope === 'wechat'">
         <SPopover>
           <template #anchor>
             <SButton size="sm" variant="primary" :disabled="!articles.visible.length">导出 ▾</SButton>
@@ -419,62 +511,71 @@ function toggleAiIncludeContent() {
         />
         <span style="width:8px"></span>
         <SButton size="sm" :disabled="!accounts.list.length || !!articles.aiTaskId" @click="aiFilterOpen = true">✦ AI 筛选</SButton>
+        </template>
+        <SButton
+          v-else-if="sourceScope === 'external'"
+          size="sm"
+          variant="ghost"
+          @click="ui.go('external')"
+        >
+          去「其他来源」页操作 →
+        </SButton>
       </div>
     </div>
 
     <!-- 文章表格 -->
     <div class="art-table">
-      <div class="art-head"><span></span><span>公众号</span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span></div>
+      <div class="art-head"><span></span><span>{{ sourceScope === 'wechat' ? '公众号' : '来源' }}</span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span></div>
       <div ref="scrollRef" class="art-scroll">
-        <SkeletonRows v-if="articles.loading" :rows="8" />
-        <EmptyState v-else-if="!articles.visible.length" text="选好公众号后点「拉取历史」；想看全部账号就先在下拉里选「全部公众号」" />
+        <SkeletonRows v-if="articles.loading || ext.loading" :rows="8" />
+        <EmptyState v-else-if="!rows.length" :text="sourceScope === 'wechat' ? '选好公众号后点「拉取历史」；想看全部账号就先在下拉里选「全部公众号」' : '这个范围还没有条目；到「其他来源」页登记目录并扫描'" />
         <!-- 虚拟滚动（>500 条） -->
         <div v-else-if="useVirtual" :style="`height:${totalSize}px;position:relative`">
           <div
             v-for="vr in virtualItems"
-            :key="articles.visible[vr.index].id"
+            :key="rows[vr.index].id"
             class="art-row"
             :style="`position:absolute;top:0;left:0;width:100%;transform:translateY(${vr.start}px)`"
-            @dblclick="openArticle(articles.visible[vr.index])"
+            @dblclick="openArticle(rows[vr.index])"
           >
             <span>
               <input
                 type="checkbox"
                 class="cb"
-                :checked="articles.selected.has(articles.visible[vr.index].id)"
-                @change="articles.toggleSelect(articles.visible[vr.index].id, ($event.target as HTMLInputElement).checked)"
+                :checked="articles.selected.has(rows[vr.index].id) || ext.selected.has(rows[vr.index].id)"
+                @change="toggleRow(rows[vr.index], ($event.target as HTMLInputElement).checked)"
               />
             </span>
             <span class="muted" style="font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-              {{ articles.visible[vr.index].account_name || '—' }}
+              {{ rows[vr.index].account_name || '—' }}
             </span>
-            <STooltip :text="articles.visible[vr.index].title" style="min-width:0">
-              <span class="art-title">{{ articles.visible[vr.index].title }}</span>
+            <STooltip :text="rows[vr.index].title" style="min-width:0">
+              <span class="art-title">{{ rows[vr.index].title }}</span>
             </STooltip>
-            <STooltip v-if="rowReason(articles.visible[vr.index])" :text="rowReason(articles.visible[vr.index])" style="min-width:0">
-              <span class="art-reason">{{ rowReason(articles.visible[vr.index]) }}</span>
+            <STooltip v-if="rowReason(rows[vr.index])" :text="rowReason(rows[vr.index])" style="min-width:0">
+              <span class="art-reason">{{ rowReason(rows[vr.index]) }}</span>
             </STooltip>
             <span v-else class="art-reason"></span>
-            <span class="mono muted">{{ mmdd(articles.visible[vr.index]) }}</span>
-            <STooltip :text="badgeTip[articles.visible[vr.index].source]">
-              <SBadge :variant="badgeVariant[articles.visible[vr.index].source]">{{ articles.visible[vr.index].source }}</SBadge>
+            <span class="mono muted">{{ mmdd(rows[vr.index]) }}</span>
+            <STooltip :text="badgeTip[rows[vr.index].source]">
+              <SBadge :variant="badgeVariant[rows[vr.index].source]">{{ rows[vr.index].source }}</SBadge>
             </STooltip>
             <span class="row-actions">
-              <SButton size="sm" variant="ghost" @click="openArticle(articles.visible[vr.index])">打开</SButton>
-              <SButton size="sm" variant="ghost" @click="copyLink(articles.visible[vr.index])">复制</SButton>
-              <SButton size="sm" variant="ghost" @click="exportSingle(articles.visible[vr.index])">导出</SButton>
+              <SButton size="sm" variant="ghost" @click="openArticle(rows[vr.index])">打开</SButton>
+              <SButton size="sm" variant="ghost" @click="copyLink(rows[vr.index])">复制</SButton>
+              <SButton size="sm" variant="ghost" @click="exportSingle(rows[vr.index])">导出</SButton>
             </span>
           </div>
         </div>
         <!-- 直接渲染（≤500 条） -->
         <template v-else>
-          <div v-for="a in articles.visible" :key="a.id" class="art-row" @dblclick="openArticle(a)">
+          <div v-for="a in rows" :key="a.id" class="art-row" @dblclick="openArticle(a)">
             <span>
               <input
                 type="checkbox"
                 class="cb"
-                :checked="articles.selected.has(a.id)"
-                @change="articles.toggleSelect(a.id, ($event.target as HTMLInputElement).checked)"
+                :checked="articles.selected.has(a.id) || ext.selected.has(a.id)"
+                @change="toggleRow(a, ($event.target as HTMLInputElement).checked)"
               />
             </span>
             <span class="muted" style="font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">

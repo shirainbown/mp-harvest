@@ -392,6 +392,17 @@ def _fake_ai_filter() -> types.ModuleType:
         }
 
     mod.judge_articles = judge_articles
+
+    # 「其他来源」路由用只读的 load_verdicts 把判定合并进列表行（2026-09）。
+    # 与真实实现同契约：读不到 / 坏文件一律空字典，且**不写盘**。
+    _verdicts: dict[str, Any] = {"title": {}, "content": {}}
+
+    def load_verdicts(cache_path, prefix=""):
+        key = "content" if prefix else "title"
+        return dict(_verdicts[key])
+
+    mod.load_verdicts = load_verdicts
+    mod._verdicts = _verdicts
     return mod
 
 
@@ -560,6 +571,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     （曾因此在该目录留下带测试临时路径的 harvest.db 记录）。
     """
     import mp_harvest.core.ai_filter as ai_mod
+    import mp_harvest.core.external_sources as ext_mod
     import mp_harvest.core.settings as settings_mod
     import mp_harvest.core.sightings as sightings_mod
     import mp_harvest.infra.platform.paths as paths_mod
@@ -568,7 +580,11 @@ def isolated_data_dir(tmp_path, monkeypatch):
     d.mkdir(parents=True, exist_ok=True)
     for mod in (paths_mod, settings_mod, sightings_mod, ai_mod):
         monkeypatch.setattr(mod, "data_dir", lambda *a, **k: d, raising=False)
-    return d
+    # 外部来源库是**进程内单例**，DB 路径在首次取用时才解析。不复位的话第二个
+    # 测试仍连着上一个测试的 tmp 数据目录 —— 条目会跨测试串味。
+    ext_mod.reset_external_store()
+    yield d
+    ext_mod.reset_external_store()
 
 
 @pytest.fixture()

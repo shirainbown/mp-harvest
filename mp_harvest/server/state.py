@@ -208,6 +208,37 @@ def merge_articles(
         return {"added": added, "total": len(rows)}
 
 
+def touch_fetched_in_window(
+    account_id: str, *, start_ts: int, end_ts: int, fetched_ts: int
+) -> int:
+    """把窗口内**已缓存**的文章补打本次 ``fetched_ts``，返回改动条数。
+
+    断点拉取的配套（2026-09）：翻页提前停止后，那些「已入库、本次没重新请求」的
+    老文章不会被 ``merge_articles`` 碰到，``fetched_ts`` 就停在上一轮 ——
+    「最近拉取」筛选会突然只剩最新几页。这里纯本地补标记（不发任何请求），
+    让该筛选的含义与改造前保持一致。窗口判定与 ``fetch_history_range`` 一致。
+    """
+    with _lock:
+        key = str(account_id)
+        if key not in _articles:
+            _load_articles_from_disk(key)
+        rows = _articles.get(key, [])
+        stamp = int(fetched_ts)
+        touched = 0
+        for r in rows:
+            ts = int(r.get("publish_ts") or 0)
+            if ts and ts < start_ts:
+                continue
+            if end_ts and ts and ts > end_ts:
+                continue
+            if int(r.get("fetched_ts") or 0) < stamp:
+                r["fetched_ts"] = stamp
+                touched += 1
+        if touched:
+            _save_articles_to_disk(key)
+        return touched
+
+
 def get_last_fetch_ts(account_id: str) -> int:
     """该账号最近一次拉取的时间戳（0 = 从未拉取/旧缓存）。"""
     with _lock:

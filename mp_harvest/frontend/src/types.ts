@@ -13,7 +13,8 @@ export interface Account {
   mitm_message?: string
 }
 
-export type ArticleSource = 'M' | 'G' | '补'
+// 外 = 其他来源（用户登记的外部目录，2026-09）
+export type ArticleSource = 'M' | 'G' | '补' | '外'
 export type ArticleView = 'all' | 'keep' | 'drop' | 'pending'
 export type AiStage = 'final' | 'title' | 'content'
 
@@ -39,6 +40,39 @@ export interface Article {
   /** 内容筛选判定（第二阶段；未做内容筛选为 null） */
   content_verdict: 'keep' | 'drop' | null
   content_reason: string
+}
+
+// ---- 其他来源（外部目录，2026-09）----
+
+/** 登记的一个外部来源目录（其下按 YYYY-MM-DD 分日期子目录） */
+export interface ExternalSource {
+  id: string
+  name: string
+  path: string
+  /** SQLite 的 0/1 */
+  enabled: number
+  added_at: number
+  last_scan_at: number
+  /** 上次扫描：扫到多少条 / 其中新增多少条 */
+  last_scan_seen: number
+  last_scan_new: number
+  last_scan_error: string
+  item_count: number
+}
+
+/** 外部来源条目：与 Article 同形，另带 arXiv 元数据 */
+export interface ExternalItem extends Article {
+  arxiv_id: string
+  domain: string
+  primary_category: string
+  authors: string[]
+  categories: string[]
+  /** 所在的日期子目录（YYYY-MM-DD） */
+  dir_date: string
+  /** 本地 PDF / 正文文件（可能为空） */
+  pdf_path: string
+  body_path: string
+  item_key: string
 }
 
 export interface TaskInfo {

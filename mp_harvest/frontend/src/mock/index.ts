@@ -5,6 +5,8 @@ import type {
   AiModel,
   Article,
   CaStatus,
+  ExternalItem,
+  ExternalSource,
   ImportItem,
   MitmStatus,
   PlatformInfo,
@@ -115,6 +117,60 @@ const platform: PlatformInfo = {
   engine: 'WKWebView',
   version: 'v2.0.0',
 }
+
+// ---------- 其他来源（外部目录）演示数据 ----------
+const mockExtSources: ExternalSource[] = [
+  {
+    id: 'mock-src-1',
+    name: 'arXiv 论文',
+    path: '~/Downloads/mp-harvest-export/arxiv_paper',
+    enabled: 1,
+    added_at: 1757000000,
+    last_scan_at: 1757100000,
+    last_scan_seen: 3,
+    last_scan_new: 3,
+    last_scan_error: '',
+    item_count: 3,
+  },
+]
+
+function _mockExtItem(
+  n: number,
+  title: string,
+  domain: string,
+  verdict: 'keep' | 'drop' | null,
+): ExternalItem {
+  return {
+    id: `mock-src-1:ext:arxiv:2609.${n}`,
+    account_id: 'mock-src-1',
+    account_name: 'arXiv 论文',
+    title,
+    url: `http://arxiv.org/abs/2609.${n}v1`,
+    date: `2026-09-0${n}T00:00:00`,
+    source: '外',
+    verdict,
+    reason: verdict === 'keep' ? '与芯片设计相关' : verdict === 'drop' ? '偏软件，无硬件内容' : '',
+    title_verdict: verdict,
+    title_reason: verdict === 'keep' ? '与芯片设计相关' : '',
+    content_verdict: null,
+    content_reason: '',
+    arxiv_id: `2609.${n}v1`,
+    domain,
+    primary_category: 'cs.AR',
+    authors: ['A. Author', 'B. Author', 'C. Author'],
+    categories: ['cs.AR'],
+    dir_date: '2026-09-07',
+    pdf_path: '',
+    body_path: '',
+    item_key: `arxiv:2609.${n}`,
+  }
+}
+
+const mockExtItems: ExternalItem[] = [
+  _mockExtItem(1, 'AccelMPC: FPGA-Accelerated Model Predictive Control', 'Architecture & Chip Design', 'keep'),
+  _mockExtItem(2, 'AutoTrans: Automatic Translation of Security Assertions', 'AI Acceleration & Intelligent Computing', null),
+  _mockExtItem(3, 'A Survey of Database Query Optimizers', 'EDA Tools & Verification', 'drop'),
+]
 
 // ---------- 工具 ----------
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -323,6 +379,57 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
     return { task_id } as T
   }
   if (p === '/api/update/apply' && method === 'POST') return { ok: true } as T
+
+  // ---------- 其他来源（外部目录）----------
+  if (p === '/api/external/sources' && method === 'GET') return mockExtSources as T
+  if (p === '/api/external/sources' && method === 'POST') {
+    const b = (body || {}) as { name?: string; path?: string }
+    const row: ExternalSource = {
+      id: `mock-src-${++taskSeq}`,
+      name: b.name || (b.path || '').split('/').filter(Boolean).pop() || '新来源',
+      path: b.path || '',
+      enabled: 1,
+      added_at: Math.floor(Date.now() / 1000),
+      last_scan_at: 0,
+      last_scan_seen: 0,
+      last_scan_new: 0,
+      last_scan_error: '',
+      item_count: 0,
+    }
+    mockExtSources.push(row)
+    return row as T
+  }
+  if (p.startsWith('/api/external/sources/') && p.endsWith('/scan') && method === 'POST') {
+    const task_id = simulateTask('external.scan', ['扫描 2026-09-07…', '扫描 2026-08-29…'], 400, {
+      ok: true, seen: mockExtItems.length, new: 3, removed: 0, error: '',
+    })
+    return { task_id, type: 'external.scan' } as T
+  }
+  if (p.startsWith('/api/external/sources/') && method === 'DELETE') return { ok: true } as T
+  if (p.startsWith('/api/external/sources/') && method === 'PATCH') {
+    const id = p.split('/').pop()
+    const row = mockExtSources.find((s) => s.id === id)
+    const b = (body || {}) as { name?: string; enabled?: boolean }
+    if (row) {
+      if (b.name !== undefined) row.name = b.name
+      if (b.enabled !== undefined) row.enabled = b.enabled ? 1 : 0
+    }
+    return (row || {}) as T
+  }
+  if (p === '/api/external/items' && method === 'GET') return mockExtItems as T
+  if (p === '/api/external/filter' && method === 'POST') {
+    const task_id = simulateTask('external.filter', ['AI 判定 10/30', 'AI 判定 20/30', 'AI 判定 30/30'], 400, {
+      ok: true, judged: mockExtItems.length, cached: 0, errors: [],
+    })
+    return { task_id, type: 'external.filter', total: mockExtItems.length } as T
+  }
+  if (p === '/api/external/export' && method === 'POST') {
+    const task_id = simulateTask('external.export', ['写入 1/3', '写入 2/3', '写入 3/3'], 400, {
+      ok: true, written: mockExtItems.length, skipped: 0, out_dir: '/mock/out', error: '',
+    })
+    return { task_id, type: 'external.export', total: mockExtItems.length } as T
+  }
+
   if (p.startsWith('/api/tasks/') && p.endsWith('/cancel') && method === 'POST') return { ok: true } as T
 
   throw new Error(`mock: 未实现的端点 ${method} ${p}`)

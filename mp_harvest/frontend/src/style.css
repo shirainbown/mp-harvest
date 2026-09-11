@@ -82,6 +82,7 @@ select.input{cursor:pointer}
 .badge.m{background:rgba(47,111,237,.12);color:var(--accent)}
 .badge.g{background:rgba(63,155,98,.12);color:var(--success)}
 .badge.bu{background:rgba(201,138,44,.14);color:var(--warning)}
+.badge.x{background:rgba(124,92,196,.14);color:#7c5cc4}
 .mono{font-family:var(--font-mono);font-size:var(--fs-sm)}
 .muted{color:var(--text-secondary)} .tertiary{color:var(--text-tertiary)}
 .seg{display:inline-flex;background:var(--bg-hover);border-radius:var(--radius-md);padding:2px;gap:2px}
@@ -112,6 +113,18 @@ select.input{cursor:pointer}
 .acct-biz{color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .toolbar{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
 .toolbar .spacer{flex:1}
+
+/* ============ 其他来源页（外部目录）============ */
+.ext-table{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg-panel);overflow:hidden}
+.ext-head,.ext-row{display:grid;grid-template-columns:minmax(120px,.8fr) minmax(180px,1.4fr) 70px 150px 56px auto;align-items:center;gap:var(--sp-3);padding:0 var(--sp-4)}
+.ext-head{height:32px;font-size:var(--fs-xs);color:var(--text-tertiary);border-bottom:1px solid var(--border);background:var(--bg-sidebar)}
+.ext-row{min-height:42px;padding-top:5px;padding-bottom:5px;border-bottom:1px solid var(--border);transition:background var(--dur-fast) var(--ease)}
+.ext-row:last-child{border-bottom:none}
+.ext-row:hover{background:var(--bg-hover)}
+.ext-row .row-actions{display:flex;gap:2px;opacity:0;transition:opacity var(--dur-fast) var(--ease)}
+.ext-row:hover .row-actions{opacity:1}
+.ext-path{color:var(--text-secondary);font-family:var(--font-mono);font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+.ext-err{color:var(--danger);font-size:var(--fs-xs)}
 
 /* ============ 历史文章页 ============ */
 .fetch-bar{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}

@@ -551,6 +551,7 @@ def fetch_history_range(
     sleep_s: float = 1.2,
     on_progress: ProgressCb | None = None,
     sightings: list[dict[str, Any]] | None = None,
+    known_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Paginate getmsg and keep articles with publish_ts in ``[start_ts, end_ts]``.
 
@@ -562,6 +563,14 @@ def fetch_history_range(
 
     ``sightings`` (MITM browse / 补录) are merged in because WeChat often omits
     later same-day pushes from getmsg alone.
+
+    ``known_keys``（identity/link 集合，2026-09 断点拉取）：**某页窗口内的文章
+    全部已在集合里就停止继续翻页**。列表是从新往旧翻的，所以「这一页全是老熟人」
+    意味着更旧的页在上一次拉取时已经翻过了。
+
+    不存 ``offset`` 做续翻：offset 是「推送列表里的位置序号」，微信一发新推送，
+    所有历史文章的位置整体后移，存下来的值下次就对不上。按「内容是否已知」判断
+    不受这种漂移影响。
     """
     cred = normalize_credentials(cred)
     ok, err = validate_credentials(cred)
@@ -581,6 +590,8 @@ def fetch_history_range(
     sess.trust_env = False
     hit_page_cap = False
     last_can_continue = False
+    stopped_early = False
+    known = known_keys or set()
     biz = str(cred.get("__biz") or "").strip()
 
     page_limit = max(1, int(max_pages))
@@ -605,6 +616,7 @@ def fetch_history_range(
                 "warning": "",
                 "truncated": False,
                 "notice": "",
+                "stopped_early": False,
                 "nickname": nickname,
                 "merged_sightings": max(0, len(partial) - len(_dedupe(articles))),
             }
@@ -625,12 +637,19 @@ def fetch_history_range(
         except Exception:
             raw_msg_count = len(batch)
 
+        in_window = 0
+        in_window_known = 0
         for a in batch:
             ts = int(a.get("publish_ts") or 0)
             if ts and ts < start_ts:
                 continue
             if end_ts and ts and ts > end_ts:
                 continue
+            in_window += 1
+            if known and (
+                str(a.get("identity") or "") in known or str(a.get("link") or "") in known
+            ):
+                in_window_known += 1
             row = dict(a)
             row.setdefault("source", "getmsg")
             articles.append(row)
@@ -639,6 +658,13 @@ def fetch_history_range(
         page_fully_old = bool(batch) and newest > 0 and newest < start_ts
 
         if page_fully_old:
+            break
+
+        # 断点拉取：这一页窗口内的文章全都已入库 → 更旧的页上次已翻过，不必再请求。
+        # 只认「窗口内」的文章：比 end_ts 新的文章本轮本就要跳过，不能因为它们
+        # 未知就一路翻下去；窗口内一篇都没有时也无从判断，继续翻。
+        if known and in_window > 0 and in_window_known == in_window:
+            stopped_early = True
             break
         if raw_msg_count <= 0 and not batch:
             break
@@ -676,17 +702,17 @@ def fetch_history_range(
     # 正常提示渲染成红色错误「拉取未完整」。
     truncation = ""
     if hit_page_cap and last_can_continue:
-        # 诚实描述：每次拉取都从 offset=0 从头翻页，并不存在「续翻」，
-        # 按账号记录 offset 的断点续传仍在开发中
         truncation = (
             f"已达翻页上限 {page_limit} 页，{scope}内可能仍有文章未拉完；"
-            "再次拉取将从头重新拉取（按账号断点续翻开发中）。"
+            "再次拉取会跳过已入库的部分，继续往下翻。"
         )
     notice = f"已合并补录/抓包 {merged_extra} 篇" if merged_extra else ""
     warn = " · ".join(x for x in (truncation, notice) if x)  # 兼容：仍给合并文本
 
     if on_progress:
         msg = f"完成：{scope}共 {len(deduped)} 篇（请求 {pages} 页）"
+        if stopped_early:
+            msg += " · 已到上次拉取的位置，未重复翻页"
         if warn:
             msg += f" · {warn}"
         on_progress(msg)
@@ -704,6 +730,8 @@ def fetch_history_range(
         "start_ts": start_ts,
         "end_ts": end_ts,
         "hit_page_cap": hit_page_cap,
+        # 断点拉取命中：某页窗口内文章全部已入库 → 提前停止，没再打微信
+        "stopped_early": stopped_early,
         "merged_sightings": merged_extra,
         "nickname": nickname,
         "__biz": biz,
@@ -719,10 +747,12 @@ def fetch_history_days(
     sleep_s: float = 1.2,
     on_progress: ProgressCb | None = None,
     sightings: list[dict[str, Any]] | None = None,
+    known_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Paginate getmsg and keep articles with publish_ts within the last ``days``.
 
     薄封装：cutoff = now - days*86400 后走 ``fetch_history_range``。
+    ``known_keys`` 见 ``fetch_history_range``（断点拉取）。
     """
     days = max(1, int(days))
     cutoff = int(time.time()) - days * 86400
@@ -735,4 +765,5 @@ def fetch_history_days(
         sleep_s=sleep_s,
         on_progress=on_progress,
         sightings=sightings,
+        known_keys=known_keys,
     )

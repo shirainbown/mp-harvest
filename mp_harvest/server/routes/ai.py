@@ -262,41 +262,46 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                 },
             )
 
-        for i, art in enumerate(to_fetch, start=1):
-            task.check_cancelled()
-            task.update(
-                percent=((i - 1) / total_fetch * 45.0) if total_fetch else 0.0,
-                message=f"获取正文 {i}/{total_fetch}",
-            )
-            link = str(art.get("link") or "").strip()
-            row = dict(art)
-            row.pop("body_text", None)
-            row.pop("body_html", None)
-            if not link:
-                _fetch_failed_keep_pending(art, row, "无链接，无法获取正文")
-                continue
-            cred = cred_by_account.get(str(art.get("_account_id") or ""), {})
-            try:
-                parsed = article_reader.fetch_and_parse_article(link, cred=cred)
-            except Exception as exc:  # noqa: BLE001
-                _fetch_failed_keep_pending(art, row, f"正文获取失败：{exc}")
-                continue
-            if not parsed.get("content_found", True):
-                # 页面没有 #js_content：通常是环境校验页，拿它去判定毫无意义
-                _fetch_failed_keep_pending(art, row, "页面没有正文（可能触发了微信的环境校验）")
-                continue
-            body_text = str(parsed.get("body_text") or "").strip()
-            if len(body_text) < 20:
-                _fetch_failed_keep_pending(art, row, "正文过短或无实质内容")
-                continue
-            art["body_text"] = body_text
-            if parsed.get("body_html"):
-                art["body_html"] = str(parsed["body_html"])
-        if to_fetch:
-            _merge_bodies(
-                body.account_id,
-                [a for a in to_fetch if str(a.get("body_text") or "").strip()],
-            )
+        # 正文落盘放到 finally（2026-09 断点拉取）：原先只在循环正常跑完后统一
+        # merge，中途取消 / 出错就丢掉本轮**已经拉回来的每一篇正文**，下次全部
+        # 重拉一遍 —— 既浪费又白挨一次限流风险。这里保证已拿到的先落盘。
+        try:
+            for i, art in enumerate(to_fetch, start=1):
+                task.check_cancelled()
+                task.update(
+                    percent=((i - 1) / total_fetch * 45.0) if total_fetch else 0.0,
+                    message=f"获取正文 {i}/{total_fetch}",
+                )
+                link = str(art.get("link") or "").strip()
+                row = dict(art)
+                row.pop("body_text", None)
+                row.pop("body_html", None)
+                if not link:
+                    _fetch_failed_keep_pending(art, row, "无链接，无法获取正文")
+                    continue
+                cred = cred_by_account.get(str(art.get("_account_id") or ""), {})
+                try:
+                    parsed = article_reader.fetch_and_parse_article(link, cred=cred)
+                except Exception as exc:  # noqa: BLE001
+                    _fetch_failed_keep_pending(art, row, f"正文获取失败：{exc}")
+                    continue
+                if not parsed.get("content_found", True):
+                    # 页面没有 #js_content：通常是环境校验页，拿它去判定毫无意义
+                    _fetch_failed_keep_pending(art, row, "页面没有正文（可能触发了微信的环境校验）")
+                    continue
+                body_text = str(parsed.get("body_text") or "").strip()
+                if len(body_text) < 20:
+                    _fetch_failed_keep_pending(art, row, "正文过短或无实质内容")
+                    continue
+                art["body_text"] = body_text
+                if parsed.get("body_html"):
+                    art["body_html"] = str(parsed["body_html"])
+        finally:
+            if to_fetch:
+                _merge_bodies(
+                    body.account_id,
+                    [a for a in to_fetch if str(a.get("body_text") or "").strip()],
+                )
 
         # 2) 内容判定。
         # 不再排除 `keep is False`：内容筛完后 merge_article_verdicts 会把

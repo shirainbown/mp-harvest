@@ -7,6 +7,7 @@ import SSwitch from '../components/SSwitch.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import { useSettingsStore } from '../stores/settings'
 import { useUiStore } from '../stores/ui'
+import { chooseDirectory } from '../api/desktop'
 
 const settings = useSettingsStore()
 const ui = useUiStore()
@@ -21,24 +22,18 @@ function save() {
 }
 
 async function chooseDir() {
-  // 桌面壳（pywebview）暴露原生目录选择时优先使用；否则退化为手输。
-  // 壳侧 JsApi.choose_directory 由 shell/main.py 通过 js_api 注册。
-  const w = window as unknown as { pywebview?: { api?: { choose_directory?: () => Promise<string> } } }
-  if (w.pywebview?.api?.choose_directory) {
-    try {
-      const dir = await w.pywebview.api.choose_directory()
-      if (dir) {
-        settings.prefs.exportDefaultDir = dir
-        save()
-      }
-      // 用户取消（返回空串）不是错误，静默即可
-    } catch (e) {
-      ui.error(`目录选择失败：${e instanceof Error ? e.message : String(e)}（可手动输入路径）`)
-    }
-  } else {
-    // 浏览器/开发模式下确实没有原生选择器 —— 用错误样式，别让用户以为已成功
-    ui.error('当前环境不支持原生目录选择，请手动输入路径')
+  // 目录选择逻辑抽到 api/desktop.ts（「其他来源」页也要用同一套）。
+  // 返回 {path:null, reason} 时要提示 —— 不然用户以为点了没反应。
+  const { path, reason } = await chooseDirectory()
+  if (reason) {
+    ui.error(reason)
+    return
   }
+  if (path) {
+    settings.prefs.exportDefaultDir = path
+    save()
+  }
+  // path 为 null 且无 reason = 用户主动取消，不是错误，静默即可
 }
 
 function onBatchSize() {

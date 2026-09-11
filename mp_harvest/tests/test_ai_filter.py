@@ -461,3 +461,48 @@ def test_judge_articles_content_field_truncates_and_sends_content():
     user = _json.loads(captured[0])
     assert user[0]["content"] == "ABCD"
     assert "title" in user[0]
+
+
+def test_load_verdicts_is_side_effect_free():
+    """``load_verdicts`` 是给只读展示端点用的，**绝不能写盘**。
+
+    ``_load_cache`` 遇到旧格式会复制一个 ``.bak-`` 备份 —— 那是判定流程该做的事。
+    展示端点只是读一下渲染理由，要是也走那条路，用户每打开一次列表就在数据目录里
+    多堆一个备份文件。这条测试就是钉死这个区别。
+    """
+    from mp_harvest.core import ai_filter
+
+    # 旧格式（无 __version__、无前缀）—— 正是会触发 _backup_file 的那种
+    legacy = Path(tempfile.mkdtemp()) / "ai_filter_cache.json"
+    legacy.write_text(
+        json.dumps({"id1": {"keep": True, "reason": "相关", "model": "m"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    before = sorted(p.name for p in legacy.parent.iterdir())
+
+    got = ai_filter.load_verdicts(legacy, prefix="")
+    assert got["id1"]["keep"] is True
+    assert got["id1"]["reason"] == "相关"
+
+    after = sorted(p.name for p in legacy.parent.iterdir())
+    assert before == after, f"load_verdicts 不该产生任何新文件，却有：{set(after) - set(before)}"
+
+
+def test_load_verdicts_reads_v2_and_tolerates_garbage():
+    from mp_harvest.core import ai_filter
+
+    d = Path(tempfile.mkdtemp())
+    v2 = d / "c.json"
+    v2.write_text(
+        json.dumps({"__version__": 2, "entries": {"k": {"title_keep": False}}}),
+        encoding="utf-8",
+    )
+    assert ai_filter.load_verdicts(v2, prefix="title_")["k"]["title_keep"] is False
+
+    assert ai_filter.load_verdicts(d / "不存在.json") == {}
+    bad = d / "bad.json"
+    bad.write_text("[[[", encoding="utf-8")
+    assert ai_filter.load_verdicts(bad) == {}
+    arr = d / "arr.json"
+    arr.write_text("[1,2,3]", encoding="utf-8")
+    assert ai_filter.load_verdicts(arr) == {}

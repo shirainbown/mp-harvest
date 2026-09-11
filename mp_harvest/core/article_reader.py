@@ -349,9 +349,18 @@ def localize_images(body_html: str, assets_dir: Path, prefix: str = "", rel_dir:
         import hashlib
 
         stem = hashlib.sha256(body_html.encode("utf-8", "ignore")).hexdigest()[:8]
+    rel = (rel_dir or "").strip().strip("/") or assets_dir.name
     for n, img in enumerate(imgs, start=1):
         src = str(img.get("src") or "").strip()
         if not src.startswith(("http://", "https://")):
+            continue
+        base = f"{stem}_{n:03d}" if stem else f"img_{n:03d}"
+        # 已下过就复用（2026-09 断点拉取）：文件名由「文章标识 + 篇内序号」决定，
+        # 同一篇重跑必然算出同一个 base，没必要再打一次 mmbiz.qpic.cn。
+        # 后缀在拿不到 Content-Type 时是猜的，所以按 base 前缀找而不是精确文件名。
+        existing = _find_localized(assets_dir, base)
+        if existing is not None:
+            img["src"] = f"{rel}/{existing.name}"
             continue
         try:
             sess = requests.Session()
@@ -360,15 +369,25 @@ def localize_images(body_html: str, assets_dir: Path, prefix: str = "", rel_dir:
             resp.raise_for_status()
         except Exception:
             continue
-        base = f"{stem}_{n:03d}" if stem else f"img_{n:03d}"
         fname = f"{base}{_img_ext(src, resp.headers.get('Content-Type', ''))}"
         try:
             (assets_dir / fname).write_bytes(resp.content)
         except Exception:
             continue
-        rel = (rel_dir or "").strip().strip("/") or assets_dir.name
         img["src"] = f"{rel}/{fname}"
     return str(soup)
+
+
+def _find_localized(assets_dir: Path, base: str) -> Path | None:
+    """在 ``assets_dir`` 里找已下载过的 ``{base}.<ext>``；没有返回 None。"""
+    for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+        cand = assets_dir / f"{base}{ext}"
+        try:
+            if cand.is_file() and cand.stat().st_size > 0:
+                return cand
+        except Exception:  # noqa: BLE001
+            continue
+    return None
 
 
 # ── HTML 渲染与写盘 ────────────────────────────────────────────────────
@@ -748,6 +767,8 @@ def batch_export_articles(
     exported_n = 0
     skipped_n = 0
     failed_n = 0
+    # 复用本地正文缓存的篇数（内容筛选已拉过）—— 这些没有联网
+    reused_body_n = 0
     interrupted = False
     errors: list[str] = []
     written: list[str] = []
@@ -818,8 +839,33 @@ def batch_export_articles(
         cred_hint = str(row.get("_cred_error") or "").strip()
         row_cred = row.get("_cred")
         fetch_cred = row_cred if isinstance(row_cred, dict) else cred
+        cached_html = str(row.get("body_html") or "")
+        cached_text = str(row.get("body_text") or "")
+
+        def _load_parsed() -> dict[str, Any]:
+            """正文已在缓存里就直接用，不发 HTTP（2026-09 断点拉取）。
+
+            内容筛选阶段会把正文写回文章缓存（``state.merge_article_bodies``）。
+            原先导出只认「导出记录 + 文件还在」，正文缓存完全没被利用 ——
+            文件被手动删过、或导出跑在内容筛选之后的场景，都要白白重拉一次
+            ``mp.weixin.qq.com``。这里是纯本地复用，不改任何既有跳过逻辑。
+            """
+            nonlocal reused_body_n
+            if cached_html.strip() or cached_text.strip():
+                reused_body_n += 1
+                return {
+                    "title": title,
+                    "link": link,
+                    "publish_at": str(row.get("publish_at") or ""),
+                    "publish_ts": int(row.get("publish_ts") or 0),
+                    "body_html": cached_html,
+                    "body_text": cached_text,
+                    "content_found": True,
+                }
+            return fetch(link, cred=fetch_cred)
+
         try:
-            parsed = fetch(link, cred=fetch_cred)
+            parsed = _load_parsed()
             if not parsed.get("content_found", True):
                 # 页面没有 #js_content —— 通常是微信的环境校验页/错误页。
                 # 不写盘、不谎报成功（原先会把整页文字当正文导出并计成功）
@@ -892,6 +938,8 @@ def batch_export_articles(
         "exported": exported_n,
         "skipped": skipped_n,
         "failed": failed_n,
+        # 其中有多少篇直接用了本地正文缓存（0 次网络请求）
+        "reused_body": reused_body_n,
         "errors": errors,
         "out_dir": str(out_dir),
         "index": str(index_path),

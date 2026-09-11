@@ -12,13 +12,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-# core 行 ``source`` → 前端 ArticleSource（M=MITM目击, G=getmsg, 补=补录）
+# core 行 ``source`` → 前端 ArticleSource（M=MITM目击, G=getmsg, 补=补录, 外=其他来源）
 _SOURCE_MAP = {
     "getmsg": "G",
     "manual": "补",
     "mitm": "M",
     "mitm_getmsg": "M",
     "sighting": "M",
+    "external": "外",
 }
 
 

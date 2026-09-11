@@ -54,6 +54,31 @@ export function openExternal(url: string): boolean {
   }
 }
 
+/**
+ * 弹出系统目录选择器；返回绝对路径。
+ *
+ * 返回 ``null`` 区分三种情况，调用方据此决定是否提示：
+ * - 用户取消（bridge 返回空串）→ ``null``，不是错误，静默即可
+ * - 当前环境没有 pywebview 桥（浏览器 / 开发模式）→ ``null`` + ``reason``
+ * - 选择过程抛异常 → ``null`` + ``reason``（把原因交给调用方展示）
+ *
+ * 抽到这里是因为原先只有设置页内联了这一套（2026-09），「其他来源」也要用，
+ * 再抄一份就会出现两处各自演化。
+ */
+export async function chooseDirectory(): Promise<{ path: string | null; reason?: string }> {
+  const bridge = shellApi()
+  if (!bridge?.choose_directory) {
+    return { path: null, reason: '当前环境不支持原生目录选择，请手动输入路径' }
+  }
+  try {
+    const dir = await bridge.choose_directory()
+    return { path: dir ? String(dir) : null }
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e)
+    return { path: null, reason: `目录选择失败：${why}（可手动输入路径）` }
+  }
+}
+
 /** 复制文本；返回是否真的复制成功（而非「已发起」）。 */
 export async function copyText(text: string): Promise<boolean> {
   const value = String(text ?? '')

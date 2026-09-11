@@ -276,3 +276,81 @@ def test_ai_filter_content_unknown_account_404(client, auth):
         "/api/ai/filter-content", params=auth, json={"account_id": "nope"}
     )
     assert resp.status_code == 404
+
+
+def test_content_filter_cancel_keeps_fetched_bodies(client, auth, fake_core):
+    """正文抓到一半被取消 → 已拿到的必须落盘（2026-09 断点拉取）。
+
+    原先正文只在循环**正常跑完**后统一 merge 回缓存，中途取消（或抛错）就丢掉
+    本轮已经拉回来的每一篇 —— 下次再跑全部重拉，既浪费又白挨一次限流风险。
+    """
+    from mp_harvest.server import state
+    from mp_harvest.server.tasks import registry
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(
+        acc["id"],
+        [
+            {"title": "A", "link": "https://x/1", "publish_ts": 3,
+             "identity": "a1", "title_keep": True},
+            {"title": "B", "link": "https://x/2", "publish_ts": 2,
+             "identity": "a2", "title_keep": True},
+            {"title": "C", "link": "https://x/3", "publish_ts": 1,
+             "identity": "a3", "title_keep": True},
+        ],
+    )
+
+    calls = {"n": 0}
+    body = "这是用于内容筛选的正文，包含足够的技术细节与实现方法，长度超过二十个字。"
+
+    def cancel_after_second(url, *, cred=None, timeout=25.0):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # 第二篇抓完就置取消标志 → 第三篇循环开头的 check_cancelled 抛异常
+            for t in registry.list():
+                if t.type == "ai.filter_content" and t.status == "running":
+                    registry.cancel(t.id)
+        return {"title": "t", "link": url, "body_text": body,
+                "body_html": f"<p>{body}</p>", "content_found": True}
+
+    fake_core.article_reader.fetch_and_parse_article = cancel_after_second
+
+    resp = client.post("/api/ai/filter-content", params=auth, json={"account_id": acc["id"]})
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "cancelled", task.status
+
+    rows = {r["identity"]: r for r in state.get_articles(acc["id"])}
+    assert str(rows["a1"].get("body_text") or "").strip(), "取消前抓到的正文必须已落盘"
+    assert str(rows["a2"].get("body_text") or "").strip(), "第二篇同样要保住"
+
+
+def test_content_filter_skips_already_cached_bodies(client, auth, fake_core):
+    """已有正文的文章不再抓取（一次不联网）。"""
+    from mp_harvest.server import state
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(
+        acc["id"],
+        [
+            {"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "a1",
+             "title_keep": True, "body_text": "早已缓存的正文，包含足够的技术细节与实现方法，超过二十个字。"},
+            {"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "a2",
+             "title_keep": True},
+        ],
+    )
+
+    fetched: list[str] = []
+    body = "这是用于内容筛选的正文，包含足够的技术细节与实现方法，长度超过二十个字。"
+
+    def counting(url, *, cred=None, timeout=25.0):
+        fetched.append(url)
+        return {"title": "t", "link": url, "body_text": body,
+                "body_html": f"<p>{body}</p>", "content_found": True}
+
+    fake_core.article_reader.fetch_and_parse_article = counting
+
+    resp = client.post("/api/ai/filter-content", params=auth, json={"account_id": acc["id"]})
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "done", task.error
+    assert fetched == ["https://x/2"], f"只该抓没有正文的那一篇，实际 {fetched}"
