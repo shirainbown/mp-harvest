@@ -188,6 +188,9 @@ select.input{cursor:pointer}
 /* 错误条：多行消息（含 errors 列表）可滚动展开查看 */
 .toast.sticky .toast-msg{white-space:pre-wrap;max-height:180px;overflow-y:auto}
 .toast-link{border:none;background:none;color:var(--accent);cursor:pointer;font-size:var(--fs-xs);padding:0;flex-shrink:0}
+/* 多条提示叠起来时的一键关闭（错误不再常驻，但可能同时出现几条） */
+.toast-clear{align-self:flex-end;border:none;background:none;color:var(--text-tertiary);cursor:pointer;font-size:var(--fs-xs);padding:0 2px}
+.toast-clear:hover{color:var(--text-primary)}
 .toast-close{border:none;background:none;color:var(--text-tertiary);cursor:pointer;font-size:var(--fs-xs);padding:0;flex-shrink:0}
 .toast-close:hover{color:var(--text-primary)}
 @keyframes toast-in{from{transform:translateX(24px);opacity:0}to{transform:translateX(0);opacity:1}}

@@ -20,6 +20,15 @@ export interface ErrorRecord {
 
 let seq = 0
 
+/** 每条 toast 的自动消失定时器（同 id 重复出现时要能重置，见 toast()） */
+const dismissTimers: Record<number, ReturnType<typeof setTimeout>> = {}
+
+const SUCCESS_MS = 2500
+/** 错误多留一会儿（要读文字），但**不再永不消失** —— 记录由错误中心负责 */
+const ERROR_MS = 8000
+/** 同一条消息在这个窗口内重复出现 → 只刷新寿命，不叠新条 */
+const DEDUPE_MS = 5000
+
 export const useUiStore = defineStore('ui', {
   state: () => ({
     view: 'credentials' as ViewId,
@@ -33,29 +42,61 @@ export const useUiStore = defineStore('ui', {
     go(v: ViewId) {
       this.view = v
     },
-    /** 成功 2.5s 自动消失；错误不自动消失（手动 ✕ 关闭）；最多叠 5 条 */
+    /**
+     * 成功 2.5s / 错误 8s 自动消失；最多叠 5 条。
+     *
+     * 去重（2026-09 修复）：一次操作常常并发打多个请求（accounts.load 3 个、
+     * settings.load 5 个），失败时每个请求各弹一条**完全相同**的错误 ——
+     * 表现就是「触发一次同时弹出好几条」。同一条消息在 DEDUPE_MS 内重复出现
+     * 时只延长它自己的显示时间，不再叠新条、也不重复记账。
+     */
     toast(msg: string, ok = true) {
-      const t: ToastItem = { id: ++seq, msg, ok, out: false, sticky: !ok }
+      const text = String(msg ?? '')
+      const dup = this.toasts.find((x) => x.ok === ok && x.msg === text && !x.out)
+      if (dup) {
+        this._scheduleDismiss(dup, ok ? SUCCESS_MS : ERROR_MS)
+        return
+      }
+      const t: ToastItem = { id: ++seq, msg: text, ok, out: false, sticky: !ok }
       this.toasts.push(t)
       if (!ok) {
-        this.errors.push({ id: t.id, time: Date.now(), msg })
+        this.errors.push({ id: t.id, time: Date.now(), msg: text })
         while (this.errors.length > 50) this.errors.shift()
       }
-      while (this.toasts.length > 5) this.toasts.shift()
-      if (ok) {
-        setTimeout(() => {
-          t.out = true
-          setTimeout(() => {
-            this.toasts = this.toasts.filter((x) => x.id !== t.id)
-          }, 250)
-        }, 2500)
+      while (this.toasts.length > 5) {
+        const dropped = this.toasts.shift()
+        if (dropped) this._forget(dropped.id)
       }
+      this._scheduleDismiss(t, ok ? SUCCESS_MS : ERROR_MS)
+    },
+    /** 安排（或重置）某条 toast 的自动消失 */
+    _scheduleDismiss(t: ToastItem, ms: number) {
+      const old = dismissTimers[t.id]
+      if (old) clearTimeout(old)
+      dismissTimers[t.id] = setTimeout(() => {
+        t.out = true
+        setTimeout(() => {
+          this.toasts = this.toasts.filter((x) => x.id !== t.id)
+          this._forget(t.id)
+        }, 250)
+      }, ms)
+    },
+    _forget(id: number) {
+      const timer = dismissTimers[id]
+      if (timer) clearTimeout(timer)
+      delete dismissTimers[id]
     },
     error(msg: string) {
       this.toast(msg, false)
     },
     dismissToast(id: number) {
+      this._forget(id)
       this.toasts = this.toasts.filter((x) => x.id !== id)
+    },
+    /** 一键清掉当前所有提示条（错误记录保留在错误中心） */
+    dismissAllToasts() {
+      for (const t of this.toasts) this._forget(t.id)
+      this.toasts = []
     },
     clearErrors() {
       this.errors = []
