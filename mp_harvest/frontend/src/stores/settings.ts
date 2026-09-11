@@ -224,12 +224,17 @@ export const useSettingsStore = defineStore('settings', {
     async testProxy() {
       this.proxyTesting = true
       const r = await call(
-        rest.post<{ ok: boolean; latency_ms?: number }>('/api/settings/test-proxy', {
-          proxy: this.network.proxy_url,
-        }),
+        rest.post<{ ok: boolean; latency_ms?: number; message?: string }>(
+          '/api/settings/test-proxy',
+          { proxy: this.network.proxy_url },
+        ),
       )
       this.proxyTesting = false
-      if (r) useUiStore().toast(r.ok ? `连接成功 · 延迟 ${r.latency_ms ?? '?'}ms` : '连接失败', r.ok)
+      if (!r) return
+      // 失败时把后端给的原因带上（形如「代理不可达 127.0.0.1:7890：Connection refused」），
+      // 原先只显示「连接失败」，最有用的那截被丢了（2026-09）
+      if (r.ok) useUiStore().toast(`连接成功 · 延迟 ${r.latency_ms ?? '?'}ms`)
+      else useUiStore().error(`代理连接失败：${r.message || '未知原因'}`)
     },
     // ---- 检查更新（§5.8） ----
     async checkUpdate(): Promise<'modal' | 'latest' | 'fail'> {
@@ -238,7 +243,11 @@ export const useSettingsStore = defineStore('settings', {
       this.updateChecking = false
       if (!r) return 'fail'
       if (r.ok === false) {
-        useUiStore().error(r.message || '检查更新失败')
+        // 报错要尽可能详细：message 是人话，error 是技术细节（HTTP 状态 / 异常原文）。
+        // 之前只显示 message，把 error 里最有排查价值的部分丢了（2026-09）。
+        const msg = r.message || '检查更新失败'
+        const detail = r.error && !msg.includes(r.error) ? `\n${r.error}` : ''
+        useUiStore().error(msg + detail)
         return 'fail'
       }
       this.update = r

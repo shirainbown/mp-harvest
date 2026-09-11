@@ -793,3 +793,64 @@ def test_html_notes_to_markdown_structure():
     assert "---" in md
     assert "> 引用" in md
     assert "```" in md
+
+
+def test_rate_limit_error_message_is_detailed(monkeypatch):
+    """限流报错要尽可能详细：配额、重置时间、可操作建议、以及原始异常。
+
+    之前只有一句「请稍后重试」——而这些信息就在 HTTPError 的响应头里，
+    用户和我都无从判断该等多久（2026-09）。
+    """
+    import datetime
+    import email.message
+    import time
+    import urllib.error
+
+    from mp_harvest.infra.platform import base as pb
+    from mp_harvest.infra.platform.mac import MacUpdater
+
+    reset_ts = int(time.time()) + 900
+    headers = email.message.Message()
+    headers["X-RateLimit-Limit"] = "60"
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = str(reset_ts)
+
+    class _Opener:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            raise urllib.error.HTTPError(
+                getattr(req, "full_url", "x"), 403, "rate limit exceeded", headers, None
+            )
+
+    monkeypatch.setattr(pb.GithubUpdater, "_opener", lambda self, proxy: _Opener())
+    monkeypatch.setattr(pb.GithubUpdater, "_check_via_atom", lambda self, proxy: None)
+
+    result = MacUpdater().check(proxy=None)
+
+    assert result.ok is False
+    assert "限流" in result.message
+    assert "0/60" in result.message, result.message
+    expected_time = datetime.datetime.fromtimestamp(reset_ts).strftime("%H:%M")
+    assert expected_time in result.message, result.message
+    assert "自定义 HTTP 代理" in result.message  # 给出可操作建议
+    assert "rate limit exceeded" in result.message  # 原始异常也带上
+    assert result.error  # error 字段保留
+
+
+def test_network_error_message_includes_cause(monkeypatch):
+    """非限流的网络错误也要带上原因，而不是只给一句「无法访问」。"""
+    import urllib.error
+
+    from mp_harvest.infra.platform import base as pb
+    from mp_harvest.infra.platform.mac import MacUpdater
+
+    class _Opener:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            raise urllib.error.URLError("timed out")
+
+    monkeypatch.setattr(pb.GithubUpdater, "_opener", lambda self, proxy: _Opener())
+    monkeypatch.setattr(pb.GithubUpdater, "_check_via_atom", lambda self, proxy: None)
+
+    result = MacUpdater().check(proxy=None)
+    assert result.ok is False
+    assert "timed out" in result.message, result.message
+    assert "网络设置" in result.message

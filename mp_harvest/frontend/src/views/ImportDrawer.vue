@@ -54,8 +54,9 @@ async function pickFile(e: Event) {
     try {
       const arr = JSON.parse(content) as Array<{ name?: string; url?: string }>
       text.value = arr.map((x) => `${x.name || ''} ${x.url || ''}`.trim()).join('\n')
-    } catch {
-      ui.error('JSON 文件解析失败')
+    } catch (e) {
+      // JSON.parse 的报错带行列位置，别丢（2026-09）
+      ui.error(`JSON 文件解析失败：${e instanceof Error ? e.message : String(e)}`)
     }
   } else {
     text.value = content

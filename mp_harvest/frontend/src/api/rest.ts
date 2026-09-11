@@ -69,6 +69,10 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
     } catch {
       /* keep default */
     }
+    // 服务端没给出有用说明时，把请求方法+路径带出来，便于定位与反馈（2026-09）
+    if (msg === `HTTP ${res.status}`) {
+      msg = `${method} ${path.split('?')[0]} → ${msg}`
+    }
     throw new ApiError(res.status, msg)
   }
   if (res.status === 204) return undefined as T

@@ -488,16 +488,35 @@ class GithubUpdater(Updater):
                 return fallback
             import urllib.error
 
-            rate_limited = isinstance(exc, urllib.error.HTTPError) and exc.code == 403
-            return UpdateCheckResult(
-                ok=False,
-                message=(
-                    "GitHub API 限流（未认证每小时 60 次），请稍后重试"
-                    if rate_limited
-                    else "无法访问 GitHub（请在「网络设置」里配置 HTTP 代理）"
-                ),
-                error=str(exc),
-            )
+            # 报错尽可能详细（2026-09）：限流的剩余配额 / 重置时间就在响应头里，
+            # 之前只给了一句「请稍后重试」，用户和我都无从判断该等多久。
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
+                parts = ["GitHub API 限流：未认证请求每小时 60 次"]
+                headers = getattr(exc, "headers", None)
+                remaining = headers.get("X-RateLimit-Remaining") if headers else None
+                limit = headers.get("X-RateLimit-Limit") if headers else None
+                reset = headers.get("X-RateLimit-Reset") if headers else None
+                if remaining is not None and limit:
+                    parts.append(f"当前配额 {remaining}/{limit}")
+                if reset:
+                    try:
+                        import datetime as _dt
+
+                        when = _dt.datetime.fromtimestamp(int(reset)).strftime("%H:%M")
+                        parts.append(f"将于 {when} 重置")
+                    except Exception:  # noqa: BLE001
+                        pass
+                message = (
+                    "；".join(parts)
+                    + "\n可用「网络设置 → 自定义 HTTP 代理」走代理出口（换 IP 即换配额），或稍后重试"
+                    + f"\n（已尝试 releases.atom 兜底，同样失败：{exc}）"
+                )
+            else:
+                message = (
+                    f"无法访问 GitHub：{exc}"
+                    "\n请在「网络设置」里选择「跟随系统代理」或「自定义 HTTP 代理」"
+                )
+            return UpdateCheckResult(ok=False, message=message, error=str(exc))
         tag = str(payload.get("tag_name") or "")
         if not tag:
             return UpdateCheckResult(ok=False, message="release 响应缺少 tag_name", error="no tag")

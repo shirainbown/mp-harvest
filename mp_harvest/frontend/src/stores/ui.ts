@@ -26,8 +26,16 @@ const dismissTimers: Record<number, ReturnType<typeof setTimeout>> = {}
 const SUCCESS_MS = 2500
 /** 错误多留一会儿（要读文字），但**不再永不消失** —— 记录由错误中心负责 */
 const ERROR_MS = 8000
-/** 同一条消息在这个窗口内重复出现 → 只刷新寿命，不叠新条 */
-const DEDUPE_MS = 5000
+/** 详情越长留越久（多一行 / 多几十字各加一点），上限 20s */
+const ERROR_MS_MAX = 20000
+
+/** 按内容长度决定错误条停留时长：详细的报错需要更长的阅读时间（2026-09） */
+export function errorDuration(msg: string): number {
+  const text = String(msg ?? '')
+  const extra = Math.max(0, text.split('\n').length - 1) * 2500
+    + Math.max(0, text.length - 60) * 30
+  return Math.min(ERROR_MS + extra, ERROR_MS_MAX)
+}
 
 export const useUiStore = defineStore('ui', {
   state: () => ({
@@ -54,7 +62,7 @@ export const useUiStore = defineStore('ui', {
       const text = String(msg ?? '')
       const dup = this.toasts.find((x) => x.ok === ok && x.msg === text && !x.out)
       if (dup) {
-        this._scheduleDismiss(dup, ok ? SUCCESS_MS : ERROR_MS)
+        this._scheduleDismiss(dup, ok ? SUCCESS_MS : errorDuration(dup.msg))
         return
       }
       const t: ToastItem = { id: ++seq, msg: text, ok, out: false, sticky: !ok }
@@ -67,7 +75,7 @@ export const useUiStore = defineStore('ui', {
         const dropped = this.toasts.shift()
         if (dropped) this._forget(dropped.id)
       }
-      this._scheduleDismiss(t, ok ? SUCCESS_MS : ERROR_MS)
+      this._scheduleDismiss(t, ok ? SUCCESS_MS : errorDuration(text))
     },
     /** 安排（或重置）某条 toast 的自动消失 */
     _scheduleDismiss(t: ToastItem, ms: number) {

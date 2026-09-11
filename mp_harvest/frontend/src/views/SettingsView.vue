@@ -32,8 +32,8 @@ async function chooseDir() {
         save()
       }
       // 用户取消（返回空串）不是错误，静默即可
-    } catch {
-      ui.error('目录选择失败，请手动输入路径')
+    } catch (e) {
+      ui.error(`目录选择失败：${e instanceof Error ? e.message : String(e)}（可手动输入路径）`)
     }
   } else {
     // 浏览器/开发模式下确实没有原生选择器 —— 用错误样式，别让用户以为已成功
