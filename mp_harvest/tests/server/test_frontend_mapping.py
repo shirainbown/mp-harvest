@@ -3,7 +3,7 @@
 字段与 frontend/src/types.ts 的 Account / Article 逐字段一致。
 
 Account: id / name / url / __biz? / expires_at(epoch 秒|null) / pending?
-Article: id / account_id / title / url / date(可解析日期串) / source(M|G|补)
+Article: id / account_id / title / url / date(可解析日期串) / fetched_at(抓取时间) / source(M|G|补)
          / verdict(keep|drop|null) / reason
          / title_verdict / title_reason / content_verdict / content_reason
 """
@@ -16,7 +16,7 @@ from mp_harvest.tests.server.conftest import add_account, give_credential
 
 ACCOUNT_KEYS = {"id", "name", "url", "expires_at", "pending", "__biz", "mitm_message"}
 ARTICLE_KEYS = {
-    "id", "account_id", "account_name", "title", "url", "date", "source",
+    "id", "account_id", "account_name", "title", "url", "date", "fetched_at", "source",
     "verdict", "reason",
     "title_verdict", "title_reason", "content_verdict", "content_reason",
 }

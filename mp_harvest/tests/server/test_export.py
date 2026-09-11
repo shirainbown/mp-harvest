@@ -87,7 +87,11 @@ def test_export_html_task(client, auth):
     assert resp.status_code == 202, resp.text
     task = wait_task(resp.json()["task_id"])
     assert task.status == "done"
-    assert task.result["ok"] == 2
+    assert task.result["ok"] is True
+    assert task.result["exported"] == 2
+    assert task.result["skipped"] == 0
+    assert task.result["failed"] == 0
+    assert isinstance(task.result["out_dir"], str) and task.result["out_dir"]
     assert task.result["fmt"] == "html"  # 正文导出只有 HTML（§6）
 
 
@@ -100,7 +104,8 @@ def test_export_html_by_ids(client, auth):
     )
     assert resp.status_code == 202
     task = wait_task(resp.json()["task_id"])
-    assert task.result["ok"] == 1
+    assert task.result["ok"] is True
+    assert task.result["exported"] == 1
 
 
 def test_export_html_all_accounts(client, auth):
@@ -108,7 +113,8 @@ def test_export_html_all_accounts(client, auth):
     from mp_harvest.server import state
 
     acc1 = add_account(client, auth)
-    acc2 = add_account(client, auth)
+    # B18 起相同 article_url 返回 409，第二个账号需用不同链接
+    acc2 = add_account(client, auth, url="https://mp.weixin.qq.com/s/abc2")
     give_credential(acc1["id"])
     give_credential(acc2["id"])
     state.set_articles(
@@ -127,7 +133,8 @@ def test_export_html_all_accounts(client, auth):
     assert resp.status_code == 202, resp.text
     task = wait_task(resp.json()["task_id"])
     assert task.status == "done"
-    assert task.result["ok"] == 1
+    assert task.result["ok"] is True
+    assert task.result["exported"] == 1
 
 
 def test_export_html_custom_dir_and_view(client, auth, tmp_path):
@@ -149,7 +156,8 @@ def test_export_html_custom_dir_and_view(client, auth, tmp_path):
     assert resp.status_code == 202, resp.text
     task = wait_task(resp.json()["task_id"])
     assert task.status == "done"
-    assert task.result["ok"] == 1
+    assert task.result["ok"] is True
+    assert task.result["exported"] == 1
     assert task.result["out_dir"] == str(out)
     assert (out / "index.html").is_file()
     assert task.result["index"] == str(out / "index.html")
@@ -161,3 +169,79 @@ def test_export_html_no_articles_400(client, auth):
         "/api/articles/export-html", params=auth, json={"account_id": acc["id"]}
     )
     assert resp.status_code == 400
+
+
+def test_export_html_expired_credential_partial_block(client, auth, monkeypatch):
+    """B10：部分账号凭证过期不整批 409；过期账号的文章不进 fetch，直接进 errors。"""
+    from mp_harvest.server import state
+
+    acc1 = add_account(client, auth)
+    acc2 = add_account(client, auth, url="https://mp.weixin.qq.com/s/abc2")
+    give_credential(acc1["id"])
+    give_credential(acc2["id"])
+    state.set_articles(
+        acc1["id"],
+        [{"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "art-0"}],
+    )
+    state.set_articles(
+        acc2["id"],
+        [{"title": "B", "link": "https://x/2", "publish_ts": 1, "identity": "art-1"}],
+    )
+    # fake store 无 is_active：注入一个，模拟 acc2 凭证过期
+    store = state.get_store()
+    monkeypatch.setattr(store, "is_active", lambda aid: aid == acc1["id"], raising=False)
+
+    resp = client.post(
+        "/api/articles/export-html", params=auth, json={"account_id": "", "view": "all"}
+    )
+    assert resp.status_code == 202, resp.text  # 不整批 409
+    task = wait_task(resp.json()["task_id"])
+    assert task.status == "done"
+    assert task.result["ok"] is True
+    assert task.result["exported"] == 1  # acc1 正常导出
+    assert task.result["failed"] == 1  # acc2 直接失败
+    assert any("凭证" in e for e in task.result["errors"])
+
+
+def test_export_html_download_images_defaults_to_settings(client, auth, monkeypatch):
+    """B7：download_images 未传时读后端设置 export.download_images（默认 False）。"""
+    from mp_harvest.core import article_reader as fake_reader
+    from mp_harvest.core import settings as settings_mod
+
+    calls: dict = {}
+    orig = fake_reader.batch_export_articles
+
+    def spy(*args, **kwargs):
+        calls["download_images"] = kwargs.get("download_images")
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(fake_reader, "batch_export_articles", spy)
+
+    acc = _prepare_articles(client, auth)
+    resp = client.post(
+        "/api/articles/export-html", params=auth, json={"account_id": acc["id"]}
+    )
+    assert resp.status_code == 202, resp.text
+    wait_task(resp.json()["task_id"])
+    assert calls["download_images"] is False  # 默认 False
+
+    # 打开设置 → 默认变为 True
+    data = settings_mod.load_settings()
+    data["export.download_images"] = True
+    settings_mod.save_settings(None, data)
+    resp = client.post(
+        "/api/articles/export-html", params=auth, json={"account_id": acc["id"]}
+    )
+    assert resp.status_code == 202, resp.text
+    wait_task(resp.json()["task_id"])
+    assert calls["download_images"] is True
+
+    # 请求体显式 False 覆盖设置 True
+    resp = client.post(
+        "/api/articles/export-html",
+        params=auth,
+        json={"account_id": acc["id"], "download_images": False},
+    )
+    assert resp.status_code == 202, resp.text
+    wait_task(resp.json()["task_id"])
+    assert calls["download_images"] is False

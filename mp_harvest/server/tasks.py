@@ -103,10 +103,12 @@ class TaskRegistry:
             task.error = str(exc) or exc.__class__.__name__
             broadcast_event("task.error", {"task_id": task.id, "error": task.error})
             return
-        # 业务静默返回时若已被取消，也按取消处理
+        # 业务静默返回时若已被取消，也按取消处理（保留结果：导出取消时
+        # result 带 ok=False/partial 标记与已完成部分，前端可提示中断，2026-09）
         if task.cancel_event.is_set():
             task.status = "cancelled"
             task.error = "任务已取消"
+            task.result = result
             broadcast_event("task.error", {"task_id": task.id, "error": task.error})
             return
         task.status = "done"

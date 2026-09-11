@@ -85,14 +85,17 @@ def ca_status() -> dict:
 
 @router.post("/api/ca/open")
 def ca_open() -> dict:
-    """在 Finder 中打开 CA 证书所在目录（2026-08-09 补上占位按钮的后端）。"""
+    """直接打开 CA 证书文件本身（双击 .cer 的等价操作）。
+
+    macOS 上会唤起 Keychain Access 导入对话框，Windows 上会打开证书导入向导，
+    与按钮文案「打开证书文件」一致；不再打开数据目录（避免暴露 credentials/CA 私钥）。
+    """
     from mp_harvest.infra.platform.base import PlatformError
-    from pathlib import Path
 
     ca = get_platform().ca
-    folder = Path(ca.cert_path()).parent
+    cert = str(ca.cert_path())
     try:
-        get_platform().shell_open(str(folder))
+        get_platform().shell_open(cert)
     except PlatformError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"ok": True, "path": str(folder)}
+    return {"ok": True, "path": cert}

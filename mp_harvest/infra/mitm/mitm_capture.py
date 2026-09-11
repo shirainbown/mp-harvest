@@ -170,7 +170,17 @@ class MitmCaptureService:
     def start(self, *, set_system_proxy: bool = True) -> tuple[bool, str]:
         with self._lock:
             if self.running:
-                return True, f"抓包代理已在运行 {PROXY_HOST}:{PROXY_PORT}"
+                # 进程已在跑但系统代理可能尚未设置（如上次因 CA 未信任被拒）：
+                # 重试 enable_system_proxy()，而不是直接 early-return 成功（诚实返回）
+                if not set_system_proxy:
+                    return True, f"抓包代理已在运行 {PROXY_HOST}:{PROXY_PORT}"
+                ok, proxy_msg = self.enable_system_proxy()
+                if not ok:
+                    return False, (
+                        f"抓包代理已在运行 {PROXY_HOST}:{PROXY_PORT}，"
+                        f"但系统代理设置失败：{proxy_msg}"
+                    )
+                return True, f"抓包代理已在运行 {PROXY_HOST}:{PROXY_PORT}。\n{proxy_msg}"
 
             try:
                 confdir, prep_msg = prepare_mitm_confdir(self.app_root)
@@ -216,7 +226,12 @@ class MitmCaptureService:
             if set_system_proxy:
                 ok, proxy_msg = self.enable_system_proxy()
                 if not ok:
-                    proxy_msg = f"代理已启动，但系统代理设置失败：{proxy_msg}"
+                    # 诚实返回失败（如 CA 未信任）：调用方据此提示用户先装 CA，
+                    # 而不是把「代理已启动但系统代理没设上」折叠成成功
+                    return False, (
+                        f"抓包代理已启动 {PROXY_HOST}:{PROXY_PORT}，"
+                        f"但系统代理设置失败：{proxy_msg}"
+                    )
 
             if not proxy_msg:
                 proxy_msg = (

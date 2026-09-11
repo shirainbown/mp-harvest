@@ -486,12 +486,14 @@ def merge_articles_with_sightings(
     sightings: list[dict[str, Any]],
     *,
     cutoff_ts: int = 0,
+    end_ts: int = 0,
     biz: str = "",
 ) -> list[dict[str, Any]]:
     """Merge getmsg articles with MITM/manual sightings (fills API gaps).
 
     WeChat often omits later same-day pushes from ``getmsg``. Sightings collected
     while browsing (or补录) are merged in and deduped by mid|idx|sn / identity.
+    ``cutoff_ts``/``end_ts`` 为闭区间下/上限（0 = 不限）；publish_ts 未知的行保留。
     """
     rows: list[dict[str, Any]] = []
     for a in base or []:
@@ -519,35 +521,44 @@ def merge_articles_with_sightings(
         ts = int(art.get("publish_ts") or 0)
         if cutoff_ts and ts and ts < cutoff_ts:
             continue
+        if end_ts and ts and ts > end_ts:
+            continue
         rows.append(art)
 
+    def _in_window(ts: int) -> bool:
+        if not ts:
+            return True
+        if cutoff_ts and ts < cutoff_ts:
+            return False
+        if end_ts and ts > end_ts:
+            return False
+        return True
+
     merged = _dedupe(rows)
-    merged = [
-        a
-        for a in merged
-        if not cutoff_ts
-        or not int(a.get("publish_ts") or 0)
-        or int(a.get("publish_ts") or 0) >= cutoff_ts
-    ]
+    merged = [a for a in merged if _in_window(int(a.get("publish_ts") or 0))]
     merged.sort(key=lambda a: int(a.get("publish_ts") or 0), reverse=True)
     return merged
 
 
-def fetch_history_days(
+def fetch_history_range(
     cred: dict[str, Any],
     *,
-    days: int = 7,
+    start_ts: int,
+    end_ts: int = 0,
+    days: int = 0,
     max_pages: int = DEFAULT_MAX_PAGES,
     count: int = DEFAULT_PAGE_COUNT,
     sleep_s: float = 1.2,
     on_progress: ProgressCb | None = None,
     sightings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Paginate getmsg and keep articles with publish_ts within the last ``days``.
+    """Paginate getmsg and keep articles with publish_ts in ``[start_ts, end_ts]``.
 
-    Important: getmsg ``count`` is push-message count. One push may contain many
-    articles (multi-appmsg). We keep paging until the whole page is older than
-    the cutoff (or WeChat says no more / hit max_pages).
+    ``end_ts`` 为 0 表示不设上限（默认到今天）。getmsg ``count`` 是推送条数，
+    一条推送可能含多篇文章（multi-appmsg）。翻页直到整页都老于 start_ts
+    （或微信说没有了 / 达到 max_pages）。比 end_ts 新的文章跳过但继续翻页。
+
+    ``days`` 仅用于进度/告警文案与返回值（0 = 自定义日期范围）。
 
     ``sightings`` (MITM browse / 补录) are merged in because WeChat often omits
     later same-day pushes from getmsg alone.
@@ -557,8 +568,11 @@ def fetch_history_days(
     if not ok:
         return {"ok": False, "error": err, "articles": [], "pages": 0}
 
-    days = max(1, int(days))
-    cutoff = int(time.time()) - days * 86400
+    start_ts = max(0, int(start_ts))
+    end_ts = max(0, int(end_ts))
+    if end_ts and end_ts < start_ts:
+        end_ts = start_ts
+    scope = f"近 {days} 天" if days else "所选日期范围"
     articles: list[dict[str, Any]] = []
     pages = 0
     offset = 0
@@ -577,7 +591,7 @@ def fetch_history_days(
         pages += 1
         if not page.get("ok"):
             partial = merge_articles_with_sightings(
-                articles, sightings or [], cutoff_ts=cutoff, biz=biz
+                articles, sightings or [], cutoff_ts=start_ts, end_ts=end_ts, biz=biz
             )
             return {
                 "ok": False,
@@ -585,8 +599,12 @@ def fetch_history_days(
                 "articles": partial,
                 "pages": pages,
                 "days": days,
-                "cutoff_ts": cutoff,
+                "cutoff_ts": start_ts,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
                 "warning": "",
+                "truncated": False,
+                "notice": "",
                 "nickname": nickname,
                 "merged_sightings": max(0, len(partial) - len(_dedupe(articles))),
             }
@@ -609,14 +627,16 @@ def fetch_history_days(
 
         for a in batch:
             ts = int(a.get("publish_ts") or 0)
-            if ts and ts < cutoff:
+            if ts and ts < start_ts:
+                continue
+            if end_ts and ts and ts > end_ts:
                 continue
             row = dict(a)
             row.setdefault("source", "getmsg")
             articles.append(row)
 
         newest = _page_newest_ts(batch)
-        page_fully_old = bool(batch) and newest > 0 and newest < cutoff
+        page_fully_old = bool(batch) and newest > 0 and newest < start_ts
 
         if page_fully_old:
             break
@@ -646,21 +666,27 @@ def fetch_history_days(
         nickname = fetch_profile_nickname(cred, session=sess)
     base_n = len(_dedupe(articles))
     deduped = merge_articles_with_sightings(
-        articles, sightings or [], cutoff_ts=cutoff, biz=biz
+        articles, sightings or [], cutoff_ts=start_ts, end_ts=end_ts, biz=biz
     )
     merged_extra = max(0, len(deduped) - base_n)
 
-    warn = ""
+    # 两类信息必须分开（2026-09 修复）：`truncated` 是**问题**（可能没拉完），
+    # `notice` 是**好消息**（合并了补录/抓包的缺口）。原先都塞进 `warning`，
+    # 前端一旦在成功分支显示 warning，就会把「已合并补录/抓包 1 篇」这种
+    # 正常提示渲染成红色错误「拉取未完整」。
+    truncation = ""
     if hit_page_cap and last_can_continue:
-        warn = (
-            f"已达翻页上限 {page_limit} 页，近 {days} 天内可能仍有文章未拉完，请再点一次拉取续翻。"
+        # 诚实描述：每次拉取都从 offset=0 从头翻页，并不存在「续翻」，
+        # 按账号记录 offset 的断点续传仍在开发中
+        truncation = (
+            f"已达翻页上限 {page_limit} 页，{scope}内可能仍有文章未拉完；"
+            "再次拉取将从头重新拉取（按账号断点续翻开发中）。"
         )
-    if merged_extra:
-        extra = f"已合并补录/抓包 {merged_extra} 篇"
-        warn = f"{warn} · {extra}" if warn else extra
+    notice = f"已合并补录/抓包 {merged_extra} 篇" if merged_extra else ""
+    warn = " · ".join(x for x in (truncation, notice) if x)  # 兼容：仍给合并文本
 
     if on_progress:
-        msg = f"完成：近 {days} 天共 {len(deduped)} 篇（请求 {pages} 页）"
+        msg = f"完成：{scope}共 {len(deduped)} 篇（请求 {pages} 页）"
         if warn:
             msg += f" · {warn}"
         on_progress(msg)
@@ -669,12 +695,44 @@ def fetch_history_days(
         "ok": True,
         "error": "",
         "warning": warn,
+        "truncated": bool(truncation),
+        "notice": notice,
         "articles": deduped,
         "pages": pages,
         "days": days,
-        "cutoff_ts": cutoff,
+        "cutoff_ts": start_ts,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
         "hit_page_cap": hit_page_cap,
         "merged_sightings": merged_extra,
         "nickname": nickname,
         "__biz": biz,
     }
+
+
+def fetch_history_days(
+    cred: dict[str, Any],
+    *,
+    days: int = 7,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    count: int = DEFAULT_PAGE_COUNT,
+    sleep_s: float = 1.2,
+    on_progress: ProgressCb | None = None,
+    sightings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Paginate getmsg and keep articles with publish_ts within the last ``days``.
+
+    薄封装：cutoff = now - days*86400 后走 ``fetch_history_range``。
+    """
+    days = max(1, int(days))
+    cutoff = int(time.time()) - days * 86400
+    return fetch_history_range(
+        cred,
+        start_ts=cutoff,
+        days=days,
+        max_pages=max_pages,
+        count=count,
+        sleep_s=sleep_s,
+        on_progress=on_progress,
+        sightings=sightings,
+    )

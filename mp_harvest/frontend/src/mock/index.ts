@@ -7,7 +7,6 @@ import type {
   CaStatus,
   ImportItem,
   MitmStatus,
-  NetworkSettings,
   PlatformInfo,
   UpdateCheckResult,
 } from '../types'
@@ -56,6 +55,7 @@ const articles: Article[] = []
       title: i < SAMPLE.length ? title : `${title}（第 ${Math.floor(i / SAMPLE.length) + 1} 期）`,
       url: `https://mp.weixin.qq.com/s/demo${i}`,
       date: d.toISOString(),
+      fetched_at: new Date().toISOString(),
       source,
       verdict,
       reason,
@@ -97,7 +97,15 @@ const DEFAULT_CONTENT_PRINCIPLES = `请根据文章正文判断是否值得保�
 - 正文为广告软文、课程售卖、咨询接单
 - 正文信息量低或与标题不符`
 let contentPrinciples = DEFAULT_CONTENT_PRINCIPLES
-const settings: NetworkSettings = { mode: 'direct', proxy_url: '' }
+const settings: Record<string, unknown> = {
+  mode: 'direct',
+  proxy_url: '',
+  'export.default_dir': '',
+  'export.download_images': true,
+  'ai.batch_size': 50,
+  'ai.workers': 4,
+  'ai.continue_content_filter': true,
+}
 const platform: PlatformInfo = {
   os: 'mac',
   os_version: 'macOS 15',
@@ -222,7 +230,7 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
 
   // history / articles
   if (p === '/api/history/fetch' && method === 'POST') {
-    const task_id = simulateTask('history', ['第 1 页 / 已获 24 篇', '第 2 页 / 已获 51 篇', '第 3 页 / 已获 87 篇', '第 4 页 / 已获 112 篇'], 600, { added: 12, total: articles.length })
+    const task_id = simulateTask('history', ['第 1 页 / 已获 24 篇', '第 2 页 / 已获 51 篇', '第 3 页 / 已获 87 篇', '第 4 页 / 已获 112 篇'], 600, { ok: true, added: 12, total: articles.length })
     return { task_id } as T
   }
   if (p === '/api/articles' && method === 'GET') return articles as T
@@ -247,7 +255,7 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   if (p === '/api/articles/export-list' && method === 'GET') return '# 文章列表（mock 导出内容）\n' as T
   if (p === '/api/articles/export-html' && method === 'POST') {
     const ids = (b.ids as string[]) || []
-    const task_id = simulateTask('export', ids.length ? ids.map((_, i) => `${i + 1}/${ids.length}`) : ['12/87', '45/87', '87/87'], 250, { dir: 'exports/互联网周刊/', count: ids.length || 87 })
+    const task_id = simulateTask('export', ids.length ? ids.map((_, i) => `${i + 1}/${ids.length}`) : ['12/87', '45/87', '87/87'], 250, { ok: true, exported: ids.length || 87, skipped: 0, failed: 0, errors: [], out_dir: 'exports/互联网周刊/' })
     return { task_id } as T
   }
 

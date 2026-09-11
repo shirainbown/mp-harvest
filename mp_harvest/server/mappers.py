@@ -54,6 +54,21 @@ def account_out(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def article_public_id(row: dict[str, Any]) -> str:
+    """前端可见的文章稳定 id = ``__biz`` + ``identity``。
+
+    ``identity`` 不含 ``__biz``（它只服务于**单账号**内部的去重），于是同一篇
+    文章出现在两个公众号下时会算出同一个 id：「全部公众号」聚合视图里
+    ``:key`` 冲突（虚拟列表错行）、勾选串号（``selected`` 是 id 的 Set）、
+    按 ids 导出跨账号误选（2026-09 修复）。
+
+    只要行里有 ``__biz`` 就加上前缀；没有则退回原来的 identity，保持兼容。
+    """
+    ident = str(row.get("identity") or row.get("link") or "")
+    biz = str(row.get("__biz") or (row.get("credentials") or {}).get("__biz") or "").strip()
+    return f"{biz}:{ident}" if biz and ident else ident
+
+
 def article_source(source: Any) -> str:
     """core ``source`` → 'M' | 'G' | '补'；未知目击类归 M，缺省（拉历史来的）归 G。"""
     s = str(source or "").strip()
@@ -81,13 +96,18 @@ def article_out(row: dict[str, Any], *, account_id: str = "", account_name: str 
     else:
         # 无发布时间（如手动补录）：退到 seen_at（ISO），再退 publish_at，保可解析
         date = str(row.get("seen_at") or row.get("publish_at") or "")
+    fetched_ts = int(row.get("fetched_ts") or 0)
+    fetched_at = (
+        datetime.fromtimestamp(fetched_ts).isoformat(timespec="seconds") if fetched_ts else ""
+    )
     return {
-        "id": str(row.get("identity") or row.get("link") or ""),
+        "id": article_public_id(row),
         "account_id": str(account_id or ""),
         "account_name": str(account_name or ""),
         "title": str(row.get("title") or ""),
         "url": str(row.get("link") or ""),
         "date": date,
+        "fetched_at": fetched_at,
         "source": article_source(row.get("source")),
         "verdict": verdict,
         "reason": str(row.get("reason") or ""),

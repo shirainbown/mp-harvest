@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import type { Account, CaStatus, ImportItem, MitmStatus } from '../types'
-import { call, rest } from '../api/rest'
+import { call, rest, LONG_TIMEOUT } from '../api/rest'
 import { useUiStore } from './ui'
 import { MOCK } from '../config'
 
@@ -29,12 +29,16 @@ export const useAccountsStore = defineStore('accounts', {
       this.loading = false
       this.loaded = true
     },
-    /** 添加公众号并抓包；返回 account（调用方负责 90s 等待逻辑） */
+    /** 添加公众号并抓包；返回 account（调用方负责 90s 等待逻辑）。
+     *  后端 best-effort 启动 MITM 失败时会在 mitm_message 给出原因（账号仍已添加） */
     async add(name: string, url: string) {
       const acct = await call(rest.post<Account>('/api/accounts', { name, url }))
       if (acct) {
         acct.pending = true
         this.list.push(acct)
+        if (acct.mitm_message) {
+          useUiStore().error(`${acct.mitm_message}`) // 原因由后端文案给出（可能是 CA 未信任、端口占用等），不再硬编码
+        }
       }
       return acct
     },
@@ -45,18 +49,31 @@ export const useAccountsStore = defineStore('accounts', {
         useUiStore().toast(`已删除「${a.name}」`)
       }
     },
-    /** 续约：标记等待抓包，用户在微信内刷新文章后 WS 回写（§5.4） */
-    async renew(a: Account) {
+    /** 续约：标记等待抓包，用户在微信内刷新文章后 WS 回写（§5.4）。
+     *  pending 账号同样可续约（后端对 pending 保持可用），silent=true 时不弹成功提示 */
+    async renew(a: Account, silent = false) {
       a.pending = true
       const r = await call(rest.post(`/api/accounts/${a.id}/renew`))
       if (r === null && !MOCK) a.pending = false
-      else useUiStore().toast('已切换到等待抓包，请在微信内刷新文章')
+      else if (!silent) useUiStore().toast('已切换到等待抓包，请在微信内刷新文章')
     },
     async renewAll() {
-      const targets = this.list.filter((a) => !a.pending)
+      // 只挑「需要续约」的：等待抓包的、以及已过期的。
+      // 不能把健康的 active 账号也一起置为 awaiting（2026-09 修复）：后端 renew
+      // 会把 status 改成 awaiting，而导出的凭证校验要求 status=active —— 于是
+      // 点一下「一键续约全部」，所有本来好好的账号都会导出失败，而界面上的
+      // 有效期还没刷新，看起来像凭空的错。
+      const now = Date.now()
+      const targets = this.list.filter(
+        (a) => a.pending || !a.expires_at || a.expires_at * 1000 <= now,
+      )
+      if (!targets.length) {
+        useUiStore().toast('所有账号凭证都有效，无需续约')
+        return
+      }
       for (const a of targets) a.pending = true
       await Promise.all(targets.map((a) => call(rest.post(`/api/accounts/${a.id}/renew`))))
-      useUiStore().toast('已进入批量续约：请在微信内依次刷新各公众号文章')
+      useUiStore().toast(`已进入批量续约（${targets.length} 个）：请在微信内依次刷新各公众号文章`)
     },
     async copyCredential(a: Account) {
       if (!a.expires_at || a.expires_at * 1000 <= Date.now()) {
@@ -71,10 +88,20 @@ export const useAccountsStore = defineStore('accounts', {
     },
     async toggleMitm() {
       const next = !this.mitm.running
-      const r = await call(rest.post<MitmStatus>(next ? '/api/mitm/start' : '/api/mitm/stop'))
+      const r = await call(
+        rest.post<{ ok?: boolean; message?: string; mitm_message?: string; running?: boolean; port?: number }>(
+          next ? '/api/mitm/start' : '/api/mitm/stop',
+        ),
+      )
       if (r) {
-        this.mitm = r
-        useUiStore().toast(next ? `MITM 代理已启动（127.0.0.1:${r.port}）` : 'MITM 代理已停止')
+        if (r.running !== undefined) this.mitm = { running: r.running, port: r.port ?? this.mitm.port }
+        const failMsg = r.mitm_message || (r.ok === false ? r.message || '代理操作失败' : '')
+        if (failMsg) {
+          // 系统代理被拒等原因：不自动消失，并指引修复路径
+          useUiStore().error(`${failMsg}`) // 原因由后端文案给出（可能是 CA 未信任、端口占用等），不再硬编码
+        } else {
+          useUiStore().toast(next ? `MITM 代理已启动（127.0.0.1:${this.mitm.port}）` : 'MITM 代理已停止')
+        }
       }
     },
     async installCa() {
@@ -92,7 +119,7 @@ export const useAccountsStore = defineStore('accounts', {
     /** 在 Finder 中打开 CA 证书所在目录（2026-08-09 补后端端点） */
     async openCaFolder() {
       const r = await call(rest.post<{ ok: boolean; path?: string }>('/api/ca/open'))
-      if (r) useUiStore().toast(`已打开证书目录：${r.path || '…'}`)
+      if (r) useUiStore().toast(`已打开证书文件：${r.path || '…'}`)
     },
     /** 批量导入两段式（§7.1）：预览 → 确认 */
     async importPreview(text: string): Promise<ImportItem[]> {
@@ -100,8 +127,17 @@ export const useAccountsStore = defineStore('accounts', {
       return r?.items ?? []
     },
     async importConfirm(items: ImportItem[]) {
-      const r = await call(rest.post<{ imported: number; skipped: number }>('/api/accounts/import', { stage: 'confirm', items }))
+      const r = await call(
+        rest.post<{ imported: number; skipped: number; mitm_message?: string }>(
+          '/api/accounts/import',
+          { stage: 'confirm', items },
+          { timeout: LONG_TIMEOUT },
+        ),
+      )
       if (r) {
+        if (r.mitm_message) {
+          useUiStore().error(`${r.mitm_message}`) // 原因由后端文案给出（可能是 CA 未信任、端口占用等），不再硬编码
+        }
         useUiStore().toast(`已导入 ${r.imported} 条${r.skipped ? `（跳过 ${r.skipped} 条重复）` : ''}`)
         await this.load()
       }

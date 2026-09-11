@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 import shlex
 import subprocess
 import sys
@@ -89,6 +90,38 @@ def _patch_trust_plist(
             "trustSettings": settings,
         }
     return True
+
+
+_LOGIN_KEYCHAIN = str(Path.home() / "Library" / "Keychains" / "login.keychain-db")
+_SHA1_LINE = re.compile(r"SHA-1 hash:\s*([0-9A-Fa-f]{40})")
+
+
+def _cert_in_keychain(fingerprint: str) -> bool:
+    """证书**本体**是否真的在钥匙串里（按 SHA-1 指纹精确匹配）。
+
+    2026-09 修复（用户报告：界面显示「✓ 已信任」，但一启动代理微信文章就打不开）。
+    成因：``add-trusted-cert`` 写钥匙串失败、而用户态的
+    ``trust-settings-import`` 仍然成功 → 信任设置里有条目、证书却不在钥匙串，
+    macOS 无法为拦截流量构建证书链，握手必然失败。
+    只查 trust-settings plist 会把这种「孤儿信任条目」当成已信任，于是：
+      · 界面隐藏「安装 CA 证书」按钮（用户无法自救）；
+      · 安全守卫误判放行，切了系统代理却抓不到任何东西。
+    """
+    want = (fingerprint or "").strip().upper()
+    if not want:
+        return False
+    for kc in (_SYSTEM_KEYCHAIN, _LOGIN_KEYCHAIN):
+        if not Path(kc).exists():
+            continue
+        try:
+            proc = _run(["security", "find-certificate", "-a", "-Z", kc], timeout=20)
+        except Exception:  # noqa: BLE001
+            continue
+        if proc.returncode != 0:
+            continue
+        if any(m.group(1).upper() == want for m in _SHA1_LINE.finditer(proc.stdout or "")):
+            return True
+    return False
 
 
 class MacCaSetup(CaSetup):
@@ -272,6 +305,10 @@ class MacCaSetup(CaSetup):
             except Exception:  # noqa: BLE001
                 loaded = x509.load_der_x509_certificate(raw)
             fingerprint = loaded.fingerprint(hashes.SHA1()).hex().upper()
+            # 先确认证书本体在钥匙串里，再查信任设置：只有信任条目、没有证书
+            # 的「孤儿」状态无法用于拦截，必须报未信任（2026-09 修复）。
+            if not _cert_in_keychain(fingerprint):
+                return False
             import os
             import plistlib
             import tempfile

@@ -1,7 +1,8 @@
 """MP Harvest 入口（设计稿 §3.2 线程模型）。
 
-主线程 pywebview GUI（macOS Cocoa 强制）→ uvicorn 后台线程（127.0.0.1 动态
-端口、单 worker）→ 生成带一次性 token 的 URL → 开窗；窗口关闭时清理
+主线程 pywebview GUI（macOS Cocoa 强制）→ uvicorn 后台线程（127.0.0.1 固定
+端口 8765 起、占用则递增探测、单 worker）→ 生成带一次性 token 的 URL → 开窗；
+窗口关闭时清理
 （停 mitm、关代理、任务池 shutdown、uvicorn 退出）。
 
 用法：
@@ -33,8 +34,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+DEFAULT_PORT = 8765
+PORT_PROBE_LIMIT = 100
+
+
+def find_free_port(start: int = DEFAULT_PORT, limit: int = PORT_PROBE_LIMIT) -> int:
+    """从 start 起递增探测第一个可绑定的 127.0.0.1 TCP 端口。
+
+    固定端口的意义：pywebview 下 localStorage/cookie 按 origin 隔离，端口每
+    次随机会导致持久化数据（含一次性 token 之外的本地状态）完全失效（B4）。
+    """
+    import socket
+
+    for port in range(start, start + limit):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError(f"{start}~{start + limit - 1} 端口均被占用，无法启动服务")
+
+
 def start_server() -> tuple[Any, threading.Thread, int]:
-    """起 uvicorn（后台线程、127.0.0.1、动态端口 0、单 worker），返回 (server, thread, port)。"""
+    """起 uvicorn（后台线程、127.0.0.1、固定端口、单 worker），返回 (server, thread, port)。"""
     import uvicorn
 
     from mp_harvest.server.app import create_app
@@ -42,7 +66,7 @@ def start_server() -> tuple[Any, threading.Thread, int]:
     config = uvicorn.Config(
         create_app(),
         host="127.0.0.1",
-        port=0,
+        port=find_free_port(),
         workers=1,
         log_level="warning",
         loop="asyncio",
@@ -154,19 +178,53 @@ def main(argv: list[str] | None = None) -> int:
 
     import webview
 
+    # B3：前端导出用 Blob + <a download>。pywebview 默认 ALLOW_DOWNLOADS=False，
+    # Cocoa 下此类导航会按普通页面加载把窗口替换成纯文本；置 True 后走
+    # WKNavigationActionPolicyDownload（注意：Cocoa 实现会弹系统 NSSavePanel
+    # 保存对话框，由用户选路径）。已核验 pywebview 6.2.1 cocoa.py。
+    webview.settings["ALLOW_DOWNLOADS"] = True
+
     window_kwargs: dict[str, Any] = {}
     if args.hidden_titlebar and sys.platform == "darwin":
         # pywebview 无原生 hidden-titlebar 参数，无边框窗口是最接近形态
         window_kwargs["frameless"] = True
 
+    # 暴露给前端的原生能力（窗口对象的 js_api 桥）。
+    # 设置页的「选择目录…」原先调用 window.pywebview.api.choose_directory，
+    # 但从未注册过 js_api —— 那个按钮永远走 else 分支提示「不支持原生目录
+    # 选择」（2026-09 修复）。
+    class JsApi:
+        def __init__(self) -> None:
+            self._window: Any = None
+
+        def bind(self, win: Any) -> None:
+            self._window = win
+
+        def choose_directory(self) -> str:
+            """弹系统目录选择框；返回选中的绝对路径，取消/失败返回空串。"""
+            if self._window is None:
+                return ""
+            try:
+                picked = self._window.create_file_dialog(webview.FileDialog.FOLDER)
+            except Exception:  # noqa: BLE001
+                return ""
+            if not picked:
+                return ""
+            if isinstance(picked, (list, tuple)):
+                return str(picked[0]) if picked else ""
+            return str(picked)
+
+    js_api = JsApi()
     window = webview.create_window(
         "MP Harvest",
         url,
         width=1180,
         height=760,
         min_size=(960, 640),
+        js_api=js_api,
         **window_kwargs,
     )
+    js_api.bind(window)
 
     # 窗口关闭后，pywebview/Cocoa 事件循环的收尾可能很慢。这里在 closed
     # 事件触发时立即启动后台线程执行清理，并在清理完成后直接 os._exit(0)，
@@ -180,7 +238,10 @@ def main(argv: list[str] | None = None) -> int:
 
     window.events.closed += _cleanup_and_exit
     try:
-        webview.start()  # 阻塞至窗口关闭（macOS 必须在主线程）
+        # B4：pywebview 默认 private_mode=True，Cocoa 启动时会清空全部
+        # website data（cookie/localStorage 不保留）；置 False 使用持久化
+        # datastore。已核验 pywebview 6.2.1 __init__.py / cocoa.py。
+        webview.start(private_mode=False)  # 阻塞至窗口关闭（macOS 必须在主线程）
     finally:
         _cleanup_and_exit()
 

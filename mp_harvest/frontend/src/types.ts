@@ -9,6 +9,8 @@ export interface Account {
   expires_at: number | null
   /** 等待抓包中（添加/续约后） */
   pending?: boolean
+  /** 添加时 MITM 代理 best-effort 启动失败的原因（成功时无此字段） */
+  mitm_message?: string
 }
 
 export type ArticleSource = 'M' | 'G' | '补'
@@ -24,6 +26,8 @@ export interface Article {
   url: string
   /** ISO 日期或 epoch 秒，渲染为 MM-DD */
   date: string
+  /** 最近一次被抓取到的时间（ISO）；旧缓存可能为空（2026-08-23） */
+  fetched_at?: string
   source: ArticleSource
   /** 最终 AI 判定：keep / drop / null（未判定） */
   verdict: 'keep' | 'drop' | null
@@ -129,7 +133,6 @@ export type WsEvent =
   | { type: 'credential.expired'; account_id: string }
   | { type: 'accounts.changed'; account_id: string }
   | { type: 'mitm.status'; running: boolean; port: number }
-  | { type: 'clipboard.credential'; name: string; url: string }
 
 // ---- 批量导入 ----
 export interface ImportItem {

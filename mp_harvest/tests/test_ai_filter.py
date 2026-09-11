@@ -225,7 +225,9 @@ def test_judge_articles_model_failure_fallback():
     assert len(res["dropped"]) == 2
     assert all(a.get("keep") is False for a in res["dropped"])
     assert all("模型" in a.get("reason", "") for a in res["dropped"])
-    # 缓存应已落盘（fallback 判定也写入）
+    # 关键：模型调用失败的兜底判定**只影响本轮展示，绝不写入持久缓存**。
+    # 写入就会把文章永久拉黑 —— 之后网络恢复也直接命中缓存、一次请求都不发
+    # （2026-09 修复，原断言锁死了这个 bug）。
     with tempfile.TemporaryDirectory() as td2:
         cp2 = Path(td2) / "cache.json"
         judge_articles(
@@ -237,7 +239,8 @@ def test_judge_articles_model_failure_fallback():
             max_retries=1,
         )
         data = json.loads(cp2.read_text(encoding="utf-8"))
-        assert "id1" in data and "id2" in data
+        assert data.get("entries") == {}, f"失败兜底不应入缓存：{data}"
+
 
 
 def test_build_system_prompt():

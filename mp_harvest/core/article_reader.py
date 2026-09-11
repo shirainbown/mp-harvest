@@ -13,6 +13,7 @@ v1.7.7 的 docx / markdown / txt / json 输出分支已删除（python-docx 依�
 from __future__ import annotations
 
 import html
+import os
 import re
 import sys
 from datetime import datetime
@@ -288,8 +289,12 @@ def _img_ext(src: str, content_type: str = "") -> str:
     return ".jpg"
 
 
-def localize_images(body_html: str, assets_dir: Path) -> str:
+def localize_images(body_html: str, assets_dir: Path, prefix: str = "") -> str:
     """下载正文图片到 ``assets_dir``，src 改写为 ``<assets_dir.name>/<文件>`` 相对路径。
+
+    ``prefix`` 必须按**文章**区分（2026-09 修复）：``assets/`` 是整个导出目录
+    共享的，而 ``n`` 只是篇内序号 —— 不带 prefix 时每篇的 ``img_001.jpg`` 互相
+    覆盖，最终所有文章都显示最后一篇的图片（静默串图）。
 
     下载失败的图片保留原 CDN 链接（不阻塞导出）。
     """
@@ -304,6 +309,13 @@ def localize_images(body_html: str, assets_dir: Path) -> str:
         "User-Agent": USER_AGENT,
         "Referer": "https://mp.weixin.qq.com/",
     }
+    stem = re.sub(r"[^0-9a-zA-Z_-]+", "", str(prefix or ""))[:12]
+    if not stem:
+        # 兜底：调用方没给标识时按正文哈希取命名空间，绝不能退回篇内序号
+        # （那正是串图的成因）——2026-09 修复
+        import hashlib
+
+        stem = hashlib.sha256(body_html.encode("utf-8", "ignore")).hexdigest()[:8]
     for n, img in enumerate(imgs, start=1):
         src = str(img.get("src") or "").strip()
         if not src.startswith(("http://", "https://")):
@@ -315,7 +327,8 @@ def localize_images(body_html: str, assets_dir: Path) -> str:
             resp.raise_for_status()
         except Exception:
             continue
-        fname = f"img_{n:03d}{_img_ext(src, resp.headers.get('Content-Type', ''))}"
+        base = f"{stem}_{n:03d}" if stem else f"img_{n:03d}"
+        fname = f"{base}{_img_ext(src, resp.headers.get('Content-Type', ''))}"
         try:
             (assets_dir / fname).write_bytes(resp.content)
         except Exception:
@@ -347,7 +360,12 @@ def render_article_html(
         body = f"<pre>{html.escape(str(art.get('body_text') or ''))}</pre>"
 
     if download_images:
-        body = localize_images(body, Path(assets_dir) if assets_dir else Path("assets"))
+        # 图片文件名带上本篇的稳定标识，避免同目录下多篇互相覆盖（2026-09 修复）
+        body = localize_images(
+            body,
+            Path(assets_dir) if assets_dir else Path("assets"),
+            prefix=_article_content_hash(link=link) if link else "",
+        )
 
     template = _JINJA.get_template("article.html")
     return template.render(
@@ -388,10 +406,15 @@ def safe_export_filename(
     index: int = 0,
     date: str = "",
     account: str = "",
+    content_hash: str = "",
 ) -> str:
-    """导出文件名：日期_公众号名_编号_标题.ext（2026-08-09 用户需求）。
+    """导出文件名：日期_公众号名_标题[_content_hash前8位].ext。
 
-    空字段自动跳过（无日期/公众号时退化为编号_标题 / 标题）；非法字符统一替换为 ``_``。
+    文件名不含批次内序号（2026-09 重构，B6）：同一篇文章任何批次/视图
+    都映射同一文件名（幂等，重跑即覆盖，不产生副本）。``content_hash``
+    传正文/链接 sha256 的前 8 位即可；同标题文章靠它区分。
+    ``index`` 仅为旧调用兼容保留，与 ``content_hash`` 不能同时使用。
+    空字段自动跳过；非法字符统一替换为 ``_``。
     """
     parts: list[str] = []
     d = re.sub(r"[^0-9-]+", "", str(date or ""))[:10]
@@ -400,11 +423,27 @@ def safe_export_filename(
     acct = re.sub(r'[\\/:*?"<>|]+', "_", str(account or "").strip()).strip("_")
     if acct:
         parts.append(acct)
-    if index > 0:
-        parts.append(f"{index:02d}")
     safe = re.sub(r'[\\/:*?"<>|]+', "_", (title or "article").strip())[:48] or "article"
-    parts.append(safe)
+    if content_hash:
+        # 新规则：日期_公众号_标题_hash8（B6，同标题文章靠 hash 区分）
+        h = re.sub(r"[^0-9a-fA-F]", "", str(content_hash))[:8]
+        parts.append(safe)
+        if h:
+            parts.append(h)
+    else:
+        # 旧规则兼容：编号在标题前
+        if index > 0:
+            parts.append(f"{index:02d}")
+        parts.append(safe)
     return "_".join(parts) + f".{ext}"
+
+
+def _article_content_hash(*, link: str = "", body_html: str = "", body_text: str = "") -> str:
+    """正文/链接的 sha256 前 8 位：幂等文件名的稳定依据（B6）。"""
+    import hashlib
+
+    src = (body_html or body_text or link or "").encode("utf-8", "ignore")
+    return hashlib.sha256(src).hexdigest()[:8]
 
 def _render_index_page(
     rows: list[dict[str, Any]],
@@ -546,6 +585,95 @@ __CSS__
 )
 
 
+def _index_rows_from_records(
+    records: Any,
+    *,
+    out_dir: Path,
+) -> list[dict[str, Any]] | None:
+    """从导出记录库生成目录页行（跨批次累积）。
+
+    只按 ``out_dir`` 过滤 —— **不再按本批次的账号集合过滤**（2026-09 修复）：
+    分两批导出不同公众号到同一目录时，第二批会把第一批的条目从目录页里抹掉。
+    ``account_id`` 是每条记录自带的字段，展示用即可，不能当过滤器。
+
+    返回 ``None`` 表示记录库不可用（调用方据此决定是否落盘）。
+    """
+    try:
+        rows = records.list_exports(out_dir=out_dir)
+    except Exception:  # noqa: BLE001
+        return None
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        out_path = str(r.get("out_path") or "")
+        if not out_path or out_path in seen:
+            continue
+        # 文件被手动删除后不再列进目录页（避免死链）
+        if not Path(out_path).is_file():
+            continue
+        seen.add(out_path)
+        keep = r.get("keep")
+        out.append(
+            {
+                "title": str(r.get("title") or "(无标题)"),
+                "publish_at": "",
+                "publish_ts": str(int(r.get("publish_ts") or 0)),
+                "account": str(r.get("account_name") or ""),
+                "file": Path(out_path).name,
+                "link": str(r.get("link") or ""),
+                "keep": None if keep is None else bool(keep),
+                "reason": str(r.get("reason") or ""),
+            }
+        )
+    return out
+
+
+def _write_index_from_records(
+    records: Any,
+    *,
+    out_dir: Path,
+    account_name: str = "",
+    fallback_rows: list[dict[str, Any]] | None = None,
+) -> tuple[Path, bool]:
+    """写目录页：优先用记录库（跨批次累积），记录库不可用时退化。
+
+    返回 ``(index_path, wrote)``；``wrote=False`` 表示记录库不可用且已有目录页，
+    此时**不覆盖**——避免一次瞬时 SQLite 故障把已累积的目录页清空（2026-09 修复）。
+    """
+    index_path = out_dir / "index.html"
+    rows = _index_rows_from_records(records, out_dir=out_dir)
+    if rows is None:
+        # 记录库不可用：已有目录页就原样保留，绝不用空页覆盖
+        if index_path.is_file():
+            return index_path, False
+        rows = list(fallback_rows or [])
+    elif not rows and fallback_rows:
+        # 记录库可用但一条都没写进去（写入全部失败）：用本批次行兜底
+        rows = list(fallback_rows)
+    index_path.write_text(
+        _render_index_page(rows, account_name=account_name),
+        encoding="utf-8",
+    )
+    return index_path, True
+
+
+def _batch_index_row(
+    row: dict[str, Any], path: Path, title: str, account: str
+) -> dict[str, Any]:
+    """本批次行 → 目录页行（记录库不可用时的兜底）。"""
+    keep = row.get("keep")
+    return {
+        "title": title or "(无标题)",
+        "publish_at": str(row.get("publish_at") or ""),
+        "publish_ts": str(int(row.get("publish_ts") or 0)),
+        "account": account,
+        "file": path.name,
+        "link": str(row.get("link") or ""),
+        "keep": keep if isinstance(keep, bool) else None,
+        "reason": str(row.get("reason") or ""),
+    }
+
+
 def batch_export_articles(
     articles: list[dict[str, Any]],
     *,
@@ -555,33 +683,104 @@ def batch_export_articles(
     account_name: str = "",
     download_images: bool = False,
     on_progress: Callable[[str], None] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+    records: Any = None,
 ) -> dict[str, Any]:
-    """Fetch each article body and write one HTML per article + index.html 目录页.
+    """逐篇拉取正文并导出 HTML；index.html 由导出记录库生成（跨批次累积）。
 
-    ``fetch_article(url, cred=...)`` defaults to ``fetch_and_parse_article``.
+    - 文件名 = 日期_公众号_标题_content_hash前8.html：同一篇文章任何批次/视图
+      映射同一文件，重跑即覆盖（B6）；已导出且文件仍在 → 跳过 HTTP 拉取（记 skipped）。
+    - 每篇前检查 ``row['_cred_error']``（凭证过期等，由路由预检填入）→ 直接进
+      errors，不拉取（B10）。
+    - 单篇失败收集进 errors，不中断整批；取消（check_cancelled/on_progress 抛错）
+      时写出已完成部分的 index.html，返回 ``ok=False, partial=True``（B9）。
+
+    统一响应：``{ok, exported, skipped, failed, errors, out_dir, index, written, fmt, partial}``，
+    ``ok=True`` 表示整批未被中断（单篇失败不影响 ok，见 failed/errors）。
     """
-    out_dir = Path(out_dir)
+    from mp_harvest.core.export_records import get_records
+
+    out_dir = Path(os.path.abspath(str(out_dir)))
     out_dir.mkdir(parents=True, exist_ok=True)
     fetch = fetch_article or fetch_and_parse_article
-    ok_n = 0
+    store = records if records is not None else get_records()
+    exported_n = 0
+    skipped_n = 0
     failed_n = 0
+    interrupted = False
     errors: list[str] = []
     written: list[str] = []
-    index_rows: list[dict[str, Any]] = []
+    batch_rows: list[dict[str, Any]] = []
 
     for i, row in enumerate(articles, start=1):
         link = str(row.get("link") or "").strip()
         title = str(row.get("title") or f"article_{i}").strip()
+        aid = str(row.get("_account_id") or "")
         if on_progress:
-            on_progress(f"正在导出 {i}/{len(articles)}：{title[:28]}")
+            try:
+                on_progress(f"正在导出 {i}/{len(articles)}：{title[:28]}")
+            except Exception:  # noqa: BLE001  # 取消标志在进度回调里抛出
+                interrupted = True
+                break
+        if check_cancelled is not None:
+            try:
+                check_cancelled()
+            except Exception:  # noqa: BLE001
+                interrupted = True
+                break
         if not link:
             failed_n += 1
             errors.append(f"{title}: 无链接")
+            continue
+        article_id = str(row.get("identity") or link)
+        hash8 = _article_content_hash(link=link)
+        acct = str(row.get("account") or account_name or "")
+        path = out_dir / safe_export_filename(
+            title,
+            ext="html",
+            date=str(row.get("publish_at") or ""),
+            account=acct,
+            content_hash=hash8,
+        )
+        # 1) 已导出过**这一篇** → 复用已有文件、跳过 HTTP。
+        #    按 article_id 反查而非 (article_id, 文件名)：标题/链接参数漂移会算出
+        #    新文件名，旧写法会当成新文章重复导出（2026-09 修复）。
+        prev = store.find_by_article(article_id) if article_id else None
+        if prev:
+            prev_path = Path(str(prev.get("out_path") or ""))
+            if str(prev_path) and prev_path.is_file():
+                skipped_n += 1
+                batch_rows.append(_batch_index_row(row, prev_path, title, acct))
+                # 刷新元数据（标题可能已变），保留原 out_path 不产生新文件
+                store.record_export(
+                    article_id=article_id,
+                    out_path=str(prev_path),
+                    sha256=str(prev.get("sha256") or ""),
+                    account_id=aid or str(prev.get("account_id") or ""),
+                    account_name=acct or str(prev.get("account_name") or ""),
+                    title=title,
+                    link=link,
+                    publish_ts=int(row.get("publish_ts") or prev.get("publish_ts") or 0),
+                    keep=row.get("keep") if isinstance(row.get("keep"), bool) else None,
+                    reason=str(row.get("reason") or ""),
+                    bytes_count=int(prev.get("bytes") or 0),
+                )
+                continue
+        # 2) 凭证过期 → 不拉取，直接进 errors（B10）。放在跳过检查之后：
+        #    已在盘上的文章根本不需要凭证（2026-09 修复）。
+        cred_error = str(row.get("_cred_error") or "").strip()
+        if cred_error:
+            failed_n += 1
+            errors.append(f"{title}: {cred_error}")
             continue
         row_cred = row.get("_cred")
         fetch_cred = row_cred if isinstance(row_cred, dict) else cred
         try:
             parsed = fetch(link, cred=fetch_cred)
+            if not parsed.get("link"):
+                # 回填原文链接：既保证导出的「原文」可点，也让图片资源命名拿到
+                # 稳定的文章标识（见 localize_images 的串图修复）
+                parsed["link"] = link
             if not parsed.get("publish_at") and row.get("publish_at"):
                 parsed["publish_at"] = row.get("publish_at")
             if not parsed.get("publish_ts") and row.get("publish_ts"):
@@ -589,52 +788,61 @@ def batch_export_articles(
             if not parsed.get("title") or parsed.get("title") == "(无标题)":
                 parsed["title"] = title or parsed.get("title")
             final_title = str(parsed.get("title") or title)
-            fname = safe_export_filename(
-                final_title,
-                ext="html",
-                index=i,
-                date=str(parsed.get("publish_at") or row.get("publish_at") or ""),
-                account=str(row.get("account") or account_name or ""),
-            )
             path = write_article_export(
-                out_dir / fname,
+                path,
                 parsed,
-                account=account_name or str(row.get("account") or ""),
+                account=acct,  # 真实账号名；反查不到才退回 account_name（B7）
                 download_images=download_images,
                 assets_dir=out_dir / "assets",
             )
             written.append(str(path))
-            index_rows.append(
-                {
-                    "title": final_title,
-                    "publish_at": str(parsed.get("publish_at") or ""),
-                    "publish_ts": str(parsed.get("publish_ts") or row.get("publish_ts") or ""),
-                    "account": str(row.get("account") or account_name or ""),
-                    "file": fname,
-                    "link": link,
-                    "keep": row.get("keep"),
-                    "reason": str(row.get("reason") or ""),
-                }
+            store.record_export(
+                article_id=article_id,
+                out_path=str(path),
+                sha256=_article_content_hash(
+                    link=link,
+                    body_html=str(parsed.get("body_html") or ""),
+                    body_text=str(parsed.get("body_text") or ""),
+                ),
+                account_id=aid,
+                account_name=acct,
+                title=final_title,
+                link=link,
+                publish_ts=int(parsed.get("publish_ts") or row.get("publish_ts") or 0),
+                keep=row.get("keep") if isinstance(row.get("keep"), bool) else None,
+                reason=str(row.get("reason") or ""),
+                bytes_count=path.stat().st_size,
             )
-            ok_n += 1
+            exported_n += 1
+            batch_rows.append(_batch_index_row(row, Path(str(path)), final_title, acct))
         except Exception as exc:  # noqa: BLE001
             failed_n += 1
             errors.append(f"{title}: {exc}")
 
-    index_path = out_dir / "index.html"
-    index_path.write_text(
-        _render_index_page(index_rows, account_name=account_name),
-        encoding="utf-8",
-    )
+    # index.html 从导出记录库生成：跨批次累积；取消/失败也写出已完成部分。
+    # 记录库不可用时退回本批次行，且已有目录页则保持原样不覆盖（2026-09 修复）。
+    index_name = account_name if account_name and account_name != "全部公众号" else ""
+    try:
+        index_path, _wrote = _write_index_from_records(
+            store,
+            out_dir=out_dir,
+            account_name=index_name,
+            fallback_rows=batch_rows,
+        )
+    except Exception:  # noqa: BLE001
+        index_path = out_dir / "index.html"
 
     return {
-        "ok": ok_n,
+        "ok": not interrupted,
+        "exported": exported_n,
+        "skipped": skipped_n,
         "failed": failed_n,
         "errors": errors,
-        "written": written,
         "out_dir": str(out_dir),
-        "fmt": "html",
         "index": str(index_path),
+        "written": written,
+        "fmt": "html",
+        "partial": interrupted,
     }
 
 

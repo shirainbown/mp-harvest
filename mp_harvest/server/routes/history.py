@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import time
+from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -15,6 +17,50 @@ from mp_harvest.server.tasks import Task, TaskCancelled, registry
 from mp_harvest.server.ws import broadcast_event
 
 router = APIRouter(tags=["history"])
+
+
+def parse_date_range(start_date: str, end_date: str) -> tuple[int, int]:
+    """YYYY-MM-DD → 本地时区闭区间 (start_ts, end_ts)；都为空返回 (0, 0)。
+
+    只给 start 时 end 默认今天；格式非法或 start>end 报 400。
+    ai/export 路由也复用本函数（2026-08-23）。
+    """
+    start_ts = end_ts = 0
+    if (start_date or "").strip():
+        try:
+            d = date.fromisoformat(start_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"start_date 格式非法（需 YYYY-MM-DD）：{start_date}")
+        start_ts = int(datetime.combine(d, datetime.min.time()).timestamp())
+    if (end_date or "").strip():
+        try:
+            d = date.fromisoformat(end_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"end_date 格式非法（需 YYYY-MM-DD）：{end_date}")
+        end_ts = int(datetime.combine(d, datetime.max.time()).timestamp())
+    if start_ts and not end_ts:
+        end_ts = int(datetime.combine(date.today(), datetime.max.time()).timestamp())
+    if start_ts and end_ts and start_ts > end_ts:
+        raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
+    return start_ts, end_ts
+
+
+def apply_time_filter(
+    tagged: list[tuple[str, str, dict[str, Any]]],
+    *,
+    start_ts: int = 0,
+    end_ts: int = 0,
+    latest_fetch: bool = False,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """对 (account_id, name, article) 列表做时间筛选；latest 按各账号自己的 last_fetch_ts。"""
+    if not (start_ts or end_ts or latest_fetch):
+        return tagged
+    out: list[tuple[str, str, dict[str, Any]]] = []
+    for aid, name, a in tagged:
+        latest_ts = state.get_last_fetch_ts(aid) if latest_fetch else 0
+        if state.time_filter([a], start_ts=start_ts, end_ts=end_ts, latest_ts=latest_ts):
+            out.append((aid, name, a))
+    return out
 
 
 def _get_account_or_404(account_id: str) -> dict[str, Any]:
@@ -28,10 +74,16 @@ def _fetch_one_account(
     account: dict[str, Any],
     *,
     days: int,
+    start_ts: int = 0,
+    end_ts: int = 0,
     task: Task,
     on_progress,
 ) -> dict[str, Any]:
-    """拉取单个公众号历史并写缓存/自动改名；返回该账号结果。"""
+    """拉取单个公众号历史并合并写缓存/自动改名；返回该账号结果。
+
+    2026-08-23：合并式缓存（state.merge_articles）替代整体覆盖，历史文章与
+    AI 判定结果不再丢失；start_ts>0 时按自定义日期范围拉取。
+    """
     from mp_harvest.core import history_client
     from mp_harvest.core import store as store_mod
 
@@ -40,15 +92,32 @@ def _fetch_one_account(
     cred = account.get("credentials") or {}
     biz = str(account.get("biz") or cred.get("__biz") or "")
     sightings = state.get_sightings().list_for_biz(biz)
-    result = history_client.fetch_history_days(
-        cred,
-        days=days,
-        on_progress=on_progress,
-        sightings=sightings,
-    )
+    if start_ts:
+        result = history_client.fetch_history_range(
+            cred,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            on_progress=on_progress,
+            sightings=sightings,
+        )
+    else:
+        result = history_client.fetch_history_days(
+            cred,
+            days=days,
+            on_progress=on_progress,
+            sightings=sightings,
+        )
     task.check_cancelled()
     articles = list(result.get("articles") or [])
-    state.set_articles(account_id, articles, days=days)
+    ok = bool(result.get("ok"))
+    # 失败（凭证过期等）时不推进 last_fetch_ts，否则「最近拉取」会被筛空
+    merge = state.merge_articles(
+        account_id,
+        articles,
+        fetched_ts=int(time.time()),
+        days=days,
+        advance_last_fetch=ok,
+    )
     # 2026-08-09：默认「未命名公众号」时，用 getmsg 返回的官方昵称自动覆盖
     nickname = str(result.get("nickname") or "").strip()
     if nickname:
@@ -60,20 +129,29 @@ def _fetch_one_account(
     return {
         "account_id": account_id,
         "name": name,
-        "ok": bool(result.get("ok")),
+        "ok": ok,
         "count": len(articles),
+        "added": merge["added"],
+        "total": merge["total"],
         "pages": result.get("pages", 0),
         "warning": result.get("warning") or "",
+        # 语义分开：truncated = 可能没拉完（要提醒）；notice = 好消息（合并了缺口）
+        "truncated": bool(result.get("truncated")),
+        "notice": str(result.get("notice") or ""),
         "error": result.get("error") or "",
     }
 
 
 @router.post("/api/history/fetch", status_code=202)
 def fetch_history(body: HistoryFetchIn) -> dict:
-    """创建拉历史任务，立即返回 task_id（分页边界响应取消，§3.2）。"""
+    """创建拉历史任务，立即返回 task_id（分页边界响应取消，§3.2）。
+
+    start_date/end_date（YYYY-MM-DD）都提供时按自定义日期范围拉取，优先于 days。
+    """
     account = _get_account_or_404(body.account_id)
     if not (account.get("credentials") or {}):
         raise HTTPException(status_code=409, detail="该账号尚无有效凭证，请先抓包")
+    start_ts, end_ts = parse_date_range(body.start_date, body.end_date)
 
     def work(task: Task) -> dict:
         def on_progress(msg: str) -> None:
@@ -84,6 +162,8 @@ def fetch_history(body: HistoryFetchIn) -> dict:
         res = _fetch_one_account(
             account,
             days=body.days,
+            start_ts=start_ts,
+            end_ts=end_ts,
             task=task,
             on_progress=on_progress,
         )
@@ -91,8 +171,12 @@ def fetch_history(body: HistoryFetchIn) -> dict:
             "account_id": res["account_id"],
             "ok": res["ok"],
             "count": res["count"],
+            "added": res["added"],
+            "total": res["total"],
             "pages": res["pages"],
             "warning": res["warning"],
+            "truncated": res.get("truncated", False),
+            "notice": res.get("notice", ""),
             "error": res["error"],
         }
 
@@ -116,6 +200,8 @@ def fetch_history_batch(body: HistoryFetchBatchIn) -> dict:
             )
         accounts.append(acct)
 
+    start_ts, end_ts = parse_date_range(body.start_date, body.end_date)
+
     def work(task: Task) -> dict:
         total = len(accounts)
         results: list[dict[str, Any]] = []
@@ -127,7 +213,16 @@ def fetch_history_batch(body: HistoryFetchBatchIn) -> dict:
                     message=f"正在拉取 {i + 1}/{total}：{acct.get('name') or acct.get('id')}（{msg}）",
                 )
 
-            results.append(_fetch_one_account(acct, days=body.days, task=task, on_progress=on_progress))
+            results.append(
+                _fetch_one_account(
+                    acct,
+                    days=body.days,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    task=task,
+                    on_progress=on_progress,
+                )
+            )
         task.check_cancelled()
         ok_n = sum(1 for r in results if r["ok"])
         return {
@@ -135,6 +230,7 @@ def fetch_history_batch(body: HistoryFetchBatchIn) -> dict:
             "total": len(results),
             "ok": ok_n,
             "failed": len(results) - ok_n,
+            "added": sum(r.get("added", 0) for r in results),
             "results": results,
         }
 
@@ -147,12 +243,22 @@ def list_articles(
     account_id: str = "",
     view: str = "all",
     order: str = "desc",
+    start_date: str = "",
+    end_date: str = "",
+    latest_fetch: bool = False,
 ) -> list[dict]:
     """文章列表（裸 Article[]，前端对齐）；account_id 空 = 全部公众号合并。
 
     view: all/keep/drop；order: desc/asc（按 publish_ts）。跨账号时每行带
     account_name 供前端按名称排序/显示（2026-08-09）。
+    start_date/end_date（YYYY-MM-DD）按发布时间筛选；latest_fetch=true 只看
+    最近一次拉取的文章（2026-08-23）。
     """
+    if view not in ("all", "keep", "drop"):
+        raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
+    if order not in ("desc", "asc"):
+        raise HTTPException(status_code=400, detail="order 必须是 desc/asc")
+    start_ts, end_ts = parse_date_range(start_date, end_date)
     if view not in ("all", "keep", "drop"):
         raise HTTPException(status_code=400, detail="view 必须是 all/keep/drop")
     if order not in ("desc", "asc"):
@@ -175,6 +281,9 @@ def list_articles(
     elif view == "drop":
         articles = [a for a in articles if a.get("keep") is False]
     tagged = [t for t in tagged if t[2] in articles]
+    tagged = apply_time_filter(
+        tagged, start_ts=start_ts, end_ts=end_ts, latest_fetch=latest_fetch
+    )
     tagged.sort(
         key=lambda t: int(t[2].get("publish_ts") or 0), reverse=(order == "desc")
     )
@@ -193,12 +302,15 @@ def supplement_article(body: SupplementIn) -> dict:
         raise HTTPException(status_code=400, detail="补录失败：链接与标题均为空")
     if body.account_id:
         _get_account_or_404(body.account_id)
-        cached = state.get_articles(body.account_id)
-        if all(str(a.get("identity")) != str(row.get("identity")) for a in cached):
-            biz = str(row.get("__biz") or "")
-            account = state.get_store().get(body.account_id) or {}
-            acc_biz = str(account.get("biz") or (account.get("credentials") or {}).get("__biz") or "")
-            if not acc_biz or not biz or acc_biz == biz:
-                cached.append(dict(row))
-                state.set_articles(body.account_id, cached)
+        biz = str(row.get("__biz") or "")
+        account = state.get_store().get(body.account_id) or {}
+        acc_biz = str(account.get("biz") or (account.get("credentials") or {}).get("__biz") or "")
+        if not acc_biz or not biz or acc_biz == biz:
+            new_row = dict(row)
+            # 带上 fetched_ts，补录文章才不会在「最近拉取」筛选
+            # （latest_ts = 该账号 last_fetch_ts）下消失
+            new_row["fetched_ts"] = int(time.time())
+            # 原子追加：读-改-写收进 state 的锁内，避免与后台拉取并发时
+            # 把刚拉到的文章覆盖掉（2026-09 修复）
+            state.append_article(body.account_id, new_row)
     return mappers.article_out(row, account_id=body.account_id or "")

@@ -14,6 +14,24 @@ from mp_harvest.server.ws import broadcast_event
 router = APIRouter(tags=["accounts"])
 
 
+def _ensure_mitm_started() -> tuple[bool, str]:
+    """Best-effort 确保抓包代理在运行（设计稿 §3.3，添加/导入账号共用）。
+
+    返回原始 ``(ok, msg)``：``ok=False`` 表示代理不可用（如 CA 未信任时
+    ``start()`` 拒绝设置系统代理，2026-09 修复假 ok）；``msg`` 仅在本次
+    真正尝试启动时非空。调用方负责按场景包装提示文案。
+    """
+    svc = state.get_mitm()
+    if svc.running:
+        return True, ""
+    ok, msg = svc.start()
+    broadcast_event(
+        "mitm.status",
+        {"running": bool(svc.running), "port": getattr(svc, "port", 8088)},
+    )
+    return ok, msg
+
+
 @router.get("/api/accounts")
 def list_accounts() -> list[dict]:
     """裸账号数组（前端 Account[]，API.md §3 第 5 条对齐）。"""
@@ -26,19 +44,24 @@ def add_account(body: AccountCreateIn) -> dict:
 
     响应为前端 Account 对象本身（裸对象）；mitm 提示附加为 ``mitm_message`` 字段。
     """
-    row = state.get_store().add_pending(name=body.name, article_url=body.url)
+    store = state.get_store()
+    url = (body.url or "").strip()
+    for a in store.list_accounts():
+        if str(a.get("article_url") or "").strip() == url:
+            raise HTTPException(
+                status_code=409,
+                detail=f"该文章链接的账号已存在：{a.get('name') or url}",
+            )
+    row = store.add_pending(name=body.name, article_url=body.url)
     mitm_msg = ""
     try:
-        svc = state.get_mitm()
-        if not svc.running:
-            ok, msg = svc.start()
-            mitm_msg = msg
-            broadcast_event(
-                "mitm.status",
-                {"running": bool(svc.running), "port": getattr(svc, "port", 8088)},
-            )
-            if not ok:
-                mitm_msg = f"账号已添加，但抓包代理启动失败：{msg}"
+        ok, msg = _ensure_mitm_started()
+        # 只在**失败**时回传提示（2026-09 修复）：start() 成功时 msg 是
+        # 「已开启系统代理…请用微信桌面打开公众号文章」这类成功文案，原先
+        # 也塞进 mitm_message，而前端把任何 mitm_message 当失败 → 首次
+        # 「添加并抓包」明明成功却弹红色错误让用户去装 CA。
+        if not ok and msg:
+            mitm_msg = f"账号已添加，但抓包代理启动失败：{msg}"
     except Exception as exc:  # noqa: BLE001
         mitm_msg = f"账号已添加，但抓包代理不可用：{exc}"
     out = mappers.account_out(row)
@@ -89,7 +112,16 @@ def import_accounts(body: ImportIn) -> dict:
             continue
         store.add_pending(name=it.name or "未命名公众号", article_url=url)
         imported += 1
-    return {"imported": imported, "skipped": skipped}
+    out: dict = {"imported": imported, "skipped": skipped}
+    # 与单个 add_account 一致：导入完成后 best-effort 拉起抓包代理（§3.3）。
+    # 成功时保持 {imported, skipped} 形状契约，仅失败时附加 mitm_message。
+    try:
+        ok, msg = _ensure_mitm_started()
+        if not ok and msg:
+            out["mitm_message"] = f"账号已导入，但抓包代理启动失败：{msg}"
+    except Exception as exc:  # noqa: BLE001
+        out["mitm_message"] = f"账号已导入，但抓包代理不可用：{exc}"
+    return out
 
 
 @router.post("/api/accounts/{account_id}/renew")

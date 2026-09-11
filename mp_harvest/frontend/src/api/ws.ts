@@ -4,7 +4,6 @@ import type { WsEvent } from '../types'
 import { useAccountsStore } from '../stores/accounts'
 import { useArticlesStore } from '../stores/articles'
 import { useTasksStore } from '../stores/tasks'
-import { useUiStore } from '../stores/ui'
 
 let ws: WebSocket | null = null
 let retry = 0
@@ -15,7 +14,6 @@ export function dispatchWsEvent(evt: WsEvent) {
   const accounts = useAccountsStore()
   const articles = useArticlesStore()
   const tasks = useTasksStore()
-  const ui = useUiStore()
   switch (evt.type) {
     case 'task.progress':
       tasks.onProgress(evt.task_id, evt.percent, evt.message)
@@ -41,9 +39,6 @@ export function dispatchWsEvent(evt: WsEvent) {
       break
     case 'mitm.status':
       accounts.mitm = { running: evt.running, port: evt.port }
-      break
-    case 'clipboard.credential':
-      ui.toast(`剪贴板目击凭证链接：${evt.name || evt.url}，可在凭证管理页入库`)
       break
   }
 }

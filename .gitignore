@@ -9,3 +9,6 @@ mp_harvest/frontend/dist/
 .DS_Store
 build/
 dist/
+
+# 数据目录备份（含凭证 / CA 私钥 / API Key，绝不能提交）
+mp_harvest/data.bak-*/

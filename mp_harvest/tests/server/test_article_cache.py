@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from mp_harvest.tests.server.conftest import add_account, wait_task
+from mp_harvest.tests.server.conftest import add_account, give_credential, wait_task
 
 
 def _seed(client, auth, acc_id: str) -> None:
     from mp_harvest.server import state
 
+    give_credential(acc_id)  # B10：导出前校验凭证，测试账号需先给凭证
     state.set_articles(
         acc_id,
         [
@@ -58,7 +59,8 @@ def test_export_html_by_ids_after_restart(client, auth):
     assert resp.status_code == 202, resp.text
     task = wait_task(resp.json()["task_id"])
     assert task.status == "done"
-    assert task.result["ok"] == 1
+    assert task.result["ok"] is True
+    assert task.result["exported"] == 1
 
 
 def test_delete_account_removes_cache(client, auth, isolated_data_dir):

@@ -79,8 +79,8 @@ def test_ca_status(client, auth):
     assert "cert_path" in data
 
 
-def test_ca_open_opens_cert_folder(client, auth, monkeypatch):
-    """POST /api/ca/open 调平台 shell_open 打开证书所在目录（2026-08-09 补）。"""
+def test_ca_open_opens_cert_file(client, auth, monkeypatch):
+    """POST /api/ca/open 调平台 shell_open 直接打开证书文件本身（B13 修复：不再打开数据目录）。"""
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -96,4 +96,4 @@ def test_ca_open_opens_cert_folder(client, auth, monkeypatch):
     monkeypatch.setattr(mitm_routes, "get_platform", fake_get)
     resp = client.post("/api/ca/open", params=auth)
     assert resp.status_code == 200, resp.text
-    assert opened == ["/fake"]  # cert_path=/fake/mitmproxy-ca-cert.pem → 父目录
+    assert opened == ["/fake/mitmproxy-ca-cert.pem"]  # 打开文件本身，而非父目录

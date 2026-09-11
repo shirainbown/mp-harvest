@@ -1,12 +1,21 @@
 import { defineStore } from 'pinia'
 
-export type ViewId = 'credentials' | 'history' | 'ai' | 'network'
+export type ViewId = 'credentials' | 'history' | 'ai' | 'network' | 'settings'
 
 export interface ToastItem {
   id: number
   msg: string
   ok: boolean
+  /** 滑出动画中 */
   out: boolean
+  /** 错误条不自动消失，需手动 ✕ 关闭 */
+  sticky: boolean
+}
+
+export interface ErrorRecord {
+  id: number
+  time: number
+  msg: string
 }
 
 let seq = 0
@@ -15,27 +24,41 @@ export const useUiStore = defineStore('ui', {
   state: () => ({
     view: 'credentials' as ViewId,
     toasts: [] as ToastItem[],
+    /** 错误中心：最近错误（时间 + 消息），供侧边栏入口查看 */
+    errors: [] as ErrorRecord[],
+    errorCenterOpen: false,
     updateOpen: false,
   }),
   actions: {
     go(v: ViewId) {
       this.view = v
     },
-    /** 成功 1.2s / 错误 2.5s，最多叠 3 条（2026-08-09 缩短：用户反馈弹窗停留过久） */
+    /** 成功 2.5s 自动消失；错误不自动消失（手动 ✕ 关闭）；最多叠 5 条 */
     toast(msg: string, ok = true) {
-      const t: ToastItem = { id: ++seq, msg, ok, out: false }
+      const t: ToastItem = { id: ++seq, msg, ok, out: false, sticky: !ok }
       this.toasts.push(t)
-      // 最多 3 条：超出移除最旧
-      while (this.toasts.length > 3) this.toasts.shift()
-      setTimeout(() => {
-        t.out = true
+      if (!ok) {
+        this.errors.push({ id: t.id, time: Date.now(), msg })
+        while (this.errors.length > 50) this.errors.shift()
+      }
+      while (this.toasts.length > 5) this.toasts.shift()
+      if (ok) {
         setTimeout(() => {
-          this.toasts = this.toasts.filter((x) => x.id !== t.id)
-        }, 250)
-      }, ok ? 1200 : 2500)
+          t.out = true
+          setTimeout(() => {
+            this.toasts = this.toasts.filter((x) => x.id !== t.id)
+          }, 250)
+        }, 2500)
+      }
     },
     error(msg: string) {
       this.toast(msg, false)
+    },
+    dismissToast(id: number) {
+      this.toasts = this.toasts.filter((x) => x.id !== id)
+    },
+    clearErrors() {
+      this.errors = []
     },
   },
 })

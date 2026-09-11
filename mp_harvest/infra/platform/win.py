@@ -71,10 +71,25 @@ class WinCaSetup(CaSetup):
                 error=(proc.stderr or proc.stdout or "").strip(),
                 message="证书安装失败（certutil 非零退出）",
             )
+        # 诚实返回：非零退出之外还要真的校验一遍，避免"命令成功但证书没进存储"
+        if not self.status():
+            return InstallResult(
+                ok=False,
+                error="trust not effective",
+                message="证书命令已执行，但存储中未找到该 CA，请重试或手动导入",
+            )
         return InstallResult(ok=True, message="CA 已安装到当前用户根证书存储")
 
     def status(self) -> bool:
-        """Root 用户存储中是否已信任 mitmproxy CA。"""
+        """Root 用户存储中是否已信任**本应用的这把** CA（按 SHA-1 指纹精确校验）。
+
+        2026-09 修复：原先只判断 ``"mitmproxy" in stdout``，任何一把同名 CA
+        （另一套数据目录、残留的旧 CA）都会误判为已信任 —— 与 mac 侧
+        「孤儿信任条目」同类，都会导致显示已信任但拦截必然失败。
+        """
+        want = self._thumbprint()
+        if not want:
+            return False
         try:
             proc = subprocess.run(
                 ["certutil", "-user", "-store", "Root"],
@@ -82,11 +97,35 @@ class WinCaSetup(CaSetup):
                 text=True,
                 timeout=60,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return False
         if proc.returncode != 0:
             return False
-        return "mitmproxy" in (proc.stdout or "").lower()
+        # certutil 输出形如 "Cert Hash(sha1): 4ae3e76e c743be13 ..."（带空格）
+        compact = "".join((proc.stdout or "").split()).lower()
+        return want in compact
+
+    def _thumbprint(self) -> str:
+        """证书 DER 的 SHA-1（certutil 的 thumbprint），取不到返回空串。"""
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.serialization import Encoding
+
+            cert = self.cert_path()
+            if not cert.exists():
+                return ""
+            raw = cert.read_bytes()
+            try:
+                loaded = x509.load_pem_x509_certificate(raw)
+            except Exception:  # noqa: BLE001
+                loaded = x509.load_der_x509_certificate(raw)
+            der = loaded.public_bytes(Encoding.DER)
+            import hashlib
+
+            return hashlib.sha1(der).hexdigest()
+        except Exception:  # noqa: BLE001
+            return ""
 
 
 class WinProxyManager(ProxyManager):

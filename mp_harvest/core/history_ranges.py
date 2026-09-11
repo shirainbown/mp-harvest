@@ -23,4 +23,4 @@ def label_for_days(days: int) -> str:
     for lb, d in HISTORY_RANGES:
         if d == int(days):
             return lb
-    return label_for_days(DEFAULT_HISTORY_DAYS)
+    return HISTORY_RANGE_LABELS[0] if HISTORY_RANGE_LABELS else f"近 {DEFAULT_HISTORY_DAYS} 天"

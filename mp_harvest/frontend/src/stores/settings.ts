@@ -10,6 +10,11 @@ import type {
 import { call, rest } from '../api/rest'
 import { useTasksStore } from './tasks'
 import { useUiStore } from './ui'
+import { MOCK } from '../config'
+
+// 模型自动保存防抖计时器 / 装载抑制标志（模块级，同 tasks.ts pendingTimers）
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let suppressModelAutosave = false
 
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
@@ -26,6 +31,17 @@ export const useSettingsStore = defineStore('settings', {
     modelErrors: {} as Record<string, string>,
     proxyTesting: false,
     loaded: false,
+    // 应用设置（GET/PUT /api/settings，扁平 KV；PUT 为整体覆盖，故保存时总是合并全量）
+    prefs: {
+      exportDefaultDir: '',
+      exportDownloadImages: true,
+      aiBatchSize: 50,
+      aiWorkers: 4,
+      aiContinueContentFilter: true,
+    },
+    prefsLoaded: false,
+    prefsError: '',
+    rawSettings: {} as Record<string, unknown>,
     // 更新
     updateChecking: false,
     update: null as UpdateCheckResult | null,
@@ -39,10 +55,16 @@ export const useSettingsStore = defineStore('settings', {
         call(rest.get<{ models: AiModel[] }>('/api/ai/models')),
         call(rest.get<{ text: string; default: string }>('/api/ai/principles')),
         call(rest.get<{ text: string; default: string }>('/api/ai/content-principles')),
-        call(rest.get<{ settings: Partial<NetworkSettings> & { proxy?: string } }>('/api/settings')),
+        call(rest.get<{ settings: Partial<NetworkSettings> & { proxy?: string } & Record<string, unknown> }>('/api/settings')),
         call(rest.get<PlatformInfo>('/api/platform')),
       ])
-      if (models) this.models = models.models
+      // 装载期间抑制模型自动保存（deep watch 会随赋值触发）
+      suppressModelAutosave = true
+      try {
+        if (models) this.models = models.models
+      } finally {
+        suppressModelAutosave = false
+      }
       if (principles) {
         this.principles = principles.text
         this.defaultPrinciples = principles.default ?? principles.text
@@ -57,16 +79,62 @@ export const useSettingsStore = defineStore('settings', {
           mode: s.mode === 'custom' ? 'custom' : 'direct',
           proxy_url: s.proxy ?? s.proxy_url ?? '',
         }
+        this._applyRawSettings(s)
+      } else if (!MOCK) {
+        this.prefsError = '设置加载失败：无法连接后端，以下为默认值'
       }
       if (platform) this.platform = platform
       this.loaded = true
     },
+    /** 解析 /api/settings 的扁平 KV（缺失键用默认值） */
+    _applyRawSettings(s: Record<string, unknown>) {
+      this.rawSettings = { ...s }
+      this.prefs.exportDefaultDir = String(s['export.default_dir'] ?? '')
+      this.prefs.exportDownloadImages = s['export.download_images'] !== false
+      this.prefs.aiBatchSize = Number(s['ai.batch_size']) || 50
+      this.prefs.aiWorkers = Number(s['ai.workers']) || 4
+      this.prefs.aiContinueContentFilter = s['ai.continue_content_filter'] !== false
+      this.prefsLoaded = true
+    },
+    /** 保存应用设置：合并全量 KV 后整体 PUT（后端 save 为覆盖式） */
+    async savePrefs(patch: Partial<typeof this.prefs>): Promise<boolean> {
+      Object.assign(this.prefs, patch)
+      const merged = this._mergedSettings()
+      const r = await call(rest.put('/api/settings', merged))
+      if (r !== null) {
+        this.rawSettings = merged
+        this.prefsError = ''
+        return true
+      }
+      this.prefsError = '设置保存失败，请重试'
+      return false
+    },
+    _mergedSettings(): Record<string, unknown> {
+      return {
+        ...this.rawSettings,
+        'export.default_dir': this.prefs.exportDefaultDir,
+        'export.download_images': this.prefs.exportDownloadImages,
+        'ai.batch_size': this.prefs.aiBatchSize,
+        'ai.workers': this.prefs.aiWorkers,
+        'ai.continue_content_filter': this.prefs.aiContinueContentFilter,
+      }
+    },
     async saveModels(silent = false) {
       // 服务端契约为裸数组（API.md §7.1）
       const r = await call(rest.put('/api/ai/models', this.models))
-      if (r !== null && !silent) useUiStore().toast('已保存模型配置')
+      if (r !== null && !silent) useUiStore().toast('模型配置已保存')
+      return r !== null
     },
-    addModel() {
+    /** 模型卡片任意字段变更 → 防抖自动保存全部（800ms） */
+    scheduleSaveModels() {
+      if (!this.loaded || suppressModelAutosave) return
+      if (saveTimer) clearTimeout(saveTimer)
+      saveTimer = setTimeout(() => {
+        saveTimer = null
+        void this.saveModels()
+      }, 800)
+    },
+    async addModel() {
       this.models.push({
         id: `m${Date.now()}`,
         enabled: true,
@@ -75,7 +143,9 @@ export const useSettingsStore = defineStore('settings', {
         format: 'openai',
         model: '',
       })
-      useUiStore().toast('已添加空白模型卡片，请填写配置')
+      // 立即持久化，避免点其他卡片保存时把空白卡片状态搞混
+      await this.saveModels(true)
+      useUiStore().toast('已添加模型并保存，请填写配置')
     },
     async removeModel(id: string) {
       this.models = this.models.filter((m) => m.id !== id)
@@ -119,21 +189,27 @@ export const useSettingsStore = defineStore('settings', {
       const r = await call(rest.put('/api/ai/principles', { text: this.principles }))
       if (r !== null) useUiStore().toast('筛选原则已保存（ai_principles.txt）')
     },
-    restorePrinciples() {
+    /** 恢复默认并立即落盘 */
+    async restorePrinciples() {
       this.principles = this.defaultPrinciples
-      useUiStore().toast('已恢复默认原则')
+      const r = await call(rest.put('/api/ai/principles', { text: this.principles }))
+      if (r !== null) useUiStore().toast('已恢复默认原则并保存')
     },
     async saveContentPrinciples() {
       const r = await call(rest.put('/api/ai/content-principles', { text: this.contentPrinciples }))
       if (r !== null) useUiStore().toast('内容筛选原则已保存（ai_content_principles.txt）')
     },
-    restoreContentPrinciples() {
+    /** 恢复默认并立即落盘 */
+    async restoreContentPrinciples() {
       this.contentPrinciples = this.defaultContentPrinciples
-      useUiStore().toast('已恢复默认内容原则')
+      const r = await call(rest.put('/api/ai/content-principles', { text: this.contentPrinciples }))
+      if (r !== null) useUiStore().toast('已恢复默认内容原则并保存')
     },
     async saveNetwork() {
-      // 服务端 settings 存储用 proxy 字段（更新下载走 settings.proxy）
-      await call(rest.put('/api/settings', { mode: this.network.mode, proxy: this.network.proxy_url }))
+      // 服务端 settings 存储用 proxy 字段（更新下载走 settings.proxy）；
+      // save 为覆盖式，必须带上已有 KV，避免抹掉导出/AI 设置
+      this.rawSettings = { ...this.rawSettings, mode: this.network.mode, proxy: this.network.proxy_url }
+      await call(rest.put('/api/settings', this._mergedSettings()))
     },
     async testProxy() {
       this.proxyTesting = true

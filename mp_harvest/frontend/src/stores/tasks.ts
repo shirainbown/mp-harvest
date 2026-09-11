@@ -119,11 +119,13 @@ export const useTasksStore = defineStore('tasks', {
         this._buffer(task_id, { kind: 'error', error })
         return
       }
-      if (t) {
-        t.status = 'error'
-        t.error = error
-        this.callbacks[task_id]?.onError?.(t)
-      }
+      // 与 onDone 同样的守卫：cancel() 会先把 status 置成 cancelled 并直接调
+      // 回调，随后 WS/轮询的 task.error 再进来一次就会重复弹同样的错误条
+      // （错误中心里也会存两条）—— 2026-09 修复
+      if (t.status !== 'running') return
+      t.status = 'error'
+      t.error = error
+      this.callbacks[task_id]?.onError?.(t)
       useUiStore().error(error)
       this.cleanup(task_id)
     },

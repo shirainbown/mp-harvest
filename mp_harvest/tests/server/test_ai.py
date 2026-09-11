@@ -5,10 +5,10 @@ from __future__ import annotations
 from mp_harvest.tests.server.conftest import add_account, give_credential, wait_task
 
 
-def _prepare_articles(client, auth):
+def _prepare_articles(client, auth, url="https://mp.weixin.qq.com/s/abc"):
     from mp_harvest.server import state
 
-    acc = add_account(client, auth)
+    acc = add_account(client, auth, url=url)
     give_credential(acc["id"])
     state.set_articles(
         acc["id"],
@@ -101,7 +101,8 @@ def test_ai_filter_all_accounts(client, auth):
     from mp_harvest.server import state
 
     acc1 = _prepare_articles(client, auth)
-    acc2 = _prepare_articles(client, auth)
+    # B18 起相同 article_url 返回 409，第二个账号需用不同链接
+    acc2 = _prepare_articles(client, auth, url="https://mp.weixin.qq.com/s/abc2")
     state.set_articles(
         acc1["id"],
         [{"title": "A", "link": "https://x/1", "publish_ts": 2, "identity": "art-0"}],

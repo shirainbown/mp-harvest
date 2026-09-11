@@ -52,7 +52,8 @@ def test_history_fetch_batch(client, auth):
     from mp_harvest.server import state
 
     acc1 = add_account(client, auth, name="A公众号")
-    acc2 = add_account(client, auth, name="B公众号")
+    # B18 起相同 article_url 返回 409，第二个账号需用不同链接
+    acc2 = add_account(client, auth, name="B公众号", url="https://mp.weixin.qq.com/s/abc2")
     give_credential(acc1["id"])
     give_credential(acc2["id"])
     resp = client.post(
@@ -74,7 +75,8 @@ def test_history_fetch_batch(client, auth):
 
 def test_history_fetch_batch_no_credential_409(client, auth):
     acc1 = add_account(client, auth)
-    acc2 = add_account(client, auth)
+    # B18 起相同 article_url 返回 409，第二个账号需用不同链接
+    acc2 = add_account(client, auth, url="https://mp.weixin.qq.com/s/abc2")
     give_credential(acc1["id"])
     resp = client.post(
         "/api/history/fetch-batch",
@@ -98,7 +100,8 @@ def test_articles_all_accounts_merge_with_name(client, auth):
     from mp_harvest.server import state
 
     acc1 = add_account(client, auth, name="A公众号")
-    acc2 = add_account(client, auth, name="B公众号")
+    # B18 起相同 article_url 返回 409，第二个账号需用不同链接
+    acc2 = add_account(client, auth, name="B公众号", url="https://mp.weixin.qq.com/s/abc2")
     state.set_articles(
         acc1["id"],
         [{"title": "a1", "link": "https://x/1", "publish_ts": 3, "identity": "a1"}],

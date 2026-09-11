@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import type { AiStage, Article, ArticleView } from '../types'
-import { call, rest } from '../api/rest'
+import { call, rest, LONG_TIMEOUT } from '../api/rest'
 import { useAccountsStore } from './accounts'
 import { useTasksStore } from './tasks'
 import { useUiStore } from './ui'
@@ -18,6 +18,14 @@ export const useArticlesStore = defineStore('articles', {
   state: () => ({
     accountId: '',
     rangeDays: 7,
+    /** 拉取范围模式：days = 近 N 天；custom = 自定义日期范围（2026-08-23） */
+    rangeMode: 'days' as 'days' | 'custom',
+    customStart: '' as string, // YYYY-MM-DD
+    customEnd: '' as string,
+    /** 缓存文章时间筛选：all / latest（最近一次拉取）/ custom（发布日期范围） */
+    timeFilter: 'all' as 'all' | 'latest' | 'custom',
+    filterStart: '' as string,
+    filterEnd: '' as string,
     list: [] as Article[],
     view: 'all' as ArticleView,
     aiStage: 'final' as AiStage,
@@ -25,6 +33,8 @@ export const useArticlesStore = defineStore('articles', {
     sortDir: 'desc' as 'desc' | 'asc',
     selected: new Set<string>() as Set<string>,
     loading: false,
+    /** 拉取请求在途（POST 已发出、task_id 未返回）；防双击重复建任务 */
+    fetchPending: false,
     fetchTaskId: '',
     batchTaskId: '',
     exportTaskId: '',
@@ -117,29 +127,89 @@ export const useArticlesStore = defineStore('articles', {
     },
   },
   actions: {
+    /** 时间筛选 → query 串字段（GET） */
+    _timeFilterQuery(): Record<string, string> {
+      if (this.timeFilter === 'latest') return { latest_fetch: 'true' }
+      if (this.timeFilter === 'custom' && this.filterStart)
+        return { start_date: this.filterStart, end_date: this.filterEnd }
+      return {}
+    },
+    /** 时间筛选 → POST body 字段，保证看到的=筛选的=导出的 */
+    _timeFilterBody(): Record<string, unknown> {
+      if (this.timeFilter === 'latest') return { latest_fetch: true }
+      if (this.timeFilter === 'custom' && this.filterStart)
+        return { start_date: this.filterStart, end_date: this.filterEnd }
+      return {}
+    },
+    /** 拉取请求体：custom 模式发 start_date/end_date，否则发 days */
+    _fetchBody(): Record<string, unknown> {
+      if (this.rangeMode === 'custom' && this.customStart)
+        return { start_date: this.customStart, end_date: this.customEnd }
+      return { days: this.rangeDays }
+    },
     async load(accountId?: string) {
       if (accountId !== undefined) this.accountId = accountId
       this.loading = true
-      const r = await call(
-        rest.get<Article[]>(
-          `/api/articles?account_id=${encodeURIComponent(this.accountId)}&view=all&order=desc`,
-        ),
-      )
-      if (r) this.list = r
-      this.loading = false
+      try {
+        const q = new URLSearchParams({
+          account_id: this.accountId,
+          view: 'all',
+          order: 'desc',
+          ...this._timeFilterQuery(),
+        })
+        const r = await call(rest.get<Article[]>(`/api/articles?${q}`))
+        if (r) this.list = r
+      } finally {
+        this.loading = false
+      }
     },
     /** 拉取历史 → Task + WS 进度（§5.5） */
     async fetchHistory() {
-      if (!this.accountId || this.fetchTaskId) return
-      const r = await call(rest.post<{ task_id: string }>('/api/history/fetch', { account_id: this.accountId, days: this.rangeDays }))
+      // fetchPending 覆盖「POST 已发出但 task_id 还没回来」的空窗期：
+      // 原先只靠 fetchTaskId 守卫，快速双击会创建两个任务，而只有后一个 id
+      // 被记住 —— 前一个完成时把 fetchTaskId 清空，按钮在第二个任务仍在跑时
+      // 就恢复可点（2026-09 修复）
+      if (!this.accountId || this.fetchTaskId || this.fetchPending) return
+      this.fetchPending = true
+      let r: { task_id: string } | null = null
+      try {
+        r = await call(
+          rest.post<{ task_id: string }>('/api/history/fetch', {
+            account_id: this.accountId,
+            ...this._fetchBody(),
+          }, { timeout: LONG_TIMEOUT }),
+        )
+      } finally {
+        this.fetchPending = false
+      }
       if (!r) return
       this.fetchTaskId = r.task_id
       const ui = useUiStore()
       useTasksStore().track(r.task_id, 'history', {
         onDone: async (t) => {
           this.fetchTaskId = ''
-          const res = (t.result || {}) as { added?: number; total?: number }
-          ui.toast(`拉取完成：新增 ${res.added ?? 0} 篇，共 ${res.total ?? this.list.length} 篇`)
+          const res = (t.result || {}) as {
+            ok?: boolean
+            error?: string
+            warning?: string
+            truncated?: boolean
+            notice?: string
+            added?: number
+            total?: number
+          }
+          // 后端契约：拉取失败时 result 为 {ok:false, error, warning?}
+          if (res.ok === false) {
+            ui.error(`拉取历史失败：${res.error || '未知错误'}${res.warning ? `\n${res.warning}` : ''}`)
+          } else {
+            ui.toast(
+              `拉取完成：新增 ${res.added ?? 0} 篇，共 ${res.total ?? this.list.length} 篇` +
+                (res.notice ? `（${res.notice}）` : ''),
+            )
+            // 只有 truncated 才是「可能没拉完」的问题；notice（如「已合并补录/抓包
+            // N 篇」）是好消息，不能弹红 —— 两者原先共用 warning 字段，导致一次
+            // 完全成功的拉取被渲染成「拉取未完整」（2026-09 修复）
+            if (res.truncated) ui.error(`拉取未完整：${res.warning || '已达翻页上限'}`)
+          }
           await this.load()
         },
         onError: (t) => {
@@ -157,8 +227,8 @@ export const useArticlesStore = defineStore('articles', {
       const r = await call(
         rest.post<{ task_id: string }>('/api/history/fetch-batch', {
           account_ids: accountIds,
-          days: this.rangeDays,
-        }),
+          ...this._fetchBody(),
+        }, { timeout: LONG_TIMEOUT }),
       )
       if (!r) return
       this.batchTaskId = r.task_id
@@ -201,6 +271,7 @@ export const useArticlesStore = defineStore('articles', {
           account_id: this.accountId,
           batch_size: bs,
           workers: wk,
+          ...this._timeFilterBody(),
         }),
       )
       if (!r) return
@@ -213,19 +284,36 @@ export const useArticlesStore = defineStore('articles', {
         onDone: async (t) => {
           this.aiTaskId = ''
           this.aiProgress = ''
-          const res = (t.result || {}) as { kept?: number; keep?: number; drop?: number; cached?: number }
-          const kept = res.kept ?? res.keep ?? 0
-          this.aiStage = 'title'
+          // 后端契约：{ok, kept, dropped, cached, judged, errors[]}
+          // 原先读的是 res.drop（后端叫 dropped）→ 提示恒为「过滤 ?」；
+          // 且从不读 ok/errors → 模型全挂也显示成「通过 0 篇」的成功（2026-09 修复）
+          const res = (t.result || {}) as {
+            ok?: boolean
+            kept?: number
+            dropped?: number
+            cached?: number
+            errors?: string[]
+          }
+          const kept = res.kept ?? 0
+          const dropped = res.dropped ?? 0
+          // 用 setStage 而非直接赋值：它会一并复位 view，否则若当前停在
+          // pending 等视图，切到 title 阶段后列表会空白（2026-09 修复）
+          this.setStage('title')
+          const failed = res.ok === false || (res.errors?.length ?? 0) > 0
+          const head = `标题筛选：通过 ${kept} / 过滤 ${dropped}${res.cached ? `（缓存命中 ${res.cached}）` : ''}`
+          if (failed) {
+            ui.error(`${head}\n${(res.errors || ['模型调用失败，本轮未完成判定']).join('\n')}`)
+          }
           if (includeContent) {
             if (kept > 0) {
-              ui.toast(`标题筛选完成：通过 ${kept} / 过滤 ${res.drop ?? '?'}，继续内容筛选…`)
+              if (!failed) ui.toast(`${head}，继续内容筛选…`)
               await this.contentFilter(bs, wk)
             } else {
-              ui.toast(`标题筛选完成：通过 0 篇，跳过内容筛选`)
+              if (!failed) ui.toast('标题筛选完成：通过 0 篇，跳过内容筛选')
               await this.load()
             }
           } else {
-            ui.toast(`标题筛选完成：通过 ${kept} / 过滤 ${res.drop ?? '?'}${res.cached ? `（缓存命中 ${res.cached}）` : ''}`)
+            if (!failed) ui.toast(head)
             await this.load()
           }
         },
@@ -245,6 +333,7 @@ export const useArticlesStore = defineStore('articles', {
           account_id: this.accountId,
           batch_size: bs,
           workers: wk,
+          ...this._timeFilterBody(),
         }),
       )
       if (!r) return
@@ -257,17 +346,25 @@ export const useArticlesStore = defineStore('articles', {
         onDone: async (t) => {
           this.aiTaskId = ''
           this.aiProgress = ''
-          this.aiStage = 'content'
+          this.setStage('content')
           const res = (t.result || {}) as {
+            ok?: boolean
             kept?: number
             dropped?: number
             cached?: number
             fetch_failed?: number
+            errors?: string[]
           }
-          const parts = [`内容筛选完成：通过 ${res.kept ?? '?'} / 过滤 ${res.dropped ?? '?'}`]
+          const parts = [`内容筛选：通过 ${res.kept ?? '?'} / 过滤 ${res.dropped ?? '?'}`]
           if (res.cached) parts.push(`缓存命中 ${res.cached}`)
-          if (res.fetch_failed) parts.push(`正文获取失败 ${res.fetch_failed}（已过滤）`)
-          ui.toast(parts.join(' · '))
+          // 正文抓取失败的**不再计为丢弃**：它们留在「待内容筛选」，可重新运行
+          if (res.fetch_failed) parts.push(`正文获取失败 ${res.fetch_failed}（保留待筛选，可重跑）`)
+          const failed = res.ok === false || (res.errors?.length ?? 0) > 0
+          if (failed) {
+            useUiStore().error(`${parts.join(' · ')}\n${(res.errors || []).join('\n')}`)
+          } else {
+            ui.toast(parts.join(' · '))
+          }
           await this.load()
         },
         onError: () => {
@@ -285,11 +382,14 @@ export const useArticlesStore = defineStore('articles', {
     },
     /** 列表导出 / 复制：始终只导出当前视图（§5.5） */
     async exportListText(): Promise<string | null> {
-      return call(
-        rest.get<string>(
-          `/api/articles/export-list?account_id=${encodeURIComponent(this.accountId)}&view=${this.view}&format=${encodeURIComponent(this.listFormat)}&stage=${this.aiStage}`,
-        ),
-      )
+      const q = new URLSearchParams({
+        account_id: this.accountId,
+        view: this.view,
+        format: this.listFormat,
+        stage: this.aiStage,
+        ...this._timeFilterQuery(),
+      })
+      return call(rest.get<string>(`/api/articles/export-list?${q}`, { timeout: LONG_TIMEOUT }))
     },
     async copyList() {
       const text = await this.exportListText()
@@ -314,11 +414,15 @@ export const useArticlesStore = defineStore('articles', {
      *  outDir 指定目标目录，后端会在其中生成 index.html 说明页（2026-08-09） */
     async exportHtml(ids: string[], outDir?: string) {
       // 必须带 account_id，否则后端拿不到文章列表（2026-08-09 修复）
-      const body: Record<string, unknown> = { account_id: this.accountId, stage: this.aiStage }
+      const body: Record<string, unknown> = {
+        account_id: this.accountId,
+        stage: this.aiStage,
+        ...this._timeFilterBody(),
+      }
       if (ids.length) body.ids = ids
       else body.view = this.view
       if (outDir && outDir.trim()) body.out_dir = outDir.trim()
-      const r = await call(rest.post<{ task_id: string }>('/api/articles/export-html', body))
+      const r = await call(rest.post<{ task_id: string }>('/api/articles/export-html', body, { timeout: LONG_TIMEOUT }))
       if (!r) return
       this.exportTaskId = r.task_id
       const ui = useUiStore()
@@ -327,9 +431,36 @@ export const useArticlesStore = defineStore('articles', {
       )
       useTasksStore().track(r.task_id, 'export', {
         onDone: (t) => {
-          const res = (t.result || {}) as { dir?: string; count?: number }
+          // 后端契约：{ok, exported, skipped, failed, errors[], out_dir}
+          const res = (t.result || {}) as {
+            ok?: boolean
+            exported?: number
+            skipped?: number
+            failed?: number
+            errors?: string[]
+            out_dir?: string
+            dir?: string
+            count?: number
+          }
           this.exportTaskId = ''
-          ui.toast(`正文导出完成（${res.count ?? ''} 篇）→ ${res.dir || 'exports/'}（含 index.html 说明页）`)
+          const failed = res.failed ?? 0
+          const exported = res.exported ?? res.count ?? 0
+          const skipped = res.skipped ?? 0
+          // 「跳过」必须显示（2026-09 修复）：全部命中导出记录时 exported=0，
+          // 原先的提示会变成「导出完成（0 篇）」，看起来像失败，而它恰恰是
+          // 导出记录库在正常工作（同一批文章不重复下载）
+          const skippedNote = skipped ? ` / 跳过 ${skipped} 篇（已导出过）` : ''
+          if (res.ok === false || failed > 0) {
+            const lines = [
+              `正文导出：成功 ${exported}${skippedNote} / 失败 ${failed}`,
+              ...(res.errors || []),
+            ]
+            useUiStore().error(lines.join('\n')) // 不自动消失，可滚动查看 errors 列表
+          } else {
+            ui.toast(
+              `正文导出完成（${exported} 篇${skippedNote}）→ ${res.out_dir || res.dir || 'exports/'}（含 index.html 说明页）`,
+            )
+          }
         },
         onError: () => {
           this.exportTaskId = ''
@@ -363,11 +494,14 @@ export const useArticlesStore = defineStore('articles', {
       for (const row of this.list) {
         const p = byId.get(row.id)
         if (!p) continue
-        if (p.title_verdict !== undefined) {
+        // 用 `!= null` 而非 `!== undefined`：后端在非本阶段的字段上发的是
+        // **null**（不是缺席），`null !== undefined` 成立 → 会把 title_verdict
+        // 刷成 null，跑内容筛选时列表和计数集体塌陷（2026-09 修复）
+        if (p.title_verdict != null) {
           row.title_verdict = p.title_verdict
           row.title_reason = p.title_reason || row.title_reason
         }
-        if (p.content_verdict !== undefined) {
+        if (p.content_verdict != null) {
           row.content_verdict = p.content_verdict
           row.content_reason = p.content_reason || row.content_reason
         }

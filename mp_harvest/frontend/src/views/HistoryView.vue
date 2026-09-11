@@ -57,11 +57,45 @@ const rangeOptions = [
   { value: '7', label: '近 7 天' },
   { value: '30', label: '近 30 天' },
   { value: '90', label: '近 90 天' },
+  { value: 'custom', label: '自定义' },
 ]
+function todayStr() {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
 const range = computed({
-  get: () => String(articles.rangeDays),
-  set: (v) => (articles.rangeDays = Number(v)),
+  get: () => (articles.rangeMode === 'custom' ? 'custom' : String(articles.rangeDays)),
+  set: (v) => {
+    if (v === 'custom') {
+      articles.rangeMode = 'custom'
+      if (!articles.customEnd) articles.customEnd = todayStr()
+    } else {
+      articles.rangeMode = 'days'
+      articles.rangeDays = Number(v)
+    }
+  },
 })
+const customRangeInvalid = computed(
+  () => articles.rangeMode === 'custom' && !articles.customStart,
+)
+const rangeLabel = computed(() =>
+  articles.rangeMode === 'custom'
+    ? ` ${articles.customStart || '?'} ~ ${articles.customEnd || '今天'} 的`
+    : `最近 ${articles.rangeDays} 天`,
+)
+
+// ---- 缓存文章时间筛选（2026-08-23）：全部 / 最近拉取 / 自定义发布日期范围 ----
+const filterOptions = [
+  { value: 'all', label: '全部' },
+  { value: 'latest', label: '最近拉取' },
+  { value: 'custom', label: '自定义' },
+]
+function setTimeFilter(v: string) {
+  articles.timeFilter = v as 'all' | 'latest' | 'custom'
+  if (v === 'custom' && !articles.filterEnd) articles.filterEnd = todayStr()
+  if (v !== 'custom' || articles.filterStart) articles.load()
+}
 
 // ---- 拉取进度（内联） ----
 const fetchTask = computed(() => (articles.fetchTaskId ? tasks.tasks[articles.fetchTaskId] : null))
@@ -94,6 +128,35 @@ function confirmBatch() {
   articles.fetchBatch(ids)
 }
 
+// ---- 拉取入口统一（2026-09）----
+// 原先：下拉选「全部公众号」时 accountId 为空串，而「拉取历史」的 disabled 是
+// `!accountId` —— 于是想看聚合列表恰恰不能拉取，必须绕到「批量拉取…」再勾一遍。
+// 现在：下拉决定范围 —— 选中具体公众号 = 拉它一个；选「全部公众号」= 拉取全部
+//（自动跳过凭证过期的）；只有想拉其中一个子集时才用「选择公众号拉取…」。
+const fetchableAccounts = computed(() =>
+  accounts.list.filter((a) => !acctExpired(a.id, a.expires_at)),
+)
+const isAggregate = computed(() => !articles.accountId)
+const fetchBusy = computed(
+  () => !!fetchTask.value || !!articles.batchTaskId || articles.fetchPending,
+)
+const fetchDisabled = computed(
+  () =>
+    !accounts.list.length ||
+    customRangeInvalid.value ||
+    fetchBusy.value ||
+    (isAggregate.value ? fetchableAccounts.value.length === 0 : currentExpired.value),
+)
+const fetchLabel = computed(() =>
+  isAggregate.value && fetchableAccounts.value.length
+    ? `⟳ 拉取全部公众号（${fetchableAccounts.value.length}）`
+    : '⟳ 拉取历史',
+)
+function startFetch() {
+  if (isAggregate.value) articles.fetchBatch(fetchableAccounts.value.map((a) => a.id))
+  else articles.fetchHistory()
+}
+
 // ---- 视图切换 ----
 const stageTabs = [
   { value: 'final', label: '最终结果' },
@@ -110,12 +173,11 @@ function rowReason(a: Article) {
 
 // ---- 选择 & 导出 HTML ----
 const selectedCount = computed(() => articles.selectedInView.length)
-const exportBtnText = computed(() =>
-  selectedCount.value ? `导出 HTML（已选 ${selectedCount.value}）` : '导出 HTML（未选择 = 当前视图全部）',
-)
 const confirmAllOpen = ref(false)
+// B5：计数与载荷一致——都基于 selectedInView（导出当前视图所选项）
 function clickExportHtml() {
-  if (selectedCount.value) articles.exportHtml([...articles.selected])
+  const ids = articles.selectedInView.map((a) => a.id)
+  if (ids.length) articles.exportHtml(ids)
   else confirmAllOpen.value = true
 }
 function confirmExportAll() {
@@ -126,16 +188,20 @@ function exportSingle(a: Article) {
   articles.exportHtml([a.id])
 }
 
-// ---- 导出全部正文到指定目录（2026-08-09） ----
-const EXPORT_DIR_KEY = 'mp_harvest.export_dir'
+// ---- 导出全部正文到指定目录（2026-08-09）；默认目录取「设置」页配置的 export.default_dir ----
 const exportDirOpen = ref(false)
-const exportDir = ref(localStorage.getItem(EXPORT_DIR_KEY) || '~/Downloads/mp-harvest-export')
+const exportDir = ref('~/Downloads/mp-harvest-export')
+watch(
+  () => settings.prefsLoaded,
+  (v) => {
+    if (v && settings.prefs.exportDefaultDir) exportDir.value = settings.prefs.exportDefaultDir
+  },
+)
 function openExportDir() {
   exportDirOpen.value = true
 }
 function confirmExportDir() {
   exportDirOpen.value = false
-  localStorage.setItem(EXPORT_DIR_KEY, exportDir.value)
   articles.exportHtml([], exportDir.value)
 }
 
@@ -187,15 +253,24 @@ const totalSize = computed(() => virtualizer.value.getTotalSize())
 const principlesPreview = computed(() => settings.principles.slice(0, 200) + (settings.principles.length > 200 ? '…' : ''))
 const contentPrinciplesPreview = computed(() => settings.contentPrinciples.slice(0, 200) + (settings.contentPrinciples.length > 200 ? '…' : ''))
 
-// 并行判定控制（2026-08-09）：每批篇数（默认 50）/ 并发批数
+// 并行判定控制（2026-08-09）：每批篇数 / 并发批数，默认值来自「设置」页
 const aiBatchSize = ref(50)
 const aiWorkers = ref(4)
 // AI 筛选弹窗开关（2026-08-16 由 Popover 改为 Modal，避免内容过多显示不全）
 const aiFilterOpen = ref(false)
-// 标题筛选完成后是否继续内容筛选（2026-08-16）
-const aiIncludeContent = ref(localStorage.getItem('mp_harvest.ai_include_content') !== '0')
+// 标题筛选完成后是否继续内容筛选（默认取自 ai.continue_content_filter，改动画立即保存）
+const aiIncludeContent = ref(true)
+watch(
+  () => settings.prefsLoaded,
+  (v) => {
+    if (!v) return
+    aiBatchSize.value = settings.prefs.aiBatchSize
+    aiWorkers.value = settings.prefs.aiWorkers
+    aiIncludeContent.value = settings.prefs.aiContinueContentFilter
+  },
+)
 function toggleAiIncludeContent() {
-  localStorage.setItem('mp_harvest.ai_include_content', aiIncludeContent.value ? '1' : '0')
+  settings.savePrefs({ aiContinueContentFilter: aiIncludeContent.value })
 }
 </script>
 
@@ -217,14 +292,19 @@ function toggleAiIncludeContent() {
         </select>
         <span class="form-label">范围</span>
         <SegmentedControl v-model="range" :options="rangeOptions" />
-        <SButton variant="primary" :disabled="!articles.accountId || currentExpired || !!fetchTask" @click="articles.fetchHistory()">
-          ⟳ 拉取历史
+        <template v-if="articles.rangeMode === 'custom'">
+          <input v-model="articles.customStart" type="date" class="input" style="width:140px" />
+          <span class="tertiary">至</span>
+          <input v-model="articles.customEnd" type="date" class="input" style="width:140px" />
+        </template>
+        <SButton variant="primary" :disabled="fetchDisabled" @click="startFetch()">
+          {{ fetchLabel }}
         </SButton>
         <span v-if="currentExpired" class="tertiary" style="font-size:var(--fs-xs)">
           凭证已过期，仅显示已缓存的历史文章；续约后可拉取新文章
         </span>
         <SButton variant="ghost" :disabled="!accounts.list.length || !!articles.batchTaskId" @click="batchOpen = true">
-          批量拉取…
+          选择公众号拉取…
         </SButton>
         <ProgressInline
           v-if="fetchTask"
@@ -234,7 +314,7 @@ function toggleAiIncludeContent() {
         />
         <ProgressInline
           v-if="articles.batchTaskId"
-          :text="(tasks.tasks[articles.batchTaskId]?.message) || '批量拉取中…'"
+          :text="(tasks.tasks[articles.batchTaskId]?.message) || '拉取中…'"
           cancellable
           @cancel="articles.cancelBatch()"
         />
@@ -260,7 +340,9 @@ function toggleAiIncludeContent() {
             :key="t.v"
             class="view-tab"
             :class="{ active: articles.view === t.v }"
+            tabindex="0"
             @click="articles.setView(t.v)"
+            @keydown.enter.prevent="articles.setView(t.v)"
           >
             {{ t.label }} <span class="cnt">{{ articles.counts[t.v] }}</span>
           </span>
@@ -272,11 +354,31 @@ function toggleAiIncludeContent() {
           <option v-for="f in LIST_FORMATS" :key="f.value" :value="f.value">{{ f.label }}</option>
         </select>
         <SButton size="sm" :disabled="!articles.visible.length" @click="articles.copyList()">复制</SButton>
-        <STooltip text="始终只导出当前视图">
-          <SButton size="sm" :disabled="!articles.visible.length" @click="articles.exportList()">导出</SButton>
-        </STooltip>
         <SButton size="sm" variant="ghost" :disabled="!articles.accountId" @click="suppOpen = true">+ 补录链接</SButton>
         <SButton size="sm" variant="ghost" :disabled="!accounts.list.length" @click="articles.load()">刷新</SButton>
+        <span class="muted" style="font-size:var(--fs-sm)">筛选：</span>
+        <SegmentedControl
+          :model-value="articles.timeFilter"
+          :options="filterOptions"
+          @update:model-value="setTimeFilter($event)"
+        />
+        <template v-if="articles.timeFilter === 'custom'">
+          <input
+            v-model="articles.filterStart"
+            type="date"
+            class="input btn-sm"
+            style="height:24px;font-size:var(--fs-xs);width:130px"
+            @change="articles.filterStart && articles.load()"
+          />
+          <span class="tertiary" style="font-size:var(--fs-xs)">至</span>
+          <input
+            v-model="articles.filterEnd"
+            type="date"
+            class="input btn-sm"
+            style="height:24px;font-size:var(--fs-xs);width:130px"
+            @change="articles.filterStart && articles.load()"
+          />
+        </template>
         <span class="muted" style="font-size:var(--fs-sm)">排序：</span>
         <select
           class="input btn-sm"
@@ -292,8 +394,21 @@ function toggleAiIncludeContent() {
         <span class="muted" style="font-size:var(--fs-sm)">正文：</span>
         <SButton size="sm" variant="ghost" @click="articles.selectAllVisible()">全选</SButton>
         <SButton size="sm" variant="ghost" @click="articles.clearSelection()">取消选择</SButton>
-        <SButton size="sm" variant="primary" :disabled="!articles.visible.length" @click="clickExportHtml()">{{ exportBtnText }}</SButton>
-        <SButton size="sm" variant="ghost" :disabled="!articles.visible.length" @click="openExportDir">导出到目录…</SButton>
+        <span class="badge sel-badge" title="当前视图已选">{{ selectedCount }}</span>
+        <SPopover>
+          <template #anchor>
+            <SButton size="sm" variant="primary" :disabled="!articles.visible.length">导出 ▾</SButton>
+          </template>
+          <template #default="{ close }">
+            <div class="menu">
+              <div class="menu-item" @click="close(); clickExportHtml()">
+                导出 HTML<template v-if="selectedCount">（已选 {{ selectedCount }}）</template><template v-else>（当前视图全部）</template>
+              </div>
+              <div class="menu-item" @click="close(); openExportDir()">导出到目录…</div>
+              <div class="menu-item" @click="close(); articles.exportList()">导出列表文件</div>
+            </div>
+          </template>
+        </SPopover>
         <ProgressInline
           v-if="exportTask"
           :text="exportTask.message || '导出中…'"
@@ -302,7 +417,6 @@ function toggleAiIncludeContent() {
         />
         <span style="width:8px"></span>
         <SButton size="sm" :disabled="!accounts.list.length || !!articles.aiTaskId" @click="aiFilterOpen = true">✦ AI 筛选</SButton>
-        <SButton size="sm" variant="ghost" @click="ui.go('ai')">⚙ 模型设置</SButton>
       </div>
     </div>
 
@@ -311,7 +425,7 @@ function toggleAiIncludeContent() {
       <div class="art-head"><span></span><span>公众号</span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span></div>
       <div ref="scrollRef" class="art-scroll">
         <SkeletonRows v-if="articles.loading" :rows="8" />
-        <EmptyState v-else-if="!articles.visible.length" text="先选择公众号并拉取历史（可「批量拉取…」一次拉多个）" />
+        <EmptyState v-else-if="!articles.visible.length" text="选好公众号后点「拉取历史」；想看全部账号就先在下拉里选「全部公众号」" />
         <!-- 虚拟滚动（>500 条） -->
         <div v-else-if="useVirtual" :style="`height:${totalSize}px;position:relative`">
           <div
@@ -319,6 +433,7 @@ function toggleAiIncludeContent() {
             :key="articles.visible[vr.index].id"
             class="art-row"
             :style="`position:absolute;top:0;left:0;width:100%;transform:translateY(${vr.start}px)`"
+            @dblclick="openArticle(articles.visible[vr.index])"
           >
             <span>
               <input
@@ -351,7 +466,7 @@ function toggleAiIncludeContent() {
         </div>
         <!-- 直接渲染（≤500 条） -->
         <template v-else>
-          <div v-for="a in articles.visible" :key="a.id" class="art-row">
+          <div v-for="a in articles.visible" :key="a.id" class="art-row" @dblclick="openArticle(a)">
             <span>
               <input
                 type="checkbox"
@@ -469,10 +584,10 @@ function toggleAiIncludeContent() {
 
   <!-- 批量拉取 Modal -->
   <SModal :open="batchOpen" @close="batchOpen = false">
-    <template #head>批量拉取历史</template>
+    <template #head>选择要拉取的公众号</template>
     <div style="display:flex;flex-direction:column;gap:8px">
       <span class="muted" style="font-size:var(--fs-sm)">
-        勾选本次要拉取的公众号，将逐个拉取最近 {{ range }} 天历史（进度在工具条实时显示）。
+        勾选本次要拉取的公众号，将逐个拉取{{ rangeLabel }}历史（进度在工具条实时显示）。
       </span>
       <div style="max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
         <label v-for="a in accounts.list" :key="a.id" style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -496,7 +611,7 @@ function toggleAiIncludeContent() {
     </div>
     <template #foot>
       <SButton variant="ghost" @click="batchOpen = false">取消</SButton>
-      <SButton variant="primary" @click="confirmBatch">开始批量拉取</SButton>
+      <SButton variant="primary" @click="confirmBatch">开始拉取（{{ batchSel.size }}）</SButton>
     </template>
   </SModal>
   </section>

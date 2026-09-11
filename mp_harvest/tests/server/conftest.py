@@ -155,6 +155,8 @@ def _fake_sightings() -> types.ModuleType:
             return dict(row)
 
     mod.SightingsStore = SightingsStore
+    # 与真实 core.sightings 契约一致：server.state.get_sightings 经此取统一路径
+    mod.default_sightings_path = lambda root=None: Path("/fake/article_sightings.json")
     return mod
 
 
@@ -183,7 +185,28 @@ def _fake_history_client() -> types.ModuleType:
             "nickname": "真实公众号",
         }
 
+    def fetch_history_range(cred, *, start_ts, end_ts=0, on_progress=None, sightings=None, **kw):
+        """fake：记录调用参数，返回一篇落在窗口内的文章。"""
+        mod.last_range_call = {"start_ts": start_ts, "end_ts": end_ts}
+        if on_progress:
+            on_progress("正在拉取第 1 页")
+        return {
+            "ok": True,
+            "articles": [
+                {
+                    "title": "范围内文章",
+                    "link": "https://mp.weixin.qq.com/s/range1",
+                    "publish_ts": start_ts + 3600,
+                    "identity": "art-range-1",
+                }
+            ],
+            "pages": 1,
+            "warning": "",
+            "nickname": "真实公众号",
+        }
+
     mod.fetch_history_days = fetch_history_days
+    mod.fetch_history_range = fetch_history_range
     return mod
 
 
@@ -201,29 +224,53 @@ def _fake_history_export() -> types.ModuleType:
 def _fake_article_reader() -> types.ModuleType:
     mod = types.ModuleType("mp_harvest.core.article_reader")
 
-    def batch_export_articles(articles, *, out_dir, cred=None, account_name="", on_progress=None):
+    def batch_export_articles(
+        articles,
+        *,
+        out_dir,
+        cred=None,
+        account_name="",
+        download_images=False,
+        on_progress=None,
+        check_cancelled=None,
+        records=None,
+    ):
         written = []
+        errors = []
+        interrupted = False
         for i, a in enumerate(articles, 1):
-            if on_progress:
-                on_progress(f"正在导出 {i}/{len(articles)}")
+            try:
+                if check_cancelled:
+                    check_cancelled()
+                if on_progress:
+                    on_progress(f"正在导出 {i}/{len(articles)}")
+            except Exception:  # noqa: BLE001  # 取消边界
+                interrupted = True
+                break
+            if a.get("_cred_error"):
+                errors.append(f"{a.get('title') or i}: {a['_cred_error']}")
+                continue
             written.append(str(Path(out_dir) / f"a{i}.html"))
         # 与真实 article_reader 契约一致：out_dir 下生成 index.html 说明页
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         (out / "index.html").write_text(
             "<html><body><h1>fake index</h1>"
-            + "".join(f"<p>{i}</p>" for i in range(len(articles)))
+            + "".join(f"<p>{i}</p>" for i in range(len(written)))
             + "</body></html>",
             encoding="utf-8",
         )
         return {
-            "ok": len(articles),
-            "failed": 0,
-            "errors": [],
+            "ok": not interrupted,
+            "exported": len(written),
+            "skipped": 0,
+            "failed": len(errors),
+            "errors": errors,
             "written": written,
-            "out_dir": str(out_dir),
+            "out_dir": str(out),
             "fmt": "html",
             "index": str(out / "index.html"),
+            "partial": interrupted,
         }
 
     mod.batch_export_articles = batch_export_articles
@@ -506,11 +553,22 @@ def fake_platform(monkeypatch):
 
 @pytest.fixture()
 def isolated_data_dir(tmp_path, monkeypatch):
-    """隔离数据目录：文章缓存等落盘不污染真实 mp_harvest/data（2026-08-09）。"""
+    """隔离数据目录：文章缓存等落盘不污染真实 mp_harvest/data（2026-08-09）。
+
+    2026-09 补全：settings / sightings / ai_filter 是 ``from ...paths import
+    data_dir`` **直接绑定了名字**的，只 patch paths 模块漏掉它们 —— 于是
+    ``export_records.get_records()`` 之类仍会写到真实的 mp_harvest/data
+    （曾因此在该目录留下带测试临时路径的 harvest.db 记录）。
+    """
+    import mp_harvest.core.ai_filter as ai_mod
+    import mp_harvest.core.settings as settings_mod
+    import mp_harvest.core.sightings as sightings_mod
     import mp_harvest.infra.platform.paths as paths_mod
 
     d = tmp_path / "data"
-    monkeypatch.setattr(paths_mod, "data_dir", lambda: d)
+    d.mkdir(parents=True, exist_ok=True)
+    for mod in (paths_mod, settings_mod, sightings_mod, ai_mod):
+        monkeypatch.setattr(mod, "data_dir", lambda *a, **k: d, raising=False)
     return d
 
 

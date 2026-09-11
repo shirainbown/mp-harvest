@@ -5,6 +5,10 @@ defineProps<{
   options: Array<{ value: string; label: string }>
 }>()
 const emit = defineEmits<{ 'update:modelValue': [v: string] }>()
+
+function pick(v: string) {
+  emit('update:modelValue', v)
+}
 </script>
 
 <template>
@@ -14,7 +18,10 @@ const emit = defineEmits<{ 'update:modelValue': [v: string] }>()
       :key="o.value"
       class="seg-item"
       :class="{ active: o.value === modelValue }"
-      @click="emit('update:modelValue', o.value)"
+      tabindex="0"
+      @click="pick(o.value)"
+      @keydown.enter.prevent="pick(o.value)"
+      @keydown.space.prevent="pick(o.value)"
       >{{ o.label }}</span
     >
   </div>

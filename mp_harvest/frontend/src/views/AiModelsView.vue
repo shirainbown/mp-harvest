@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 页面三：AI 模型（§5.6）
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
 import SPopover from '../components/SPopover.vue'
@@ -18,6 +18,13 @@ const ui = useUiStore()
 onMounted(() => {
   if (!settings.loaded) settings.load()
 })
+
+// 自动保存：任何模型字段变更 → 防抖保存全部（保存全部模型是服务端契约）
+watch(
+  () => settings.models,
+  () => settings.scheduleSaveModels(),
+  { deep: true, flush: 'sync' },
+)
 
 const formatOptions = [
   { value: 'openai', label: 'OpenAI 兼容' },
@@ -85,7 +92,6 @@ function modelListId(m: AiModel): string {
           <SSwitch v-model="m.enabled" title="启用" />
           <span class="form-label">请求地址</span>
           <SInput v-model="m.base_url" mono placeholder="https://api.example.com" />
-          <SButton size="sm" variant="primary" @click="settings.saveModels()">保存</SButton>
           <SButton size="sm" :loading="testResultOf(m) === 'testing'" @click="settings.testModel(m)">测试</SButton>
           <SPopover>
             <template #anchor><SButton size="sm" variant="danger">删除</SButton></template>

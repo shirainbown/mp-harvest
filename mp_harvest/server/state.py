@@ -24,8 +24,24 @@ _sightings: Any = None
 _mitm: Any = None
 _articles: dict[str, list[dict[str, Any]]] = {}
 _last_days: dict[str, int] = {}
+_last_fetch_ts: dict[str, int] = {}
 
 _ARTICLES_CACHE_DIR = "articles_cache"
+
+# 合并时从新一轮拉取结果更新的抓取字段（判定/正文字段一律保留旧值，见 merge_articles）
+_FETCH_FIELDS = (
+    "title",
+    "link",
+    "digest",
+    "cover",
+    "author",
+    "publish_ts",
+    "publish_at",
+    "mid",
+    "idx",
+    "sn",
+    "source",
+)
 
 
 def _account_cache_path(account_id: str) -> Path:
@@ -48,6 +64,9 @@ def _load_articles_from_disk(account_id: str) -> None:
         days = data.get("days")
         if isinstance(days, int):
             _last_days[account_id] = days
+        last_fetch = data.get("last_fetch_ts")
+        if isinstance(last_fetch, int):
+            _last_fetch_ts[account_id] = last_fetch
 
 
 def _save_articles_to_disk(account_id: str) -> None:
@@ -57,6 +76,7 @@ def _save_articles_to_disk(account_id: str) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "days": _last_days.get(account_id, 7),
+            "last_fetch_ts": _last_fetch_ts.get(account_id, 0),
             "articles": _articles.get(account_id, []),
         }
         tmp = p.with_name(p.name + ".tmp")
@@ -84,7 +104,9 @@ def get_sightings():
         if _sightings is None:
             from mp_harvest.core import sightings as sightings_mod
 
-            _sightings = sightings_mod.SightingsStore(paths.data_dir() / "sightings.json")
+            # 与 MITM addon（SCHINZA_SIGHTINGS）写同一文件，两个数据源才能交汇；
+            # 统一走 core.sightings.default_sightings_path()（data/article_sightings.json）
+            _sightings = sightings_mod.SightingsStore(sightings_mod.default_sightings_path())
         return _sightings
 
 
@@ -111,6 +133,116 @@ def set_articles(account_id: str, articles: list[dict[str, Any]], *, days: int |
         _save_articles_to_disk(key)
 
 
+def _article_key(a: dict[str, Any]) -> str:
+    return str(a.get("identity") or a.get("link") or "")
+
+
+def _account_biz(account_id: str) -> str:
+    """账号的 __biz（凭证里取）；取不到返回空串。"""
+    try:
+        acct = get_store().get(str(account_id)) or {}
+        return str(
+            acct.get("biz") or (acct.get("credentials") or {}).get("__biz") or ""
+        ).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def merge_articles(
+    account_id: str,
+    new_articles: list[dict[str, Any]],
+    *,
+    fetched_ts: int,
+    days: int | None = None,
+    advance_last_fetch: bool = True,
+) -> dict[str, int]:
+    """把新一轮拉取结果合并进缓存（不覆盖历史），返回 {"added", "total"}。
+
+    - 键 = identity or link；已存在的行只更新抓取字段（``_FETCH_FIELDS``），
+      保留 AI 判定（keep/title_keep/content_keep/*reason）与正文（body_*）；
+    - 本轮出现过的行都刷新 ``fetched_ts``（用于「最近一次拉取」筛选）；
+    - 更新 ``last_fetch_ts`` 并落盘；合并后按 publish_ts desc 排序。
+    """
+    # 在拿 _lock 之前解析（避免与 store 的锁嵌套）
+    biz = _account_biz(account_id)
+    with _lock:
+        key = str(account_id)
+        if key not in _articles:
+            _load_articles_from_disk(key)
+        rows = _articles.get(key, [])
+        by_key = {_article_key(r): r for r in rows if _article_key(r)}
+        added = 0
+        for a in new_articles or []:
+            k = _article_key(a)
+            if not k:
+                continue
+            existing = by_key.get(k)
+            if existing is None:
+                row = dict(a)
+                # 补 __biz：identity 不含它，缺了会导致「全部公众号」聚合视图里
+                # 跨账号同文 id 撞车（Vue key 冲突 / 勾选串号，2026-09 修复）
+                if biz and not row.get("__biz"):
+                    row["__biz"] = biz
+                row["fetched_ts"] = int(fetched_ts)
+                rows.append(row)
+                by_key[k] = row
+                added += 1
+            else:
+                for f in _FETCH_FIELDS:
+                    if f in a:
+                        existing[f] = a[f]
+                if biz and not existing.get("__biz"):
+                    existing["__biz"] = biz
+                existing["fetched_ts"] = int(fetched_ts)
+        rows.sort(key=lambda r: int(r.get("publish_ts") or 0), reverse=True)
+        _articles[key] = rows
+        if days is not None:
+            _last_days[key] = int(days)
+        # 只有成功的拉取才推进 last_fetch_ts（2026-09 修复）。
+        # 原先无条件推进：一次失败拉取（凭证过期等）就会让所有旧行的
+        # fetched_ts < last_fetch_ts，「最近拉取」筛选直接变成空列表，
+        # 用户以为文章丢了（「全部」视图里还在）。
+        if advance_last_fetch:
+            _last_fetch_ts[key] = int(fetched_ts)
+        _save_articles_to_disk(key)
+        return {"added": added, "total": len(rows)}
+
+
+def get_last_fetch_ts(account_id: str) -> int:
+    """该账号最近一次拉取的时间戳（0 = 从未拉取/旧缓存）。"""
+    with _lock:
+        key = str(account_id)
+        if key not in _last_fetch_ts and key not in _articles:
+            _load_articles_from_disk(key)
+        return _last_fetch_ts.get(key, 0)
+
+
+def time_filter(
+    articles: list[dict[str, Any]],
+    *,
+    start_ts: int = 0,
+    end_ts: int = 0,
+    latest_ts: int = 0,
+) -> list[dict[str, Any]]:
+    """按时间筛选文章（纯函数）。
+
+    latest_ts > 0：只留 fetched_ts >= latest_ts 的行（最近一次拉取）；
+    start_ts/end_ts：按 publish_ts 闭区间过滤（publish_ts 未知的行保留）。
+    """
+    out: list[dict[str, Any]] = []
+    for a in articles or []:
+        if latest_ts and int(a.get("fetched_ts") or 0) < latest_ts:
+            continue
+        ts = int(a.get("publish_ts") or 0)
+        if ts:
+            if start_ts and ts < start_ts:
+                continue
+            if end_ts and ts > end_ts:
+                continue
+        out.append(a)
+    return out
+
+
 def get_last_days(account_id: str) -> int:
     with _lock:
         key = str(account_id)
@@ -127,6 +259,57 @@ def get_articles(account_id: str) -> list[dict[str, Any]]:
         return [dict(a) for a in _articles.get(key, [])]
 
 
+_PLAIN_VERDICT_FIELDS = (
+    "keep",
+    "reason",
+    "category",
+    "relevance_score",
+    "technical_depth",
+    "confidence",
+    "at",
+    "model",
+)
+_VERDICT_FIELDS = frozenset(
+    _PLAIN_VERDICT_FIELDS
+    + tuple(f"{p}{f}" for p in ("title_", "content_") for f in _PLAIN_VERDICT_FIELDS)
+)
+
+
+def _verdict_only(row: dict[str, Any]) -> dict[str, Any]:
+    """只取判定字段。
+
+    原先合并的是**整行快照**（``{k: v for k, v in j.items() if not k.startswith("_")}``），
+    而 AI 判定行里带着 title/link/publish_at 等抓取期快照 —— 判定跑的同时
+    后台拉取刚刷新过这些字段的话，会被旧值回滚（2026-09 修复）。
+    """
+    return {k: v for k, v in row.items() if k in _VERDICT_FIELDS}
+
+
+def append_article(account_id: str, row: dict[str, Any]) -> bool:
+    """把单篇文章追加进缓存（在同一把锁内完成，返回是否新增）。
+
+    补录走「读快照 → append → 整体写回」时，若期间有后台拉取写入了新文章，
+    写回会把它丢掉（内存和磁盘一起丢）。这里把读-改-写收进锁内（2026-09 修复）。
+    """
+    key_of = lambda a: str(a.get("identity") or a.get("link") or "")  # noqa: E731
+    biz = _account_biz(account_id)
+    with _lock:
+        key = str(account_id)
+        if key not in _articles:
+            _load_articles_from_disk(key)
+        rows = _articles.setdefault(key, [])
+        k = key_of(row)
+        if k and any(key_of(r) == k for r in rows):
+            return False
+        new = dict(row)
+        if biz and not new.get("__biz"):
+            new["__biz"] = biz
+        rows.append(new)
+        rows.sort(key=lambda r: int(r.get("publish_ts") or 0), reverse=True)
+        _save_articles_to_disk(key)
+        return True
+
+
 def merge_article_verdicts(account_id: str, judged: list[dict[str, Any]]) -> None:
     """把 AI 判定字段（title_*/content_*/keep 等）按 identity/link 合并回缓存。
 
@@ -136,14 +319,12 @@ def merge_article_verdicts(account_id: str, judged: list[dict[str, Any]]) -> Non
     key_of = lambda a: str(a.get("identity") or a.get("link") or "")  # noqa: E731
     with _lock:
         key = str(account_id)
+        if key not in _articles:
+            _load_articles_from_disk(key)
         rows = _articles.get(key)
         if not rows:
             return
-        verdicts = {
-            key_of(j): {k: v for k, v in j.items() if not k.startswith("_")}
-            for j in judged
-            if key_of(j)
-        }
+        verdicts = {key_of(j): _verdict_only(j) for j in judged if key_of(j)}
         for row in rows:
             v = verdicts.get(key_of(row))
             if v:
@@ -211,6 +392,7 @@ def drop_articles(account_id: str) -> None:
         key = str(account_id)
         _articles.pop(key, None)
         _last_days.pop(key, None)
+        _last_fetch_ts.pop(key, None)
         try:
             p = _account_cache_path(key)
             if p.is_file():
@@ -228,3 +410,4 @@ def reset() -> None:
         _mitm = None
         _articles.clear()
         _last_days.clear()
+        _last_fetch_ts.clear()

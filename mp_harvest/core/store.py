@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from copy import deepcopy
@@ -60,15 +61,28 @@ class AccountStore:
                 rows = data.get("accounts") if isinstance(data, dict) else data
                 self._accounts = list(rows) if isinstance(rows, list) else []
             except Exception:
+                # 解析失败：先把损坏文件备份为 accounts.json.bak-<时间戳>，
+                # 再初始化为空——绝不静默清空用户数据
+                self._backup_corrupted()
                 self._accounts = []
+
+    def _backup_corrupted(self) -> None:
+        try:
+            stamp = _now().strftime("%Y%m%d-%H%M%S-%f")
+            self.path.replace(self.path.with_name(f"{self.path.name}.bak-{stamp}"))
+        except Exception:
+            pass
 
     def save(self) -> None:
         with self._lock:
             payload = {"accounts": self._accounts, "updated_at": _iso(_now())}
-            self.path.write_text(
+            # 原子写：tmp + os.replace，避免中途断电/杀进程留下半个 JSON
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            os.replace(tmp, self.path)
 
     def list_accounts(self) -> list[dict[str, Any]]:
         with self._lock:

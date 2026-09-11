@@ -23,6 +23,7 @@ const url = ref('')
 const formError = ref('')
 const adding = ref(false)
 let addTimer: ReturnType<typeof setTimeout> | null = null
+let addStop: (() => void) | null = null
 
 async function submit() {
   if (adding.value) return
@@ -47,16 +48,29 @@ async function submit() {
       stop()
     }
   })
+  addStop = stop
   function done() {
     adding.value = false
+    addStop = null
     if (addTimer) clearTimeout(addTimer)
     addTimer = null
   }
-  addTimer = setTimeout(() => {
+  addTimer = setTimeout(async () => {
     stop()
     done()
-    ui.error('未捕获到凭证，请在微信内刷新该公众号文章')
+    // 超时复位：renew 对 pending 账号可用，重置为等待抓包并提示重试
+    await accounts.renew(acct, true)
+    ui.error('未捕获到凭证，已重置为等待抓包：请在微信内刷新文章后重试')
   }, 90_000)
+}
+
+/** 等待抓包期间可取消：解除输入禁用（账号保留在列表中，可续约或删除） */
+function cancelAdd() {
+  if (addStop) addStop()
+  addStop = null
+  if (addTimer) clearTimeout(addTimer)
+  addTimer = null
+  adding.value = false
 }
 
 // ---- 倒计时（全局 ticker 驱动） ----
@@ -135,6 +149,7 @@ const importOpen = ref(false)
           @enter="submit"
         />
         <SButton variant="primary" :loading="adding" @click="submit">{{ adding ? '等待抓包…' : '添加并抓包' }}</SButton>
+        <SButton v-if="adding" @click="cancelAdd">取消</SButton>
         <SButton @click="importOpen = true">批量导入 ▸</SButton>
       </div>
     </div>
@@ -159,7 +174,7 @@ const importOpen = ref(false)
         </STooltip>
         <span class="row-actions">
           <SButton size="sm" variant="ghost" @click="accounts.copyCredential(a)">复制</SButton>
-          <SButton size="sm" variant="ghost" :disabled="a.pending" @click="accounts.renew(a)">续约</SButton>
+          <SButton size="sm" variant="ghost" @click="accounts.renew(a)">续约</SButton>
           <SButton size="sm" variant="ghost" @click="openLink(a)">打开</SButton>
           <SPopover>
             <template #anchor><SButton size="sm" variant="danger">删除</SButton></template>

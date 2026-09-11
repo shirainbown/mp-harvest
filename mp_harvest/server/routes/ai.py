@@ -39,8 +39,11 @@ def _partial_verdict(row: dict) -> dict:
         or row.get("reason")
         or ""
     )
+    from mp_harvest.server.mappers import article_public_id
+
     return {
-        "id": str(row.get("identity") or row.get("link") or ""),
+        # 与 GET /api/articles 的 id 保持一致（含 __biz），否则前端按 id 合并不上
+        "id": article_public_id(row.get("_source") or row),
         "verdict": _verdict_of(final_keep),
         "reason": reason,
         "title_verdict": _verdict_of(title_keep),
@@ -80,19 +83,37 @@ def _invalidate_cache(path: str | Path) -> None:
         pass
 
 
-def _articles_for(account_id: str) -> list[dict]:
-    """取待筛选文章，每篇带 ``_account_id``；account_id 为空 = 全部公众号。"""
+def _articles_for(
+    account_id: str,
+    *,
+    start_ts: int = 0,
+    end_ts: int = 0,
+    latest_fetch: bool = False,
+) -> list[dict]:
+    """取待筛选文章，每篇带 ``_account_id``；account_id 为空 = 全部公众号。
+
+    start_ts/end_ts 按发布时间筛选；latest_fetch=True 只取各账号最近一次
+    拉取的文章（2026-08-23）。
+    """
     if account_id:
         if state.get_store().get(account_id) is None:
             raise HTTPException(status_code=404, detail="账号不存在")
-        return [dict(a, _account_id=account_id) for a in state.get_articles(account_id)]
+        rows = state.get_articles(account_id)
+        latest_ts = state.get_last_fetch_ts(account_id) if latest_fetch else 0
+        rows = state.time_filter(rows, start_ts=start_ts, end_ts=end_ts, latest_ts=latest_ts)
+        return [dict(a, _account_id=account_id) for a in rows]
 
     rows: list[dict] = []
     for acct in state.get_store().list_accounts():
         aid = str(acct.get("id") or "")
         if not aid:
             continue
-        rows.extend(dict(a, _account_id=aid) for a in state.get_articles(aid))
+        acct_rows = state.get_articles(aid)
+        latest_ts = state.get_last_fetch_ts(aid) if latest_fetch else 0
+        acct_rows = state.time_filter(
+            acct_rows, start_ts=start_ts, end_ts=end_ts, latest_ts=latest_ts
+        )
+        rows.extend(dict(a, _account_id=aid) for a in acct_rows)
     return rows
 
 
@@ -115,7 +136,12 @@ def ai_filter(body: AiFilterIn) -> dict:
     """AI 筛选 → task_id；判定结果合并回文章缓存（批次边界响应取消）。"""
     from mp_harvest.core import ai_filter as ai_mod
 
-    articles = _articles_for(body.account_id)
+    from mp_harvest.server.routes.history import parse_date_range
+
+    start_ts, end_ts = parse_date_range(body.start_date, body.end_date)
+    articles = _articles_for(
+        body.account_id, start_ts=start_ts, end_ts=end_ts, latest_fetch=body.latest_fetch
+    )
     if not articles:
         raise HTTPException(status_code=400, detail="没有可筛选的文章（请先拉取历史）")
 
@@ -157,6 +183,7 @@ def ai_filter(body: AiFilterIn) -> dict:
         _merge_verdicts(body.account_id, judged)
         return {
             "account_id": body.account_id,
+            "ok": bool(result.get("ok")),
             "kept": len(result.get("kept") or []),
             "dropped": len(result.get("dropped") or []),
             "cached": result.get("cached", 0),
@@ -179,7 +206,12 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
     from mp_harvest.core import ai_filter as ai_mod
     from mp_harvest.core import article_reader
 
-    articles = _articles_for(body.account_id)
+    from mp_harvest.server.routes.history import parse_date_range
+
+    start_ts, end_ts = parse_date_range(body.start_date, body.end_date)
+    articles = _articles_for(
+        body.account_id, start_ts=start_ts, end_ts=end_ts, latest_fetch=body.latest_fetch
+    )
     if not articles:
         raise HTTPException(status_code=400, detail="没有可筛选的文章（请先拉取历史）")
     kept = [a for a in articles if a.get("title_keep") is True]
@@ -208,6 +240,28 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             a for a in kept if not str(a.get("body_text") or "").strip()
         ]
         total_fetch = len(to_fetch)
+
+        def _fetch_failed_keep_pending(art: dict, row: dict, why: str) -> None:
+            """正文拿不到：只播报，**不写判定**（2026-09 修复）。
+
+            原先写 ``content_keep=False`` 并合并回文章缓存，而内容筛选的候选又要求
+            ``keep is not False`` —— 一次网络抖动就把文章永久钉成「丢弃」，
+            下轮即使正文抓成功也不会再判它，理由还停在「正文获取失败」。
+            现在改为保持待筛选，下次运行会重试。
+            """
+            nonlocal fetch_failed
+            fetch_failed += 1
+            row["content_reason"] = f"{why}（保留在「待内容筛选」，可重新运行）"
+            fetch_errors.append(f"{art.get('title', '')}: {why}")
+            broadcast_event(
+                "ai.batch",
+                {
+                    "account_id": body.account_id,
+                    "articles": [_partial_verdict(row)],
+                    "stage": "content",
+                },
+            )
+
         for i, art in enumerate(to_fetch, start=1):
             task.check_cancelled()
             task.update(
@@ -219,53 +273,17 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             row.pop("body_text", None)
             row.pop("body_html", None)
             if not link:
-                row["content_keep"] = False
-                row["content_reason"] = "无链接，无法获取正文，按丢弃处理"
-                fetch_failed += 1
-                fetch_errors.append(f"{art.get('title', '')}: 无链接")
-                _merge_verdicts(body.account_id, [row])
-                broadcast_event(
-                    "ai.batch",
-                    {
-                        "account_id": body.account_id,
-                        "articles": [_partial_verdict(row)],
-                        "stage": "content",
-                    },
-                )
+                _fetch_failed_keep_pending(art, row, "无链接，无法获取正文")
                 continue
             cred = cred_by_account.get(str(art.get("_account_id") or ""), {})
             try:
                 parsed = article_reader.fetch_and_parse_article(link, cred=cred)
             except Exception as exc:  # noqa: BLE001
-                row["content_keep"] = False
-                row["content_reason"] = f"正文获取失败，按丢弃处理：{exc}"
-                fetch_failed += 1
-                fetch_errors.append(f"{art.get('title', '')}: {exc}")
-                _merge_verdicts(body.account_id, [row])
-                broadcast_event(
-                    "ai.batch",
-                    {
-                        "account_id": body.account_id,
-                        "articles": [_partial_verdict(row)],
-                        "stage": "content",
-                    },
-                )
+                _fetch_failed_keep_pending(art, row, f"正文获取失败：{exc}")
                 continue
             body_text = str(parsed.get("body_text") or "").strip()
             if len(body_text) < 20:
-                row["content_keep"] = False
-                row["content_reason"] = "正文过短或无实质内容，按丢弃处理"
-                fetch_failed += 1
-                fetch_errors.append(f"{art.get('title', '')}: 正文过短")
-                _merge_verdicts(body.account_id, [row])
-                broadcast_event(
-                    "ai.batch",
-                    {
-                        "account_id": body.account_id,
-                        "articles": [_partial_verdict(row)],
-                        "stage": "content",
-                    },
-                )
+                _fetch_failed_keep_pending(art, row, "正文过短或无实质内容")
                 continue
             art["body_text"] = body_text
             if parsed.get("body_html"):
@@ -276,16 +294,19 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                 [a for a in to_fetch if str(a.get("body_text") or "").strip()],
             )
 
-        # 2) 内容判定
-        to_judge = [
-            a for a in kept if str(a.get("body_text") or "").strip() and a.get("keep") is not False
-        ]
+        # 2) 内容判定。
+        # 不再排除 `keep is False`：内容筛完后 merge_article_verdicts 会把
+        # keep 写成 content_keep，于是被内容筛掉的篇目 keep=False —— 排除它们
+        # 就等于「改了原则重跑也永远翻不了案」（2026-09 修复）。
+        # 只跳过已经判过的（content_keep 有值且缓存命中时本就由 judge_articles 处理）。
+        to_judge = [a for a in kept if str(a.get("body_text") or "").strip()]
         if not to_judge:
             task.update(percent=100.0, message="内容筛选完成")
             return {
                 "account_id": body.account_id,
+                "ok": fetch_failed == 0,
                 "kept": 0,
-                "dropped": len(kept),
+                "dropped": 0,
                 "cached": 0,
                 "judged": 0,
                 "fetched": 0,
@@ -328,8 +349,10 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
         _merge_verdicts(body.account_id, judged)
         return {
             "account_id": body.account_id,
+            "ok": bool(result.get("ok")),
             "kept": len(result.get("kept") or []),
-            "dropped": len(result.get("dropped") or []) + fetch_failed,
+            # 正文抓取失败的不再计入 dropped（它们没被判丢弃，仍在待筛选）
+            "dropped": len(result.get("dropped") or []),
             "cached": result.get("cached", 0),
             "judged": result.get("judged", 0),
             "fetched": len(to_judge),
@@ -363,10 +386,21 @@ def put_models(body: list[AiModelIn]) -> dict:
 def test_model(body: AiModelIn) -> dict:
     from mp_harvest.core import ai_filter as ai_mod
 
+    import time as _time
+
     cfg = ai_mod.ModelConfig.from_dict(body.model_dump())
+    t0 = _time.perf_counter()
     ok, message = ai_mod.test_connection(cfg)
+    # 前端会渲染「● 可用 · <latency_ms>ms」，路由此前不返回该字段 → 一直显示
+    # 「● 可用 · ms」（2026-09 修复）
+    latency_ms = int((_time.perf_counter() - t0) * 1000)
     # error 与 message 同内容：前端测试结果直接读 error，保留 message 兼容旧客户端
-    return {"ok": bool(ok), "message": str(message), "error": str(message)}
+    return {
+        "ok": bool(ok),
+        "latency_ms": latency_ms,
+        "message": str(message),
+        "error": str(message),
+    }
 
 
 @router.post("/api/ai/models/fetch")

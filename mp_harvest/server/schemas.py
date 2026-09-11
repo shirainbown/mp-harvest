@@ -38,6 +38,9 @@ class ImportIn(BaseModel):
 class HistoryFetchIn(BaseModel):
     account_id: str = Field(min_length=1)
     days: int = Field(default=7, ge=1, le=365)
+    # 自定义日期范围（YYYY-MM-DD）；两者都提供时优先于 days（2026-08-23 新增）
+    start_date: str = ""
+    end_date: str = ""  # 缺省 = 今天
 
 
 class HistoryFetchBatchIn(BaseModel):
@@ -45,6 +48,8 @@ class HistoryFetchBatchIn(BaseModel):
 
     account_ids: list[str] = Field(min_length=1)
     days: int = Field(default=7, ge=1, le=365)
+    start_date: str = ""
+    end_date: str = ""
 
 
 class SupplementIn(BaseModel):
@@ -59,6 +64,12 @@ class ExportHtmlIn(BaseModel):
     view: str = "all"  # ids 为空时按当前视图过滤（all/keep/drop/pending）
     stage: str = "final"  # 视图所属阶段：final / title / content（2026-08-16）
     out_dir: str | None = None  # 自定义导出目录（支持 ~ 展开）；留空用默认 data_dir/exports/...
+    # 正文图片本地化；None = 读后端设置 export.download_images（默认 False，2026-09 重构 B7）
+    download_images: bool | None = None
+    # 时间筛选（与列表一致，2026-08-23）
+    start_date: str = ""
+    end_date: str = ""
+    latest_fetch: bool = False
 
 
 # ── ai ────────────────────────────────────────────────────────────
@@ -69,6 +80,10 @@ class AiFilterIn(BaseModel):
     # 并行判定控制（2026-08-09）：每批多少篇 / 同时提交几批；不传用 core 默认（30 / 4）
     batch_size: int | None = Field(default=None, ge=1, le=200)
     workers: int | None = Field(default=None, ge=1, le=16)
+    # 时间筛选（2026-08-23）：只筛选该范围内的缓存文章
+    start_date: str = ""
+    end_date: str = ""
+    latest_fetch: bool = False
 
 
 class AiContentFilterIn(BaseModel):
@@ -77,13 +92,22 @@ class AiContentFilterIn(BaseModel):
     account_id: str = ""  # 空 = 全部公众号
     batch_size: int | None = Field(default=None, ge=1, le=200)
     workers: int | None = Field(default=None, ge=1, le=16)
+    start_date: str = ""
+    end_date: str = ""
+    latest_fetch: bool = False
 
 
 class AiModelIn(BaseModel):
-    """与 core.ai_filter.ModelConfig 对齐。"""
+    """与 core.ai_filter.ModelConfig 对齐。
+
+    ``name`` 必须可选（2026-09 修复）：core 的 ``ModelConfig.name`` 默认空串，
+    前端「+ 添加模型」只填 id/base_url/api_key/model/format。原先这里写成
+    ``Field(min_length=1)`` 必填，导致整个数组 PUT 被 422 拒绝 —— 只要存在一张
+    新建的空白卡片，**所有**模型的保存都会失败（改了的 Key 一个都存不下来）。
+    """
 
     id: str = ""
-    name: str = Field(min_length=1)
+    name: str = ""
     base_url: str = ""
     api_key: str = ""
     model: str = ""

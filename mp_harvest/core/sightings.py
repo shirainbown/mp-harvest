@@ -42,11 +42,16 @@ class SightingsStore:
         self.path = path
         self._lock = threading.RLock()
         self._rows: list[dict[str, Any]] = []
+        self._mtime: float | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.load()
 
     def load(self) -> None:
         with self._lock:
+            try:
+                self._mtime = self.path.stat().st_mtime
+            except OSError:
+                self._mtime = None
             if not self.path.exists():
                 self._rows = []
                 return
@@ -57,17 +62,67 @@ class SightingsStore:
             except Exception:
                 self._rows = []
 
+    def _sync(self) -> None:
+        """文件被别的进程改过就重新载入。
+
+        MITM addon 在**独立进程**里直接写这个文件，而本 store 只在 ``__init__``
+        载入过一次 —— 不重载就永远看不到新抓到的目击，``M`` 来源标记也不会出现
+        （2026-09 修复）。
+        """
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            return
+        if mtime != self._mtime:
+            self.load()
+
+    @staticmethod
+    def _row_key(row: dict[str, Any]) -> str:
+        return str(row.get("identity") or row.get("link") or "") or (
+            f"{row.get('title')}|{row.get('publish_at')}"
+        )
+
+    def _merged_with_disk(self) -> list[dict[str, Any]]:
+        """内存行 ∪ 磁盘行（内存优先）。
+
+        ``save()`` 原先整体覆盖文件，会把 addon 在两次保存之间写入的目击
+        **永久删除**（2026-09 修复）。
+        """
+        try:
+            if not self.path.exists():
+                return list(self._rows)
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            disk = data.get("sightings") if isinstance(data, dict) else data
+            disk = list(disk) if isinstance(disk, list) else []
+        except Exception:  # noqa: BLE001
+            return list(self._rows)
+        seen = {self._row_key(r) for r in self._rows}
+        out = list(self._rows)
+        for r in disk:
+            k = self._row_key(r)
+            if k and k not in seen:
+                seen.add(k)
+                out.append(r)
+        return out
+
     def save(self) -> None:
         with self._lock:
-            payload = {"sightings": self._rows, "updated_at": _iso_now()}
+            rows = self._merged_with_disk()
+            self._rows = rows
+            payload = {"sightings": rows, "updated_at": _iso_now()}
             self.path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            try:
+                self._mtime = self.path.stat().st_mtime
+            except OSError:
+                self._mtime = None
 
     def list_for_biz(self, biz: str, *, cutoff_ts: int = 0) -> list[dict[str, Any]]:
         biz = (biz or "").strip()
         with self._lock:
+            self._sync()  # addon 可能刚写入了新目击
             out = []
             for row in self._rows:
                 rb = str(row.get("__biz") or "").strip()
@@ -82,6 +137,7 @@ class SightingsStore:
 
     def upsert(self, sighting: dict[str, Any]) -> dict[str, Any] | None:
         """Insert or refresh a sighting. Returns the stored row, or None if invalid."""
+        self._sync()  # 先看到 addon 写入的行，才能合并而不是新插一条
         link = _clean_url(str(sighting.get("link") or ""))
         title = str(sighting.get("title") or "").strip()
         if not link and not title:

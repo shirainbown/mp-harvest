@@ -493,11 +493,100 @@ def _fallback_verdict(prefix: str = "") -> dict[str, Any]:
     }
 
 
+def _as_bool(value: Any) -> bool:
+    """容错布尔：模型可能返回字符串布尔。
+
+    不走 JSON mode 的模型（``response_format`` 被 400 拒绝而降级的那条路径）
+    经常回 ``"false"`` / ``"no"`` / ``"0"``；直接 ``bool()`` 会把它们判成 True，
+    即「模型说丢弃、程序记成保留」（2026-09 修复）。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "y", "是", "保留")
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+def _as_int(value: Any) -> int:
+    """容错取整：模型可能给 ``"high"`` / ``3.5`` / ``None``。
+
+    原先直接 ``int(...)`` 且不在 try 内，一个畸形字段就让 ``ValueError``
+    从工作线程冒到任务层，整批判定崩掉、缓存也来不及落盘（2026-09 修复）。
+    """
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(str(value).strip())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _verdict_fields(row: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     def key(k: str) -> str:
         return f"{prefix}{k}" if prefix else k
 
     return {key(k): row.get(key(k)) for k in _VERDICT_SUFFIXES if key(k) in row}
+
+
+# ── 判定缓存（带版本，兼容旧格式）────────────────────────────────────
+#
+# v2.0.8 及更早写的是**无前缀**字段（keep/category/...），两阶段重构后标题阶段
+# 读的是 title_keep。文件名与 key 都没变，于是旧条目"命中"却什么都没写进去：
+# 文章被当成已判定而跳过、title_keep 永远落不了盘，紧接着内容筛选因
+# 「没有通过标题筛选的文章」直接 400 —— 升级用户的两阶段流程整个卡死。
+# 这里显式迁移 + 打版本号（2026-09 修复）。
+_CACHE_VERSION = 2
+
+
+def _backup_file(cp: Path) -> None:
+    """迁移前**复制**一份备份，避免迁移出错时丢用户的判定结果。
+
+    必须是复制不是改名：原文件保留在原地，落盘逻辑才能区分「迁移过了」
+    和「运行期间被原则 PUT 删掉了（= 判定作废）」这两种情况。
+    """
+    try:
+        import shutil
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(cp, cp.with_name(f"{cp.name}.bak-{stamp}"))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _load_cache(cp: Path, prefix: str) -> tuple[dict[str, dict[str, Any]], bool]:
+    """读判定缓存；旧格式（无前缀字段）就地迁移为当前 prefix 格式。
+
+    返回 ``(entries, migrated)``；``migrated=True`` 时调用方必须把结果写回去 ——
+    否则纯缓存命中的一轮（``judged == 0``）不会落盘，下次又迁移一遍、
+    又生成一个 ``.bak-`` 副本。
+    """
+    try:
+        raw = json.loads(cp.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}, False
+    if not isinstance(raw, dict):
+        return {}, False
+    entries = raw.get("entries")
+    if raw.get("__version__") == _CACHE_VERSION and isinstance(entries, dict):
+        return {str(k): v for k, v in entries.items() if isinstance(v, dict)}, False
+    # 旧格式 → 迁移
+    migrated: dict[str, dict[str, Any]] = {}
+    for k, v in raw.items():
+        if str(k).startswith("__") or not isinstance(v, dict):
+            continue
+        row: dict[str, Any] = {}
+        for f in _VERDICT_SUFFIXES:
+            if f in v:
+                row[f"{prefix}{f}" if prefix else f] = v[f]
+        if row:
+            migrated[str(k)] = row
+    if migrated:
+        _backup_file(cp)
+    return migrated, bool(migrated)
 
 
 # ── 判定主流程 ──────────────────────────────────────────────────────
@@ -547,15 +636,13 @@ def judge_articles(
         }
 
     cache: dict[str, dict[str, Any]] = {}
+    cache_existed = False
+    cache_migrated = False
     if cache_path is not None:
         cp = Path(cache_path)
-        if cp.exists():
-            try:
-                raw = json.loads(cp.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    cache = raw
-            except Exception:
-                cache = {}
+        cache_existed = cp.exists()
+        if cache_existed:
+            cache, cache_migrated = _load_cache(cp, prefix)
 
     items: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
@@ -629,28 +716,37 @@ def judge_articles(
         def pk(k: str) -> str:
             return f"{prefix}{k}" if prefix else k
 
+        unjudged = 0
         for r in batch_rows:
             v = by_idx.get(r["idx"])
             if v is None:
+                # 模型漏答这一篇：本轮按丢弃展示，但**不写持久缓存** ——
+                # 否则一次漏答就把文章永久拉黑，且 ok 还是 true（2026-09 修复）
                 verdict = dict(_fallback_verdict(prefix))
+                verdict[pk("reason")] = "模型未返回该篇判定，本次按丢弃处理"
                 verdict[pk("at")] = now
                 verdict[pk("model")] = cfg.model
+                unjudged += 1
             else:
                 verdict = {
-                    pk("keep"): bool(v.get("keep", False)),
+                    pk("keep"): _as_bool(v.get("keep", False)),
                     pk("category"): str(v.get("category", "other")),
-                    pk("relevance_score"): int(v.get("relevance_score", 0) or 0),
-                    pk("technical_depth"): int(v.get("technical_depth", 0) or 0),
+                    pk("relevance_score"): _as_int(v.get("relevance_score", 0)),
+                    pk("technical_depth"): _as_int(v.get("technical_depth", 0)),
                     pk("confidence"): str(v.get("confidence", "low")),
                     pk("reason"): str(v.get("reason", "")),
                     pk("at"): now,
                     pk("model"): cfg.model,
                 }
             r.update(verdict)
+            if v is None:
+                continue
             key = article_key(r["_source"])
             if key:
                 with cache_lock:
                     cache[key] = verdict
+        if unjudged:
+            return batch_rows, f"模型未返回 {unjudged} 篇的判定（未计入缓存，下次会重判）"
         return batch_rows, None
 
     with concurrent.futures.ThreadPoolExecutor(
@@ -676,10 +772,10 @@ def judge_articles(
                         r[pk("reason")] = "模型调用失败，按丢弃处理"
                         r[pk("at")] = now
                         r[pk("model")] = enabled[midx].model
-                    key = article_key(r["_source"])
-                    if key:
-                        with cache_lock:
-                            cache[key] = _verdict_fields(r, prefix)
+                # 注意：**失败批次绝不写进持久缓存**（2026-09 修复）。
+                # 原先把「模型调用失败 → keep=false」也缓存落盘，导致一次网络
+                # 抖动/额度耗尽就把这些文章永久拉黑 —— 之后网络恢复也直接命中
+                # 缓存、一次请求都不发，用户看到的还是"通过 0 篇"。
             else:
                 used_models.append(_model_label(enabled[midx]))
             if on_batch:
@@ -688,15 +784,24 @@ def judge_articles(
                 on_progress(done, total)
 
     # 缓存落盘（仅当有新判定）
-    if judged and cache_path is not None:
+    cp = Path(cache_path) if cache_path is not None else None
+    invalidated = bool(cp is not None and cache_existed and not cp.exists())
+    # 迁移过也要落盘：纯缓存命中的一轮 judged == 0，否则格式永远不落地
+    if (judged or cache_migrated) and cp is not None and not invalidated:
         try:
-            cp = Path(cache_path)
+            # 与磁盘上的最新内容合并后再写：并发任务不会互相覆盖（2026-09 修复）
+            on_disk, _ = _load_cache(cp, prefix) if cp.exists() else ({}, False)
+            merged = {**on_disk, **cache}
             cp.parent.mkdir(parents=True, exist_ok=True)
             cp.write_text(
-                json.dumps(cache, ensure_ascii=False, indent=1),
+                json.dumps(
+                    {"__version__": _CACHE_VERSION, "entries": merged},
+                    ensure_ascii=False,
+                    indent=1,
+                ),
                 encoding="utf-8",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     keep_key = f"{prefix}keep" if prefix else "keep"
