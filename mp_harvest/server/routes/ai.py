@@ -281,6 +281,10 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             except Exception as exc:  # noqa: BLE001
                 _fetch_failed_keep_pending(art, row, f"正文获取失败：{exc}")
                 continue
+            if not parsed.get("content_found", True):
+                # 页面没有 #js_content：通常是环境校验页，拿它去判定毫无意义
+                _fetch_failed_keep_pending(art, row, "页面没有正文（可能触发了微信的环境校验）")
+                continue
             body_text = str(parsed.get("body_text") or "").strip()
             if len(body_text) < 20:
                 _fetch_failed_keep_pending(art, row, "正文过短或无实质内容")

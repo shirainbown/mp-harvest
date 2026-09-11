@@ -171,8 +171,13 @@ def test_export_html_no_articles_400(client, auth):
     assert resp.status_code == 400
 
 
-def test_export_html_expired_credential_partial_block(client, auth, monkeypatch):
-    """B10：部分账号凭证过期不整批 409；过期账号的文章不进 fetch，直接进 errors。"""
+def test_export_html_expired_credential_no_longer_blocks(client, auth, monkeypatch):
+    """2026-09 修正：凭证过期**不再阻止**导出。
+
+    微信文章页 /s/... 是公开可读的（实测不带任何凭证也能拿到完整正文），
+    所以过期账号的文章照常尝试导出，不像原 B10 那样前置跳过。
+    凭证状态只作为「拉不到正文时」的可能原因提示传给导出任务。
+    """
     from mp_harvest.server import state
 
     acc1 = add_account(client, auth)
@@ -191,6 +196,17 @@ def test_export_html_expired_credential_partial_block(client, auth, monkeypatch)
     store = state.get_store()
     monkeypatch.setattr(store, "is_active", lambda aid: aid == acc1["id"], raising=False)
 
+    from mp_harvest.core import article_reader as fake_reader
+
+    captured: dict = {}
+    orig = fake_reader.batch_export_articles
+
+    def spy(articles, **kwargs):
+        captured["articles"] = [dict(a) for a in articles]
+        return orig(articles, **kwargs)
+
+    monkeypatch.setattr(fake_reader, "batch_export_articles", spy)
+
     resp = client.post(
         "/api/articles/export-html", params=auth, json={"account_id": "", "view": "all"}
     )
@@ -198,9 +214,13 @@ def test_export_html_expired_credential_partial_block(client, auth, monkeypatch)
     task = wait_task(resp.json()["task_id"])
     assert task.status == "done"
     assert task.result["ok"] is True
-    assert task.result["exported"] == 1  # acc1 正常导出
-    assert task.result["failed"] == 1  # acc2 直接失败
-    assert any("凭证" in e for e in task.result["errors"])
+    # 两个账号都照常导出（凭证过期不再是拦截理由）
+    assert task.result["exported"] == 2, task.result
+    assert task.result["failed"] == 0, task.result
+    assert not any("凭证" in e for e in task.result["errors"]), task.result["errors"]
+    # 但提示仍然送达导出任务：拉不到正文时用它说明可能原因
+    hinted = [a for a in captured["articles"] if a.get("_cred_error")]
+    assert len(hinted) == 1 and "凭证" in hinted[0]["_cred_error"], captured
 
 
 def test_export_html_download_images_defaults_to_settings(client, auth, monkeypatch):

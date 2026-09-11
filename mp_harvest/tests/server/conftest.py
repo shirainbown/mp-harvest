@@ -247,9 +247,8 @@ def _fake_article_reader() -> types.ModuleType:
             except Exception:  # noqa: BLE001  # 取消边界
                 interrupted = True
                 break
-            if a.get("_cred_error"):
-                errors.append(f"{a.get('title') or i}: {a['_cred_error']}")
-                continue
+            # 2026-09：凭证过期不再阻止导出（真实实现会照常尝试拉正文），
+            # 这里保持同样的契约，否则会掩盖真实行为。
             written.append(str(Path(out_dir) / f"a{i}.html"))
         # 与真实 article_reader 契约一致：out_dir 下生成 index.html 说明页
         out = Path(out_dir)

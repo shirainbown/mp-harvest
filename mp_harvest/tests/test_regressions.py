@@ -854,3 +854,50 @@ def test_network_error_message_includes_cause(monkeypatch):
     assert result.ok is False
     assert "timed out" in result.message, result.message
     assert "网络设置" in result.message
+
+
+def test_expired_credential_does_not_block_export(tmp_path):
+    """凭证过期只作为提示，不再阻止导出。
+
+    微信文章页 ``/s/…`` 是公开可读的（2026-09 实测：不带任何凭证也能拿到完整
+    正文），原先的 B10 前置跳过会挡掉这个本来能成功的场景 —— 用户「明明能在
+    浏览器里打开，却导不出来」。
+    """
+    out = tmp_path / "out"
+    db = ExportRecords(out / "db")
+    arts = [dict(_art(1), _cred_error="凭证缺失或已过期：测试号")]
+
+    res = batch_export_articles(arts, out_dir=out, fetch_article=_fetch, records=db)
+
+    assert res["exported"] == 1, res
+    assert res["failed"] == 0, res
+    assert res["errors"] == [], res["errors"]
+
+
+def test_export_rejects_page_without_body(tmp_path):
+    """拿不到正文容器（微信环境校验页）时判失败，不能把整页文字当正文存下来。"""
+    out = tmp_path / "out"
+    db = ExportRecords(out / "db")
+    arts = [dict(_art(1), _cred_error="凭证缺失或已过期：测试号")]
+
+    def fetch_no_content(url: str, cred=None):
+        # 模拟环境校验页：有文字、但没有 #js_content
+        return {
+            "title": "环境异常",
+            "link": url,
+            "body_text": "请在微信客户端打开链接" * 10,
+            "body_html": "<p>请在微信客户端打开链接</p>",
+            "content_found": False,
+            "publish_at": "2026-08-05 10:00",
+            "publish_ts": 0,
+        }
+
+    res = batch_export_articles(arts, out_dir=out, fetch_article=fetch_no_content, records=db)
+
+    assert res["exported"] == 0, res
+    assert res["failed"] == 1, res
+    assert any("没有正文" in e for e in res["errors"]), res["errors"]
+    # 提示里带上凭证过期这个可能原因
+    assert any("凭证" in e for e in res["errors"]), res["errors"]
+    # 不写盘
+    assert not [p for p in out.rglob("*.html") if p.name != "index.html"]

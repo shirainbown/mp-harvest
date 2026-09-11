@@ -218,8 +218,9 @@ def export_html(body: ExportHtmlIn) -> dict:
     if not articles:
         raise HTTPException(status_code=400, detail="没有可导出的文章（请先拉取历史）")
     cred_by_account = _cred_by_account(articles)
-    # B10：导出前校验凭证；过期账号的文章不拉取，直接进 errors（不整批 409，
-    # 部分账号过期不应挡住其他账号）。
+    # B10：凭证状态只作为**提示**传给导出任务，不再据此拦截导出（2026-09 修正）：
+    # 微信文章页是公开可读的，凭证过期也常常能正常导出；拉不到正文时才把它
+    # 作为可能原因写进 errors。也不整批 409 —— 部分账号过期不应挡住其他账号。
     cred_error_by_account: dict[str, str] = {}
     for aid in {str(a.get("_account_id") or "") for a in articles}:
         if not aid:

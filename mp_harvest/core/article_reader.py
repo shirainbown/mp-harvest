@@ -143,6 +143,9 @@ def parse_wechat_article_html(
         "title": title or "(无标题)",
         "body_text": body_text,
         "body_html": body_html or body_text,
+        # 是否真的拿到正文容器（#js_content）。没有的话 body_text 会退化成整页文字，
+        # 导出时必须据此判失败，而不是把「环境校验页」当成正文存下来（2026-09）。
+        "content_found": bool(content),
         "link": source_url or "",
         "publish_ts": publish_ts,
         "publish_at": publish_at,
@@ -728,8 +731,8 @@ def batch_export_articles(
 
     - 文件名 = 日期_公众号_标题_content_hash前8.html：同一篇文章任何批次/视图
       映射同一文件，重跑即覆盖（B6）；已导出且文件仍在 → 跳过 HTTP 拉取（记 skipped）。
-    - 每篇前检查 ``row['_cred_error']``（凭证过期等，由路由预检填入）→ 直接进
-      errors，不拉取（B10）。
+    - 凭证过期不阻止导出：照常拉取（文章页是公开的），拿不到正文时把
+      ``row['_cred_error']`` 作为可能原因写进 errors。
     - 单篇失败收集进 errors，不中断整批；取消（check_cancelled/on_progress 抛错）
       时写出已完成部分的 index.html，返回 ``ok=False, partial=True``（B9）。
 
@@ -809,17 +812,23 @@ def batch_export_articles(
                     bytes_count=int(prev.get("bytes") or 0),
                 )
                 continue
-        # 2) 凭证过期 → 不拉取，直接进 errors（B10）。放在跳过检查之后：
-        #    已在盘上的文章根本不需要凭证（2026-09 修复）。
-        cred_error = str(row.get("_cred_error") or "").strip()
-        if cred_error:
-            failed_n += 1
-            errors.append(f"{title}: {cred_error}")
-            continue
+        # 2) 凭证过期**不阻止**导出（2026-09 修正）：微信文章页 /s/... 是公开可读的，
+        #    实测不带任何凭证也能拿到完整正文，凭证只是辅助。所以照常尝试拉取，
+        #    失败时再把「凭证已过期」作为可能原因写进错误信息。
+        cred_hint = str(row.get("_cred_error") or "").strip()
         row_cred = row.get("_cred")
         fetch_cred = row_cred if isinstance(row_cred, dict) else cred
         try:
             parsed = fetch(link, cred=fetch_cred)
+            if not parsed.get("content_found", True):
+                # 页面没有 #js_content —— 通常是微信的环境校验页/错误页。
+                # 不写盘、不谎报成功（原先会把整页文字当正文导出并计成功）
+                failed_n += 1
+                errors.append(
+                    f"{title}: 页面没有正文（可能触发了微信的环境校验）"
+                    + (f"；{cred_hint}" if cred_hint else "")
+                )
+                continue
             if not parsed.get("link"):
                 # 回填原文链接：既保证导出的「原文」可点，也让图片资源命名拿到
                 # 稳定的文章标识（见 localize_images 的串图修复）
