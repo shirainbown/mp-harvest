@@ -8,7 +8,7 @@ import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
 import SModal from '../components/SModal.vue'
 import SBadge from '../components/SBadge.vue'
-import SPopover from '../components/SPopover.vue'
+import SIcon from '../components/SIcon.vue'
 import SSwitch from '../components/SSwitch.vue'
 import STooltip from '../components/STooltip.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
@@ -61,6 +61,26 @@ async function confirmAdd() {
   if (!ok) return
   addOpen.value = false
   ui.toast('已登记目录，点「扫描」把里面的文章读进来')
+}
+
+// ---- 改名（就地编辑）----
+// store 里一直有 renameSource，但没有任何入口 —— 来源目录只能扫描和移除，
+// 登记时随手起的名字再也改不掉（2026-09 接上）。
+const editingId = ref('')
+const editingName = ref('')
+
+function startRename(s: { id: string; name: string }) {
+  editingId.value = s.id
+  editingName.value = s.name
+}
+
+async function commitRename(id: string, original: string) {
+  // Enter 会先清 editingId 触发 input 卸载 → 再触发一次 blur，这里挡住第二次
+  if (editingId.value !== id) return
+  editingId.value = ''
+  const name = editingName.value.trim()
+  if (!name || name === original) return
+  if (await ext.renameSource(id, name)) ui.toast('已改名')
 }
 
 // ---- 移除 ----
@@ -203,7 +223,20 @@ async function copyLink(a: { url: string }) {
             <span>上次扫描</span><span>启用</span><span></span>
           </div>
           <div v-for="s in ext.sources" :key="s.id" class="ext-row">
-            <span class="acct-name">{{ s.name || '（未命名）' }}</span>
+            <input
+              v-if="editingId === s.id"
+              v-model="editingName"
+              class="input"
+              style="height:24px;font-size:var(--fs-xs);width:100%"
+              @keydown.enter="commitRename(s.id, s.name)"
+              @keydown.esc="editingId = ''"
+              @blur="commitRename(s.id, s.name)"
+            />
+            <STooltip v-else :text="`${s.name || '（未命名）'} · 点击改名`" style="min-width:0">
+              <span class="acct-name" style="cursor:text" @click="startRename(s)">
+                {{ s.name || '（未命名）' }}
+              </span>
+            </STooltip>
             <STooltip :text="s.path" style="min-width:0">
               <span class="ext-path">{{ s.path }}</span>
             </STooltip>
@@ -261,25 +294,18 @@ async function copyLink(a: { url: string }) {
           <SButton size="sm" variant="ghost" @click="ext.selectAllVisible()">全选</SButton>
           <SButton size="sm" variant="ghost" @click="ext.clearSelection()">取消选择</SButton>
           <span class="badge sel-badge" title="当前视图已选">{{ selectedCount }}</span>
-          <SPopover>
-            <template #anchor>
-              <SButton size="sm" variant="primary" :disabled="!ext.visible.length">写回 ▾</SButton>
-            </template>
-            <template #default="{ close }">
-              <div class="menu">
-                <div class="menu-item" @click="close(); openExport()">
-                  写回到目录…<template v-if="selectedCount">（已选 {{ selectedCount }}）</template><template v-else>（当前视图全部）</template>
-                </div>
-              </div>
-            </template>
-          </SPopover>
+          <!-- 单项下拉没意义：原来是个只含一条的菜单，白白多一次点击（2026-09 合并） -->
+          <SButton size="sm" variant="primary" :disabled="!ext.visible.length" @click="openExport()">
+            写回…
+          </SButton>
           <ProgressInline
             v-if="exportTask"
             :text="exportTask.message || '写回中…'"
             cancellable
+            @cancel="ext.cancelExport()"
           />
           <SButton size="sm" :disabled="!ext.visible.length || !!ext.aiTaskId" @click="aiOpen = true">
-            ✦ AI 筛选
+            <SIcon name="sparkles" :size="12" /> AI 筛选
           </SButton>
         </div>
         <div v-if="aiTask" class="toolbar" style="padding-top:var(--sp-2)">

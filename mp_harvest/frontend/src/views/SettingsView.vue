@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// 页面五：设置（GET/PUT /api/settings 扁平 KV）——导出目录、图片下载、AI 默认值
-import { onMounted } from 'vue'
+// 页面：设置（GET/PUT /api/settings 扁平 KV）——导出目录、图片下载、AI 默认值、
+// 网络代理、平台能力。2026-09 把原「网络设置」整页并入本页。
+import { computed, onMounted } from 'vue'
 import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
 import SSwitch from '../components/SSwitch.vue'
@@ -14,6 +15,23 @@ const ui = useUiStore()
 
 onMounted(() => {
   if (!settings.loaded) settings.load()
+})
+
+// ---- 网络代理（原「网络设置」页）----
+function setMode(mode: 'direct' | 'system' | 'custom') {
+  settings.network.mode = mode
+  settings.saveNetwork()
+}
+
+const platformLines = computed(() => {
+  const p = settings.platform
+  if (!p) return []
+  const osName = p.os === 'mac' ? 'macOS' : p.os === 'win' ? 'Windows' : p.os
+  return [
+    `系统：${p.os_version || osName} · 安装 CA ${p.ca_needs_admin ? '需' : '无需'}管理员 · 设置系统代理 ${p.proxy_needs_admin ? '需' : '无需'}管理员`,
+    p.data_dir ? `数据目录：${p.data_dir}` : '',
+    p.engine ? `渲染引擎：${p.engine}` : '',
+  ].filter(Boolean)
 })
 
 /** 文本框失焦 / 开关切换 / 数字变更时保存；PUT 为整体覆盖，store 内合并全量 KV */
@@ -76,9 +94,6 @@ function onWorkers() {
           <SSwitch v-model="settings.prefs.exportDownloadImages" @click="save" />
           <span>导出时下载图片到本地（随 HTML 一起保存，离线可读）</span>
         </div>
-        <div class="muted" style="font-size:var(--fs-xs);margin-top:var(--sp-2)">
-          数据目录：<span class="mono">{{ settings.platform?.data_dir || '（未知）' }}</span>
-        </div>
       </div>
 
       <div class="panel">
@@ -108,6 +123,53 @@ function onWorkers() {
         <div class="mitm-row" style="margin-top:var(--sp-2)">
           <SSwitch v-model="settings.prefs.aiContinueContentFilter" @click="save" />
           <span>标题筛选完成后自动继续内容筛选</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">更新与下载代理</div>
+        <div class="radio-row" @click="setMode('system')">
+          <span class="radio" :class="{ on: settings.network.mode === 'system' }"></span>跟随系统代理
+        </div>
+        <div
+          v-if="settings.network.mode === 'system'"
+          class="tertiary"
+          style="font-size:var(--fs-xs);padding-left:22px;margin-bottom:var(--sp-1)"
+        >
+          <template v-if="settings.systemProxy">
+            当前系统代理：<span class="mono">{{ settings.systemProxy }}</span>
+          </template>
+          <template v-else>
+            未检测到系统代理 —— 若检查更新/下载失败，请改用「自定义 HTTP 代理」
+          </template>
+        </div>
+        <div class="radio-row" @click="setMode('direct')">
+          <span class="radio" :class="{ on: settings.network.mode === 'direct' }"></span>直连（不使用代理）
+        </div>
+        <div class="radio-row" @click="setMode('custom')">
+          <span class="radio" :class="{ on: settings.network.mode === 'custom' }"></span>自定义 HTTP 代理
+        </div>
+        <div class="mitm-row" style="margin-top:var(--sp-2)">
+          <span class="form-label">地址</span>
+          <SInput
+            v-model="settings.network.proxy_url"
+            mono
+            width="280px"
+            placeholder="http://127.0.0.1:7890"
+            :disabled="settings.network.mode !== 'custom'"
+            @blur="settings.saveNetwork()"
+          />
+          <SButton size="sm" :loading="settings.proxyTesting" :disabled="settings.network.mode !== 'custom'" @click="settings.testProxy()">
+            测试连接
+          </SButton>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">平台能力</div>
+        <SkeletonRows v-if="!settings.platform" :rows="3" />
+        <div v-else class="cap-list">
+          <span v-for="(l, i) in platformLines" :key="i" :class="{ mono: l.startsWith('数据目录') }">{{ l }}</span>
         </div>
       </div>
     </template>

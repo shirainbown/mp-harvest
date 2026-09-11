@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Drawer：右侧 480px 滑出、遮罩点击关、esc 关（§5.9）
 import { onBeforeUnmount, onMounted } from 'vue'
+import SIcon from './SIcon.vue'
 
 const props = withDefaults(defineProps<{ open: boolean; title: string }>(), {})
 const emit = defineEmits<{ close: [] }>()
@@ -18,7 +19,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
     <div class="drawer" :class="{ show: open }">
       <div class="drawer-head">
         {{ title }}
-        <button class="btn btn-ghost btn-sm" @click="emit('close')">✕</button>
+        <button class="btn btn-ghost btn-sm" @click="emit('close')"><SIcon name="x" /></button>
       </div>
       <div class="drawer-body"><slot /></div>
       <div v-if="$slots.foot" class="drawer-foot"><slot name="foot" /></div>

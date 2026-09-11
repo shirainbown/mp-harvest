@@ -17,7 +17,6 @@ const groups: Array<Array<{ id: ViewId; label: string }>> = [
   ],
   [
     { id: 'ai', label: 'AI 模型' },
-    { id: 'network', label: '网络设置' },
     { id: 'settings', label: '设置' },
   ],
 ]
@@ -25,7 +24,7 @@ const groups: Array<Array<{ id: ViewId; label: string }>> = [
 async function checkUpdate() {
   const r = await settings.checkUpdate()
   if (r === 'modal') ui.updateOpen = true
-  else if (r === 'latest') ui.toast('✓ 已是最新版本')
+  else if (r === 'latest') ui.toast('已是最新版本')
 }
 
 function go(v: ViewId) {
@@ -74,7 +73,7 @@ function fmtTime(ts: number) {
   <!-- 错误中心：最近错误（时间 + 消息），可清空 -->
   <SModal :open="ui.errorCenterOpen" @close="ui.errorCenterOpen = false">
     <template #head>错误中心（{{ ui.errors.length }}）</template>
-    <div v-if="!ui.errors.length" class="muted" style="text-align:center;padding:var(--sp-3)">暂无记录的错误 ✓</div>
+    <div v-if="!ui.errors.length" class="muted" style="text-align:center;padding:var(--sp-3)">暂无记录的错误</div>
     <div v-else class="err-list">
       <div v-for="e in [...ui.errors].reverse()" :key="e.id" class="err-item">
         <span class="mono muted err-time">{{ fmtTime(e.time) }}</span>

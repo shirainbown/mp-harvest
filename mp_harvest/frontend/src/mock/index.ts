@@ -317,11 +317,11 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
 
   // ai
   if (p === '/api/ai/filter' && method === 'POST') {
-    const task_id = simulateTask('ai', ['模型 A 34/620', '模型 A 128/620 · 模型 B 96/620', '模型 A 300/620 · 模型 B 260/620', '模型 A 620/620 ✓ · 模型 B 620/620 ✓'], 700, { kept: 280, drop: 340, cached: 203 })
+    const task_id = simulateTask('ai', ['模型 A 34/620', '模型 A 128/620 · 模型 B 96/620', '模型 A 300/620 · 模型 B 260/620', '模型 A 620/620 · 模型 B 620/620'], 700, { kept: 280, drop: 340, cached: 203 })
     return { task_id } as T
   }
   if (p === '/api/ai/filter-content' && method === 'POST') {
-    const task_id = simulateTask('ai', ['获取正文 12/280', '获取正文 280/280', '内容判定 280/280 ✓'], 600, { kept: 221, dropped: 59, cached: 18, fetch_failed: 0 })
+    const task_id = simulateTask('ai', ['获取正文 12/280', '获取正文 280/280', '内容判定 280/280'], 600, { kept: 221, dropped: 59, cached: 18, fetch_failed: 0 })
     return { task_id } as T
   }
   if (p === '/api/ai/models' && method === 'GET') return { models } as T

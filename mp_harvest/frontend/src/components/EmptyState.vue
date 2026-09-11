@@ -1,11 +1,14 @@
 <script setup lang="ts">
 // EmptyState：空列表指引（§5.9）
 defineProps<{ text: string }>()
+import SIcon from './SIcon.vue'
 </script>
 
 <template>
   <div class="empty-hint">
-    <div style="font-size:24px;margin-bottom:8px;opacity:.5">☰</div>
+    <div style="margin-bottom:10px;opacity:.45;color:var(--text-tertiary)">
+      <SIcon name="inbox" :size="26" />
+    </div>
     {{ text }}
   </div>
 </template>

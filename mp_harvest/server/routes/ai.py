@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
 from mp_harvest.infra.platform import paths
@@ -439,8 +441,15 @@ def get_principles() -> dict:
 def put_principles(body: PrinciplesIn) -> dict:
     from mp_harvest.core import ai_filter as ai_mod
 
+    # 只在**内容真的变了**才清判定缓存（2026-09）。
+    # 判定结果以「当时用的原则」为前提，原则没变则判定依然有效；原先无条件清，
+    # 于是用户点一下「保存」什么都没改，也会把攒了很久的判定结果全部丢掉。
+    # 比较用生效值（空文本会被存成默认原则，否则会误判成「变了」）。
+    old = ai_mod.load_principles(_principles_path())
+    new = body.text or ai_mod.DEFAULT_PRINCIPLES
     ai_mod.save_principles(_principles_path(), body.text)
-    _invalidate_cache(_cache_path())
+    if old != new:
+        _invalidate_cache(_cache_path())
     return {"ok": True}
 
 
@@ -459,6 +468,10 @@ def get_content_principles() -> dict:
 def put_content_principles(body: PrinciplesIn) -> dict:
     from mp_harvest.core import ai_filter as ai_mod
 
+    # 同 put_principles：内容没变就不清缓存
+    old = ai_mod.load_content_principles(_content_principles_path())
+    new = body.text or ai_mod.DEFAULT_CONTENT_PRINCIPLES
     ai_mod.save_content_principles(_content_principles_path(), body.text)
-    _invalidate_cache(_content_cache_path())
+    if old != new:
+        _invalidate_cache(_content_cache_path())
     return {"ok": True}

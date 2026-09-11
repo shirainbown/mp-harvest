@@ -7,7 +7,6 @@ import CredentialView from './views/CredentialView.vue'
 import HistoryView from './views/HistoryView.vue'
 import ExternalView from './views/ExternalView.vue'
 import AiModelsView from './views/AiModelsView.vue'
-import NetworkView from './views/NetworkView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { useUiStore } from './stores/ui'
 import { useAccountsStore } from './stores/accounts'
@@ -31,7 +30,6 @@ onMounted(() => {
       <HistoryView v-show="ui.view === 'history'" />
       <ExternalView v-show="ui.view === 'external'" />
       <AiModelsView v-show="ui.view === 'ai'" />
-      <NetworkView v-show="ui.view === 'network'" />
       <SettingsView v-show="ui.view === 'settings'" />
     </div>
   </div>

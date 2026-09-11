@@ -2,6 +2,7 @@
 // 页面一：凭证管理（§5.4）
 import { ref } from 'vue'
 import SButton from '../components/SButton.vue'
+import SIcon from '../components/SIcon.vue'
 import SInput from '../components/SInput.vue'
 import SPopover from '../components/SPopover.vue'
 import STooltip from '../components/STooltip.vue'
@@ -102,7 +103,7 @@ const importOpen = ref(false)
   <section class="view-root">
   <header class="page-header">
     <h1>凭证管理</h1>
-    <SButton size="sm" :disabled="!accounts.list.length" @click="accounts.renewAll()">⏻ 一键续约全部</SButton>
+    <SButton size="sm" :disabled="!accounts.list.length" @click="accounts.renewAll()"><SIcon name="refresh" /> 一键续约全部</SButton>
   </header>
   <div class="page-body">
     <!-- MITM 面板 -->
@@ -115,7 +116,7 @@ const importOpen = ref(false)
           <span v-else>已停止</span>
         </span>
         <span class="muted">
-          CA：<span v-if="accounts.ca.trusted" class="status-ok">✓ 已信任</span><span v-else class="status-fail">未信任</span>
+          CA：<span v-if="accounts.ca.trusted" class="status-ok"><SIcon name="check" :size="12" /> 已信任</span><span v-else class="status-fail">未信任</span>
         </span>
         <span style="flex:1"></span>
         <SButton size="sm" @click="accounts.toggleMitm()">{{ accounts.mitm.running ? '停止代理' : '启动代理' }}</SButton>
@@ -123,7 +124,7 @@ const importOpen = ref(false)
         <SButton size="sm" variant="ghost" @click="accounts.openCaFolder()">打开证书文件</SButton>
         <SPopover>
           <template #anchor>
-            <span class="tertiary" style="cursor:help;border-bottom:1px dashed var(--text-tertiary)">抓包指引 ⓘ</span>
+            <span class="tertiary" style="cursor:help;border-bottom:1px dashed var(--text-tertiary)">抓包指引 <SIcon name="info" :size="12" /></span>
           </template>
           <div style="line-height:1.7">
             首次使用三步：<br />
@@ -152,7 +153,7 @@ const importOpen = ref(false)
         />
         <SButton variant="primary" :loading="adding" @click="submit">{{ adding ? '等待抓包…' : '添加并抓包' }}</SButton>
         <SButton v-if="adding" @click="cancelAdd">取消</SButton>
-        <SButton @click="importOpen = true">批量导入 ▸</SButton>
+        <SButton @click="importOpen = true">批量导入 <SIcon name="chevron-right" :size="12" /></SButton>
       </div>
     </div>
 

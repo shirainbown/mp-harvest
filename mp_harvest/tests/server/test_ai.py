@@ -354,3 +354,44 @@ def test_content_filter_skips_already_cached_bodies(client, auth, fake_core):
     task = wait_task(resp.json()["task_id"])
     assert task.status == "done", task.error
     assert fetched == ["https://x/2"], f"只该抓没有正文的那一篇，实际 {fetched}"
+
+
+def test_put_principles_only_wipes_cache_when_changed(client, auth, isolated_data_dir):
+    """原则**没变**时不能清 AI 判定缓存（2026-09）。
+
+    判定结果以「当时用的原则」为前提，内容没变则判定依然有效。原先无条件
+    `_invalidate_cache` —— 用户点一下「保存」什么都没改，也会把攒了很久的
+    判定结果全部丢掉，下次筛选得重新花钱判定一遍。
+    """
+    from mp_harvest.server.routes.ai import _cache_path
+
+    cache = _cache_path()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+
+    def wipe_and_check(new_text: str) -> bool:
+        cache.write_text('{"__version__":2,"entries":{"k":{"keep":true}}}', encoding="utf-8")
+        r = client.put("/api/ai/principles", params=auth, json={"text": new_text})
+        assert r.status_code == 200, r.text
+        return not cache.exists()
+
+    # 先写入一个自定义原则
+    assert wipe_and_check("自定义原则 A") is True   # 内容变了 → 清缓存
+    # 原样再存一次 → 不该清
+    assert wipe_and_check("自定义原则 A") is False
+    # 真的改了 → 该清
+    assert wipe_and_check("自定义原则 B") is True
+
+
+def test_put_content_principles_only_wipes_cache_when_changed(client, auth, isolated_data_dir):
+    from mp_harvest.server.routes.ai import _content_cache_path
+
+    cache = _content_cache_path()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+
+    cache.write_text('{"__version__":2,"entries":{}}', encoding="utf-8")
+    client.put("/api/ai/content-principles", params=auth, json={"text": "内容原则 A"})
+    assert not cache.exists()          # 改了 → 清
+
+    cache.write_text('{"__version__":2,"entries":{}}', encoding="utf-8")
+    client.put("/api/ai/content-principles", params=auth, json={"text": "内容原则 A"})
+    assert cache.exists()              # 没改 → 保留

@@ -2,6 +2,7 @@
 // Toast：右上角滑入，成功 2.5s / 错误 8s 自动消失（也可手动 ✕），最多叠 5 条（§5.9）。
 // 错误不再常驻：完整记录在「错误中心」，堆叠条数多时提供一键关闭（2026-09）。
 import { useUiStore } from '../stores/ui'
+import SIcon from './SIcon.vue'
 const ui = useUiStore()
 </script>
 
@@ -16,7 +17,7 @@ const ui = useUiStore()
         <span class="toast-msg">{{ t.msg }}</span>
         <template v-if="t.sticky">
           <button v-if="ui.errors.length" class="toast-link" @click="ui.dismissToast(t.id); ui.errorCenterOpen = true">查看</button>
-          <button class="toast-close" title="关闭" @click="ui.dismissToast(t.id)">✕</button>
+          <button class="toast-close" title="关闭" @click="ui.dismissToast(t.id)"><SIcon name="x" :size="12" /></button>
         </template>
       </div>
     </div>

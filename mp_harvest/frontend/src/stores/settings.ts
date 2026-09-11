@@ -21,8 +21,11 @@ export const useSettingsStore = defineStore('settings', {
     models: [] as AiModel[],
     principles: '',
     defaultPrinciples: '',
+    /** 最近一次落盘的原则文本：与 principles 比对得出「有没有未保存的改动」 */
+    savedPrinciples: '',
     contentPrinciples: '',
     defaultContentPrinciples: '',
+    savedContentPrinciples: '',
     // 默认「跟随系统代理」：国内用户开着 Clash 时，检查更新/下载开箱即用
     network: { mode: 'system', proxy_url: '' } as NetworkSettings,
     /** 后端探测到的系统代理（只读展示，帮助排查「跟随了但没代理」） */
@@ -76,10 +79,12 @@ export const useSettingsStore = defineStore('settings', {
       }
       if (principles) {
         this.principles = principles.text
+        this.savedPrinciples = principles.text
         this.defaultPrinciples = principles.default ?? principles.text
       }
       if (contentPrinciples) {
         this.contentPrinciples = contentPrinciples.text
+        this.savedContentPrinciples = contentPrinciples.text
         this.defaultContentPrinciples = contentPrinciples.default ?? contentPrinciples.text
       }
       if (network) {
@@ -196,24 +201,38 @@ export const useSettingsStore = defineStore('settings', {
       }
     },
     async savePrinciples() {
-      const r = await call(rest.put('/api/ai/principles', { text: this.principles }))
-      if (r !== null) useUiStore().toast('筛选原则已保存（ai_principles.txt）')
+      const text = this.principles
+      const r = await call(rest.put('/api/ai/principles', { text }))
+      if (r !== null) {
+        this.savedPrinciples = text
+        useUiStore().toast('筛选原则已保存（ai_principles.txt）')
+      }
     },
     /** 恢复默认并立即落盘 */
     async restorePrinciples() {
       this.principles = this.defaultPrinciples
       const r = await call(rest.put('/api/ai/principles', { text: this.principles }))
-      if (r !== null) useUiStore().toast('已恢复默认原则并保存')
+      if (r !== null) {
+        this.savedPrinciples = this.principles
+        useUiStore().toast('已恢复默认原则并保存')
+      }
     },
     async saveContentPrinciples() {
-      const r = await call(rest.put('/api/ai/content-principles', { text: this.contentPrinciples }))
-      if (r !== null) useUiStore().toast('内容筛选原则已保存（ai_content_principles.txt）')
+      const text = this.contentPrinciples
+      const r = await call(rest.put('/api/ai/content-principles', { text }))
+      if (r !== null) {
+        this.savedContentPrinciples = text
+        useUiStore().toast('内容筛选原则已保存（ai_content_principles.txt）')
+      }
     },
     /** 恢复默认并立即落盘 */
     async restoreContentPrinciples() {
       this.contentPrinciples = this.defaultContentPrinciples
       const r = await call(rest.put('/api/ai/content-principles', { text: this.contentPrinciples }))
-      if (r !== null) useUiStore().toast('已恢复默认内容原则并保存')
+      if (r !== null) {
+        this.savedContentPrinciples = this.contentPrinciples
+        useUiStore().toast('已恢复默认内容原则并保存')
+      }
     },
     async saveNetwork() {
       // 服务端 settings 存储用 proxy 字段（更新下载走 settings.proxy）；

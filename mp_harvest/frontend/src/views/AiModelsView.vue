@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // 页面三：AI 模型（§5.6）
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
+import SIcon from '../components/SIcon.vue'
 import SPopover from '../components/SPopover.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
 import SSwitch from '../components/SSwitch.vue'
@@ -25,6 +26,17 @@ watch(
   () => settings.models,
   () => settings.scheduleSaveModels(),
   { deep: true, flush: 'sync' },
+)
+
+// 原则有未保存改动？（2026-09）
+//
+// 原则**刻意不自动保存**：PUT /api/ai/principles 会清空已攒下的 AI 判定缓存
+// （判定以当时的原则为前提，原则变了旧判定就失效）。若做成防抖自动保存，
+// 用户每敲几个字就会把判定结果清一次。所以这里保持显式保存，但把状态**显示出来** ——
+// 旁边的模型卡片是自动保存的，用户很容易以为原则也一样，改完直接关窗口就丢了。
+const principlesDirty = computed(() => settings.principles !== settings.savedPrinciples)
+const contentPrinciplesDirty = computed(
+  () => settings.contentPrinciples !== settings.savedContentPrinciples,
 )
 
 const formatOptions = [
@@ -110,7 +122,9 @@ function modelListId(m: AiModel): string {
             :type="visibleKeys.has(m.id) ? 'text' : 'password'"
             placeholder="sk-…"
           />
-          <SButton size="sm" variant="ghost" @click="toggleKey(m.id)">👁</SButton>
+          <SButton size="sm" variant="ghost" @click="toggleKey(m.id)" :title="visibleKeys.has(m.id) ? '隐藏密钥' : '显示密钥'">
+            <SIcon :name="visibleKeys.has(m.id) ? 'eye-off' : 'eye'" />
+          </SButton>
           <SegmentedControl v-model="m.format" :options="formatOptions" style="margin-left:8px" />
           <span class="form-label">模型</span>
           <SInput v-model="m.model" mono width="180px" placeholder="模型名或从列表选择" :list="modelListId(m)" />
@@ -120,9 +134,9 @@ function modelListId(m: AiModel): string {
           <SButton size="sm" variant="ghost" :loading="fetchingOf(m)" @click="settings.fetchModels(m)">获取列表</SButton>
           <span v-if="modelErrorOf(m)" class="status-fail">{{ modelErrorOf(m) }}</span>
           <template v-if="testResultOf(m) && testResultOf(m) !== 'testing'">
-            <span v-if="(testResultOf(m) as any).ok" class="status-ok">● 可用 · {{ (testResultOf(m) as any).latency_ms }}ms</span>
+            <span v-if="(testResultOf(m) as any).ok" class="status-ok"><SIcon name="dot" :size="8" /> 可用 · {{ (testResultOf(m) as any).latency_ms }}ms</span>
             <span v-else class="status-fail model-test-fail">
-              <span>● 失败 · </span>
+              <span><SIcon name="dot" :size="8" /> 失败 · </span>
               <code class="model-test-error">{{ testErrorOf(m) }}</code>
               <SButton size="sm" variant="ghost" @click="copyTestError(m)">复制</SButton>
             </span>
@@ -134,24 +148,41 @@ function modelListId(m: AiModel): string {
     <div class="panel">
       <div class="panel-title">
         筛选原则 <span class="tertiary" style="font-weight:400">— 输出格式由软件固定（严格 JSON），原则只管判定标准</span>
+        <span v-if="principlesDirty" class="badge bu" style="margin-left:8px">未保存</span>
       </div>
       <textarea v-model="settings.principles" class="principles" spellcheck="false"></textarea>
       <div class="toolbar" style="margin-top:var(--sp-2)">
+        <span v-if="principlesDirty" class="tertiary" style="font-size:var(--fs-xs)">
+          改动尚未保存；保存后已有 AI 判定结果会作废（原则变了，旧判定不再适用）
+        </span>
         <span class="spacer"></span>
         <SButton size="sm" variant="ghost" @click="settings.restorePrinciples()">恢复默认</SButton>
-        <SButton size="sm" variant="primary" @click="settings.savePrinciples()">保存</SButton>
+        <SButton size="sm" variant="primary" :disabled="!principlesDirty" @click="settings.savePrinciples()">
+          保存
+        </SButton>
       </div>
     </div>
 
     <div class="panel">
       <div class="panel-title">
         内容筛选原则 <span class="tertiary" style="font-weight:400">— 标题判定通过后，按正文做第二阶段筛选</span>
+        <span v-if="contentPrinciplesDirty" class="badge bu" style="margin-left:8px">未保存</span>
       </div>
       <textarea v-model="settings.contentPrinciples" class="principles" spellcheck="false"></textarea>
       <div class="toolbar" style="margin-top:var(--sp-2)">
+        <span v-if="contentPrinciplesDirty" class="tertiary" style="font-size:var(--fs-xs)">
+          改动尚未保存；保存后已有内容判定结果会作废
+        </span>
         <span class="spacer"></span>
         <SButton size="sm" variant="ghost" @click="settings.restoreContentPrinciples()">恢复默认</SButton>
-        <SButton size="sm" variant="primary" @click="settings.saveContentPrinciples()">保存</SButton>
+        <SButton
+          size="sm"
+          variant="primary"
+          :disabled="!contentPrinciplesDirty"
+          @click="settings.saveContentPrinciples()"
+        >
+          保存
+        </SButton>
       </div>
     </div>
   </div>

@@ -15,7 +15,7 @@ router = APIRouter(tags=["update"])
 
 
 def _settings_proxy() -> str:
-    """按「网络设置」的 mode 决定更新代理。
+    """按「设置」页的代理 mode 决定更新代理。
 
     mode=direct（直连）时**必须忽略残留的 proxy 值**——旧版 UI 切回直连后仍把
     自定义代理地址留在 settings 里，这里若不过滤就会继续走该代理（实测导致

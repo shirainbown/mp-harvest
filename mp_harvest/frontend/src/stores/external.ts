@@ -256,6 +256,16 @@ export const useExternalStore = defineStore('external', {
         },
       })
     },
+    async cancelExport() {
+      // 视图里的 ProgressInline 一直是 cancellable 的，但之前没绑 @cancel ——
+      // 取消按钮渲染出来了却点了没反应（2026-09 修复）
+      const id = this.exportTaskId
+      if (!id) return
+      this.exportTaskId = ''
+      this.aiProgress = ''
+      await useTasksStore().cancel(id)
+      useUiStore().toast('已停止写回')
+    },
     // ---- 勾选 ----
     toggleSelect(id: string, on: boolean) {
       if (on) this.selected.add(id)

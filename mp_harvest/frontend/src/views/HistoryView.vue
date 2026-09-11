@@ -9,6 +9,7 @@ import SPopover from '../components/SPopover.vue'
 import STooltip from '../components/STooltip.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
 import SBadge from '../components/SBadge.vue'
+import SIcon from '../components/SIcon.vue'
 import ProgressInline from '../components/ProgressInline.vue'
 import EmptyState from '../components/EmptyState.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
@@ -207,8 +208,8 @@ const fetchDisabled = computed(
 )
 const fetchLabel = computed(() =>
   isAggregate.value && fetchableAccounts.value.length
-    ? `⟳ 拉取全部公众号（${fetchableAccounts.value.length}）`
-    : '⟳ 拉取历史',
+    ? `拉取全部公众号（${fetchableAccounts.value.length}）`
+    : '拉取历史',
 )
 function startFetch() {
   if (isAggregate.value) articles.fetchBatch(fetchableAccounts.value.map((a) => a.id))
@@ -232,17 +233,12 @@ function rowReason(a: Article) {
 }
 
 // ---- 选择 & 导出 HTML ----
-const confirmAllOpen = ref(false)
-// B5：计数与载荷一致——都基于 selectedInView（导出当前视图所选项）
-function clickExportHtml() {
-  const ids = articles.selectedInView.map((a) => a.id)
-  if (ids.length) articles.exportHtml(ids)
-  else confirmAllOpen.value = true
-}
-function confirmExportAll() {
-  confirmAllOpen.value = false
-  articles.exportHtml([])
-}
+//
+// 2026-09 合并：原先正文导出有两个入口 —— 「导出 HTML」（没勾选时弹确认框、用设置里的
+// 默认目录）与「导出到目录…」（弹目录框、不确认）。两者调的是同一个 exportHtml，
+// 只是参数收集方式不同，于是出现「走哪条路决定你被不被拦一下」的怪现象。
+// 现在只有一条：一律弹目录框（预填默认目录），目录可见可改，弹窗本身就是确认。
+const exportCount = computed(() => articles.selectedInView.length || articles.counts[articles.view])
 function exportSingle(a: Article) {
   // 外部条目不能走 /api/articles/export-html：那条路会用公众号解析器去抓
   // arxiv.org 的链接，产出一堆垃圾或直接报错。写回请到「其他来源」页做。
@@ -267,7 +263,11 @@ function openExportDir() {
 }
 function confirmExportDir() {
   exportDirOpen.value = false
-  articles.exportHtml([], exportDir.value)
+  // 勾选了就只导勾选的，否则整视图 —— 与弹窗里的文案严格一致
+  articles.exportHtml(
+    articles.selectedInView.map((a) => a.id),
+    exportDir.value,
+  )
 }
 
 // ---- 补录链接 ----
@@ -473,7 +473,7 @@ function toggleAiIncludeContent() {
           <option value="time">按时间</option>
           <option value="name">按名称</option>
         </select>
-        <SButton size="sm" variant="ghost" @click="articles.toggleSortDir()">{{ sortDirLabel }} ▾</SButton>
+        <SButton size="sm" variant="ghost" @click="articles.toggleSortDir()">{{ sortDirLabel }} <SIcon name="chevron-down" :size="12" /></SButton>
         </template>
         <span class="spacer"></span>
         <span v-if="mixedScope" class="tertiary" style="font-size:var(--fs-xs)">
@@ -491,14 +491,13 @@ function toggleAiIncludeContent() {
         <template v-if="sourceScope === 'wechat'">
         <SPopover>
           <template #anchor>
-            <SButton size="sm" variant="primary" :disabled="!articles.visible.length">导出 ▾</SButton>
+            <SButton size="sm" variant="primary" :disabled="!articles.visible.length">导出 <SIcon name="chevron-down" :size="12" /></SButton>
           </template>
           <template #default="{ close }">
             <div class="menu">
-              <div class="menu-item" @click="close(); clickExportHtml()">
-                导出 HTML<template v-if="selectedCount">（已选 {{ selectedCount }}）</template><template v-else>（当前视图全部）</template>
+              <div class="menu-item" @click="close(); openExportDir()">
+                导出正文…<template v-if="selectedCount">（已选 {{ selectedCount }}）</template><template v-else>（当前视图全部）</template>
               </div>
-              <div class="menu-item" @click="close(); openExportDir()">导出到目录…</div>
               <div class="menu-item" @click="close(); articles.exportList()">导出列表文件</div>
             </div>
           </template>
@@ -510,7 +509,7 @@ function toggleAiIncludeContent() {
           @cancel="articles.cancelExport()"
         />
         <span style="width:8px"></span>
-        <SButton size="sm" :disabled="!accounts.list.length || !!articles.aiTaskId" @click="aiFilterOpen = true">✦ AI 筛选</SButton>
+        <SButton size="sm" :disabled="!accounts.list.length || !!articles.aiTaskId" @click="aiFilterOpen = true"><SIcon name="sparkles" :size="12" /> AI 筛选</SButton>
         </template>
         <SButton
           v-else-if="sourceScope === 'external'"
@@ -610,31 +609,25 @@ function toggleAiIncludeContent() {
     </template>
   </SModal>
 
-  <!-- 导出全部确认 Modal -->
-  <SModal :open="confirmAllOpen" @close="confirmAllOpen = false">
-    <template #head>导出当前视图全部</template>
-    未勾选任何文章，将导出当前视图全部 <b style="color:var(--text-primary)">{{ articles.counts[articles.view] }}</b> 篇正文 HTML，是否继续？
-    <template #foot>
-      <SButton variant="ghost" @click="confirmAllOpen = false">取消</SButton>
-      <SButton variant="primary" @click="confirmExportAll">导出全部</SButton>
-    </template>
-  </SModal>
-
-  <!-- 导出全部正文到指定目录 Modal -->
+  <!-- 导出正文到目录 Modal（2026-09 起是正文导出的唯一入口）-->
   <SModal :open="exportDirOpen" @close="exportDirOpen = false">
-    <template #head>导出全部正文到指定目录</template>
+    <template #head>导出正文到目录</template>
     <div style="display:flex;flex-direction:column;gap:8px">
       <span>
-        将当前视图全部 <b style="color:var(--text-primary)">{{ articles.counts[articles.view] }}</b>
+        将
+        <b style="color:var(--text-primary)">{{ selectedCount ? `已勾选的 ${selectedCount}` : `当前视图全部 ${articles.counts[articles.view]}` }}</b>
         篇正文导出为 HTML 到目标目录，并在目录内生成
         <span class="mono">index.html</span> 说明页（可搜索/排序，含本地正文与原文链接）。
       </span>
       <SInput v-model="exportDir" mono placeholder="~/Downloads/mp-harvest-export" />
-      <span class="muted" style="font-size:var(--fs-sm)">支持 <span class="mono">~</span> 展开；目录不存在会自动创建。</span>
+      <span class="muted" style="font-size:var(--fs-sm)">
+        支持 <span class="mono">~</span> 展开；目录不存在会自动创建。
+        已导出过的文章会自动跳过，不重复联网。
+      </span>
     </div>
     <template #foot>
       <SButton variant="ghost" @click="exportDirOpen = false">取消</SButton>
-      <SButton variant="primary" @click="confirmExportDir">导出到目录</SButton>
+      <SButton variant="primary" @click="confirmExportDir">开始导出</SButton>
     </template>
   </SModal>
 
