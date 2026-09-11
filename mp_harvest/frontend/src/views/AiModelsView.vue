@@ -8,6 +8,7 @@ import SegmentedControl from '../components/SegmentedControl.vue'
 import SSwitch from '../components/SSwitch.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import EmptyState from '../components/EmptyState.vue'
+import { copyText } from '../api/desktop'
 import { useSettingsStore } from '../stores/settings'
 import { useUiStore } from '../stores/ui'
 import type { AiModel } from '../types'
@@ -52,12 +53,9 @@ function testErrorOf(m: AiModel): string {
 async function copyTestError(m: AiModel) {
   const text = testErrorOf(m)
   if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    ui.toast('错误信息已复制')
-  } catch {
-    ui.error('复制失败，请手动选择错误文本')
-  }
+  // 统一走 copyText（含 execCommand 兜底），而不是直接调剪贴板 API
+  if (await copyText(text)) ui.toast('错误信息已复制')
+  else ui.error('复制失败，请手动选择错误文本')
 }
 
 function fetchingOf(m: AiModel) {

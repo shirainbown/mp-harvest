@@ -76,7 +76,7 @@ def test_batch_export_writes_html_files_and_index():
         assert result["failed"] == 0
         assert result["fmt"] == "html"
         # 逐篇 HTML
-        html_files = [p for p in out.glob("*.html") if p.name != "index.html"]
+        html_files = [p for p in out.rglob("*.html") if p.name != "index.html"]
         assert len(html_files) == 2
         assert all(p.read_text(encoding="utf-8").startswith("<!doctype html>") for p in html_files)
         # 文件名：日期_公众号_行标题_hash8（拉取前确定，幂等；不含批次序号，B6）
@@ -124,10 +124,10 @@ def test_batch_export_is_idempotent_across_batches():
         )
         assert r2["exported"] == 1 and r2["skipped"] == 1
         assert calls == ["https://mp.weixin.qq.com/s/a1", "https://mp.weixin.qq.com/s/b1"]  # a1 未重复拉取
-        html_files = [p for p in out.glob("*.html") if p.name != "index.html"]
+        html_files = [p for p in out.rglob("*.html") if p.name != "index.html"]
         assert len(html_files) == 2  # 不产生副本
         # 文件被删后重跑：重新拉取（remove_missing 语义）
-        (out / f"{r1['written'][0].split('/')[-1]}").unlink()
+        Path(r1["written"][0]).unlink()
         records.remove_missing()
         r3 = batch_export_articles([row], out_dir=out, fetch_article=fake_fetch, records=records)
         assert r3["exported"] == 1 and r3["skipped"] == 0

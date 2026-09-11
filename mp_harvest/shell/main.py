@@ -214,6 +214,26 @@ def main(argv: list[str] | None = None) -> int:
                 return str(picked[0]) if picked else ""
             return str(picked)
 
+        def open_external(self, url: str) -> bool:
+            """在系统默认浏览器里打开链接；成功返回 True。
+
+            必须由 shell 侧打开：pywebview/Cocoa 只把「真人点击 <a>」
+            （WKNavigationTypeLinkActivated）交给系统浏览器，JS 的
+            window.open(url,'_blank') 属于 Other，会被静默丢弃 ——
+            表现为「点『打开』没反应」（2026-09 修复）。
+            """
+            target = str(url or "").strip()
+            if not target:
+                return False
+            if not target.lower().startswith(("http://", "https://")):
+                return False
+            try:
+                import webbrowser
+
+                return bool(webbrowser.open(target, 2, True))
+            except Exception:  # noqa: BLE001
+                return False
+
     js_api = JsApi()
     window = webview.create_window(
         "MP Harvest",

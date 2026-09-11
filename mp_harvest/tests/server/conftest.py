@@ -573,7 +573,9 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def client(fake_core, fake_platform, isolated_data_dir):
+def client(isolated_data_dir, fake_core, fake_platform):
+    # 注意顺序：isolated_data_dir 必须先于 fake_core 实例化——后者会把假模块
+    # 塞进 sys.modules 并绑定到父包属性，之后再 `import mp_harvest.core.*` 会解析到假包。
     from fastapi.testclient import TestClient
 
     from mp_harvest.server.app import create_app

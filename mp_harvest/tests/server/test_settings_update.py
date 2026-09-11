@@ -83,6 +83,53 @@ def test_update_check_failure_structured(client, auth, fake_platform, monkeypatc
     assert resp.json()["ok"] is False
 
 
+def _spy_check(fake_platform, monkeypatch, seen: list):
+    from mp_harvest.infra.platform.base import UpdateCheckResult
+
+    def _check(proxy=None):
+        seen.append(proxy)
+        return UpdateCheckResult(ok=True, available=False, version="v2.1.19", message="ok")
+
+    monkeypatch.setattr(fake_platform.updater, "check", _check)
+
+
+def test_update_check_direct_mode_ignores_stored_proxy(client, auth, fake_platform, monkeypatch):
+    """回归：mode=direct 时必须忽略 settings 里残留的自定义代理地址。
+
+    旧版 _settings_proxy 只看 proxy 键，用户切回直连后残留的代理地址仍生效，
+    「直连」实际走 Clash 中转 → 共享出口被 GitHub 限流 → 检查更新永远失败。
+    """
+    import sys
+
+    fake_settings = sys.modules["mp_harvest.core.settings"]
+    monkeypatch.setattr(
+        fake_settings,
+        "load_settings",
+        lambda: {"mode": "direct", "proxy": "http://127.0.0.1:7897"},
+    )
+    seen: list = []
+    _spy_check(fake_platform, monkeypatch, seen)
+    resp = client.get("/api/update/check", params=auth)
+    assert resp.status_code == 200
+    assert seen == [None], f"直连模式不应使用存储的代理地址，实际传入: {seen}"
+
+
+def test_update_check_custom_mode_uses_proxy(client, auth, fake_platform, monkeypatch):
+    import sys
+
+    fake_settings = sys.modules["mp_harvest.core.settings"]
+    monkeypatch.setattr(
+        fake_settings,
+        "load_settings",
+        lambda: {"mode": "custom", "proxy": "http://127.0.0.1:7897"},
+    )
+    seen: list = []
+    _spy_check(fake_platform, monkeypatch, seen)
+    resp = client.get("/api/update/check", params=auth)
+    assert resp.status_code == 200
+    assert seen == ["http://127.0.0.1:7897"]
+
+
 def test_update_download_task(client, auth):
     resp = client.post(
         "/api/update/download", params=auth, json={"zip_url": "https://x/y.zip"}

@@ -72,7 +72,18 @@ def _normalize(value: Any) -> Any:
 def get_settings() -> dict:
     from mp_harvest.core import settings as settings_mod
 
-    return {"settings": {**SETTING_DEFAULTS, **settings_mod.load_settings()}}
+    # 附带后端探测到的系统代理：mode=system 时如果这里是空的，
+    # 说明系统没配代理（界面会给提示），便于排查「跟随了但连不上」
+    from mp_harvest.infra.platform.base import _system_proxy
+
+    try:
+        detected = _system_proxy()
+    except Exception:  # noqa: BLE001
+        detected = ""
+    return {
+        "settings": {**SETTING_DEFAULTS, **settings_mod.load_settings()},
+        "system_proxy": detected,
+    }
 
 
 @router.put("/api/settings")

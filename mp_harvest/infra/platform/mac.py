@@ -576,6 +576,9 @@ def _build_apply_script(*, pkg: Path, install_dir: Path, pid: int) -> str:
 
 class MacUpdater(GithubUpdater):
     asset_suffix = ".zip"
+    # CI 产物命名（.github/workflows/build-macos.yml）：MP-Harvest-mac-<ver>.zip
+    # 只在「API 被限流 → atom 兜底」时用来拼下载地址
+    asset_prefix = "MP-Harvest-mac-"
 
     def apply(self, package_path: str | Path) -> None:
         """生成「等待退出 → 替换 .app → 重新打开」shell 脚本并后台启动。"""

@@ -149,7 +149,7 @@ def test_skip_by_article_not_filename(tmp_path):
     res = batch_export_articles([_art(1, title="标题B")], out_dir=out,
                                 fetch_article=_fetch, records=db)
 
-    files = [p.name for p in out.glob("*.html") if p.name != "index.html"]
+    files = [p.relative_to(out).as_posix() for p in out.rglob("*.html") if p.name != "index.html"]
     assert len(files) == 1, files
     assert res["skipped"] == 1 and res["exported"] == 0
 
@@ -471,3 +471,255 @@ def test_normalize_empty_export_dir_is_blank():
     assert _normalize("") == ""
     assert _normalize("   ") == ""
     assert os.path.isabs(_normalize("~/Downloads/x"))
+
+
+# ── 检查更新（2026-09：GitHub API 限流）──────────────────────────────
+
+
+def test_update_check_falls_back_to_atom_on_rate_limit(monkeypatch):
+    """API 返回 403 限流时回退到 releases.atom，而不是报「无法访问 GitHub」。
+
+    实测：未认证的 GitHub API 每小时仅 60 次（走共享代理出口更易耗尽），
+    旧代码把它当成网络故障 → 界面提示「无法访问 GitHub（请检查网络 / 代理设置）」，
+    用户读作「无法连接 github」。
+    """
+    import urllib.error
+
+    from mp_harvest.infra.platform import base as pb
+    from mp_harvest.infra.platform.mac import MacUpdater
+
+    atom = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/123456/v9.9.9</id>
+    <title>v9.9.9</title>
+    <content type="html">&lt;h2&gt;修复若干问题&lt;/h2&gt;</content>
+  </entry>
+</feed>"""
+
+    class _Resp:
+        status = 200
+
+        def __init__(self, body: str) -> None:
+            self._body = body.encode()
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a) -> None:
+            return None
+
+    class _Opener:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            url = getattr(req, "full_url", str(req))
+            if "api.github.com" in url:
+                raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+            return _Resp(atom)
+
+    monkeypatch.setattr(pb.GithubUpdater, "_opener", lambda self, proxy: _Opener())
+
+    result = MacUpdater().check(proxy="http://127.0.0.1:7897")
+
+    assert result.ok is True, result
+    assert result.version == "v9.9.9", result
+    # 下载地址按 CI 命名约定拼（MP-Harvest-mac-<ver>.zip）
+    assert result.zip_url.endswith("/v9.9.9/MP-Harvest-mac-9.9.9.zip"), result.zip_url
+    assert "修复若干问题" in result.notes, result.notes
+
+
+def test_update_check_reports_rate_limit_when_atom_also_fails(monkeypatch):
+    """连 atom 兜底也失败时，提示语要区分「限流」与「网络不通」。"""
+    import urllib.error
+
+    from mp_harvest.infra.platform import base as pb
+    from mp_harvest.infra.platform.mac import MacUpdater
+
+    class _Opener:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            raise urllib.error.HTTPError(
+                getattr(req, "full_url", "x"), 403, "rate limit exceeded", {}, None
+            )
+
+    monkeypatch.setattr(pb.GithubUpdater, "_opener", lambda self, proxy: _Opener())
+
+    result = MacUpdater().check(proxy=None)
+    assert result.ok is False
+    assert "限流" in result.message, result.message
+
+
+def test_system_proxy_uses_scutil_when_getproxies_empty(monkeypatch):
+    """_scproxy 缺失（冻结版常见）时，仍能通过 scutil --proxy 拿到系统代理。"""
+    import urllib.request
+
+    from mp_harvest.infra.platform import base as pb
+
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+    scutil_out = """<dictionary> {
+  HTTPEnable : 0
+  HTTPSEnable : 1
+  HTTPSPort : 7897
+  HTTPSProxy : 127.0.0.1
+}"""
+    monkeypatch.setattr(pb.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **k: type("P", (), {"stdout": scutil_out, "returncode": 0})(),
+    )
+    assert pb._system_proxy() == "http://127.0.0.1:7897"
+
+
+# ── 导出按日期归档（2026-09 需求）────────────────────────────────────
+
+
+def _dated_art(i: int, publish_at: str, title: str) -> dict:
+    return {
+        "identity": f"d{i}",
+        "link": f"https://mp.weixin.qq.com/s/D{i}",
+        "title": title,
+        "publish_at": publish_at,
+        "publish_ts": 0,
+        "_account_id": "acc1",
+        "account": "测试号",
+        "body_html": f'<img src="https://mmbiz.qpic.cn/IMG-{i}.jpg">',
+    }
+
+
+def test_export_groups_files_by_month(tmp_path):
+    """按发布日期归档到 YYYY-MM/；日期缺失的落根目录（不硬塞进错误月份）。"""
+    out = tmp_path / "out"
+    db = ExportRecords(out / "db")
+    arts = [
+        _dated_art(1, "2026-08-05 10:00", "八月文章"),
+        _dated_art(2, "2026-09-01 09:00", "九月文章"),
+        _dated_art(3, "", "无日期文章"),
+    ]
+    by_link = {a["link"]: a for a in arts}
+
+    def fetch(url: str, cred=None):
+        a = by_link[url]
+        return {
+            "title": a["title"],
+            "link": url,
+            "body_html": a["body_html"],
+            "body_text": "x",
+            "publish_at": a["publish_at"],
+            "publish_ts": 0,
+        }
+
+    res = batch_export_articles(arts, out_dir=out, fetch_article=fetch, records=db)
+    assert res["exported"] == 3, res
+
+    bodies = sorted(
+        p.relative_to(out).as_posix() for p in out.rglob("*.html") if p.name != "index.html"
+    )
+    assert any(b.startswith("2026-08/") for b in bodies), bodies
+    assert any(b.startswith("2026-09/") for b in bodies), bodies
+    assert any("/" not in b for b in bodies), bodies  # 无日期 → 根目录
+
+
+def test_export_index_links_are_relative(tmp_path):
+    """目录页的 file 必须是相对 out_dir 的路径，且指向真实文件（归档到子目录后仍可点）。"""
+    import re
+
+    out = tmp_path / "out"
+    db = ExportRecords(out / "db")
+    arts = [_dated_art(1, "2026-08-05 10:00", "八月文章")]
+    by_link = {a["link"]: a for a in arts}
+
+    def fetch(url: str, cred=None):
+        a = by_link[url]
+        return {"title": a["title"], "link": url, "body_html": a["body_html"],
+                "body_text": "x", "publish_at": a["publish_at"], "publish_ts": 0}
+
+    batch_export_articles(arts, out_dir=out, fetch_article=fetch, records=db)
+
+    index = (out / "index.html").read_text(encoding="utf-8")
+    files = set(re.findall(r'href="([^"]+\.html)"', index))
+    assert files, index
+    for rel in files:
+        assert (out / rel).is_file(), rel
+        assert rel.startswith("2026-08/"), rel
+
+
+def test_subdir_article_images_use_parent_relative_path(tmp_path, monkeypatch):
+    """归档到子目录后，图片引用必须是 ../assets/… 否则图片全断。"""
+    import re
+
+    from mp_harvest.core import article_reader as ar
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            self.content = body
+            self.headers = {"Content-Type": "image/jpeg"}
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class _Sess:
+        def __init__(self, *a, **k) -> None:
+            self.trust_env = True
+
+        def get(self, url, **k):
+            return _Resp(("B:" + url).encode())
+
+    monkeypatch.setattr(ar.requests, "Session", _Sess)
+
+    out = tmp_path / "out"
+    db = ExportRecords(out / "db")
+    arts = [
+        _dated_art(1, "2026-08-05 10:00", "八月文章"),
+        _dated_art(2, "", "无日期文章"),
+    ]
+    by_link = {a["link"]: a for a in arts}
+
+    def fetch(url: str, cred=None):
+        a = by_link[url]
+        return {"title": a["title"], "link": url, "body_html": a["body_html"],
+                "body_text": "x", "publish_at": a["publish_at"], "publish_ts": 0}
+
+    batch_export_articles(arts, out_dir=out, fetch_article=fetch,
+                          download_images=True, records=db)
+
+    for html in (p for p in out.rglob("*.html") if p.name != "index.html"):
+        refs = re.findall(r'src="([^"]*assets/[^"]+)"', html.read_text(encoding="utf-8"))
+        assert refs, html
+        for ref in refs:
+            assert (html.parent / ref).resolve().is_file(), f"{html.name} -> {ref}"
+        expected = "../assets/" if html.parent != out else "assets/"
+        assert refs[0].startswith(expected), (html.name, refs[0])
+
+
+def test_update_proxy_respects_three_modes(data_dir, monkeypatch):
+    """更新代理三态：直连不带出残留值 / 跟随系统代理 / 自定义。
+
+    另外「未配置时按跟随系统代理处理」是新装默认 —— 否则国内用户开着 Clash
+    也永远「检查更新失败」。
+    """
+    import json
+
+    import mp_harvest.infra.platform.base as pb
+    from mp_harvest.server.routes.update import _settings_proxy
+
+    monkeypatch.setattr(pb, "_system_proxy", lambda: "http://127.0.0.1:7899")
+    path = data_dir / "settings.json"
+
+    if path.exists():
+        path.unlink()
+    assert _settings_proxy() == "http://127.0.0.1:7899", "未配置时应跟随系统代理"
+
+    path.write_text(json.dumps({"mode": "system"}), encoding="utf-8")
+    assert _settings_proxy() == "http://127.0.0.1:7899"
+
+    # 直连：即使残留着自定义地址也不能带出来走代理
+    path.write_text(
+        json.dumps({"mode": "direct", "proxy": "http://127.0.0.1:7897"}), encoding="utf-8"
+    )
+    assert _settings_proxy() == ""
+
+    path.write_text(
+        json.dumps({"mode": "custom", "proxy": "http://127.0.0.1:7897"}), encoding="utf-8"
+    )
+    assert _settings_proxy() == "http://127.0.0.1:7897"

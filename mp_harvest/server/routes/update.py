@@ -15,10 +15,26 @@ router = APIRouter(tags=["update"])
 
 
 def _settings_proxy() -> str:
+    """按「网络设置」的 mode 决定更新代理。
+
+    mode=direct（直连）时**必须忽略残留的 proxy 值**——旧版 UI 切回直连后仍把
+    自定义代理地址留在 settings 里，这里若不过滤就会继续走该代理（实测导致
+    「直连」永远经 Clash 中转，共享出口被 GitHub 限流 → 检查更新总是失败）。
+    """
     try:
         from mp_harvest.core import settings as settings_mod
 
-        return str(settings_mod.load_settings().get("proxy") or "").strip()
+        s = settings_mod.load_settings()
+        # 未配置时按「跟随系统代理」处理（桌面应用的通行默认），这样新装用户
+        # 开着 Clash 就能直接检查更新；显式选了「直连」才真的不走代理。
+        mode = str(s.get("mode") or "system").strip().lower()
+        if mode == "custom":
+            return str(s.get("proxy") or "").strip()
+        if mode == "system":
+            from mp_harvest.infra.platform.base import _system_proxy
+
+            return _system_proxy()
+        return ""
     except Exception:  # noqa: BLE001
         return ""
 

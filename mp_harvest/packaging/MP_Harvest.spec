@@ -58,6 +58,10 @@ for pkg in (
         pass
 
 hiddenimports += [
+    # macOS 系统代理读取（urllib.request.getproxies 依赖它）。
+    # 不打包的话冻结版 getproxies() 会静默返回空 → 直连 GitHub →
+    # 「检查更新：无法连接 github」（2026-09 实测定位）。
+    "_scproxy",
     "brotli",
     "certifi",
     "sortedcontainers",

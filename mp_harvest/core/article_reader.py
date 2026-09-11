@@ -289,8 +289,38 @@ def _img_ext(src: str, content_type: str = "") -> str:
     return ".jpg"
 
 
-def localize_images(body_html: str, assets_dir: Path, prefix: str = "") -> str:
-    """下载正文图片到 ``assets_dir``，src 改写为 ``<assets_dir.name>/<文件>`` 相对路径。
+def _date_subdir(row: dict[str, Any]) -> str:
+    """导出归档用的日期子目录名（``YYYY-MM``）。
+
+    日期取不到时返回空串 → 落在导出根目录（不硬塞进错误的月份）。
+    """
+    raw = str(row.get("publish_at") or "").strip()
+    m = re.match(r"(\d{4})-(\d{2})", raw)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    ts = int(row.get("publish_ts") or 0)
+    if ts:
+        try:
+            return datetime.fromtimestamp(ts).strftime("%Y-%m")
+        except Exception:  # noqa: BLE001
+            return ""
+    return ""
+
+
+def _relative_to(out_dir: Path, path: Path) -> str:
+    """path 相对 out_dir 的 posix 路径（目录页链接用）；不在其下则退回文件名。"""
+    try:
+        return path.relative_to(out_dir).as_posix()
+    except Exception:  # noqa: BLE001
+        return path.name
+
+
+def localize_images(body_html: str, assets_dir: Path, prefix: str = "", rel_dir: str = "") -> str:
+    """下载正文图片到 ``assets_dir``，src 改写为相对本 HTML 的路径。
+
+    ``rel_dir`` 是「从这篇文章的 HTML 到 assets_dir」的相对前缀：文章放在
+    日期子目录（``2026-08/``）里时必须是 ``../assets``，否则图片引用全断
+    （2026-09 支持按日期归档时一并处理）。留空则用 ``assets_dir.name``。
 
     ``prefix`` 必须按**文章**区分（2026-09 修复）：``assets/`` 是整个导出目录
     共享的，而 ``n`` 只是篇内序号 —— 不带 prefix 时每篇的 ``img_001.jpg`` 互相
@@ -333,7 +363,8 @@ def localize_images(body_html: str, assets_dir: Path, prefix: str = "") -> str:
             (assets_dir / fname).write_bytes(resp.content)
         except Exception:
             continue
-        img["src"] = f"{assets_dir.name}/{fname}"
+        rel = (rel_dir or "").strip().strip("/") or assets_dir.name
+        img["src"] = f"{rel}/{fname}"
     return str(soup)
 
 
@@ -346,6 +377,7 @@ def render_article_html(
     account: str = "",
     download_images: bool = False,
     assets_dir: Path | str | None = None,
+    assets_rel: str = "",
 ) -> str:
     """用 templates/article.html 渲染单文件自包含 HTML（设计稿 §6.2）。"""
     title = str(art.get("title") or "(无标题)").strip()
@@ -365,6 +397,7 @@ def render_article_html(
             body,
             Path(assets_dir) if assets_dir else Path("assets"),
             prefix=_article_content_hash(link=link) if link else "",
+            rel_dir=assets_rel,
         )
 
     template = _JINJA.get_template("article.html")
@@ -384,6 +417,7 @@ def write_article_export(
     account: str = "",
     download_images: bool = False,
     assets_dir: Path | str | None = None,
+    assets_rel: str = "",
 ) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -393,6 +427,7 @@ def write_article_export(
             account=account,
             download_images=download_images,
             assets_dir=assets_dir,
+            assets_rel=assets_rel,
         ),
         encoding="utf-8",
     )
@@ -619,7 +654,7 @@ def _index_rows_from_records(
                 "publish_at": "",
                 "publish_ts": str(int(r.get("publish_ts") or 0)),
                 "account": str(r.get("account_name") or ""),
-                "file": Path(out_path).name,
+                "file": _relative_to(out_dir, Path(out_path)),
                 "link": str(r.get("link") or ""),
                 "keep": None if keep is None else bool(keep),
                 "reason": str(r.get("reason") or ""),
@@ -658,16 +693,19 @@ def _write_index_from_records(
 
 
 def _batch_index_row(
-    row: dict[str, Any], path: Path, title: str, account: str
+    row: dict[str, Any], path: Path, title: str, account: str, out_dir: Path
 ) -> dict[str, Any]:
-    """本批次行 → 目录页行（记录库不可用时的兜底）。"""
+    """本批次行 → 目录页行（记录库不可用时的兜底）。
+
+    ``file`` 是相对 out_dir 的路径（支持按日期归档到子目录后仍能点开）。
+    """
     keep = row.get("keep")
     return {
         "title": title or "(无标题)",
         "publish_at": str(row.get("publish_at") or ""),
         "publish_ts": str(int(row.get("publish_ts") or 0)),
         "account": account,
-        "file": path.name,
+        "file": _relative_to(out_dir, path),
         "link": str(row.get("link") or ""),
         "keep": keep if isinstance(keep, bool) else None,
         "reason": str(row.get("reason") or ""),
@@ -735,13 +773,18 @@ def batch_export_articles(
         article_id = str(row.get("identity") or link)
         hash8 = _article_content_hash(link=link)
         acct = str(row.get("account") or account_name or "")
-        path = out_dir / safe_export_filename(
+        fname = safe_export_filename(
             title,
             ext="html",
             date=str(row.get("publish_at") or ""),
             account=acct,
             content_hash=hash8,
         )
+        # 按发布日期归档到 YYYY-MM/ 子目录（2026-09 需求）；日期拿不到就放根目录
+        date_sub = _date_subdir(row)
+        path = (out_dir / date_sub / fname) if date_sub else (out_dir / fname)
+        # 图片仍统一放 out_dir/assets，但引用要按文章所在层级回退
+        assets_rel = "../" * (len(path.parent.relative_to(out_dir).parts)) + "assets"
         # 1) 已导出过**这一篇** → 复用已有文件、跳过 HTTP。
         #    按 article_id 反查而非 (article_id, 文件名)：标题/链接参数漂移会算出
         #    新文件名，旧写法会当成新文章重复导出（2026-09 修复）。
@@ -750,7 +793,7 @@ def batch_export_articles(
             prev_path = Path(str(prev.get("out_path") or ""))
             if str(prev_path) and prev_path.is_file():
                 skipped_n += 1
-                batch_rows.append(_batch_index_row(row, prev_path, title, acct))
+                batch_rows.append(_batch_index_row(row, prev_path, title, acct, out_dir))
                 # 刷新元数据（标题可能已变），保留原 out_path 不产生新文件
                 store.record_export(
                     article_id=article_id,
@@ -794,6 +837,7 @@ def batch_export_articles(
                 account=acct,  # 真实账号名；反查不到才退回 account_name（B7）
                 download_images=download_images,
                 assets_dir=out_dir / "assets",
+                assets_rel=assets_rel,
             )
             written.append(str(path))
             store.record_export(
@@ -814,7 +858,9 @@ def batch_export_articles(
                 bytes_count=path.stat().st_size,
             )
             exported_n += 1
-            batch_rows.append(_batch_index_row(row, Path(str(path)), final_title, acct))
+            batch_rows.append(
+                _batch_index_row(row, Path(str(path)), final_title, acct, out_dir)
+            )
         except Exception as exc:  # noqa: BLE001
             failed_n += 1
             errors.append(f"{title}: {exc}")

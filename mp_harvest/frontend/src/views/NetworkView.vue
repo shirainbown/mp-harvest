@@ -12,7 +12,7 @@ onMounted(() => {
   if (!settings.loaded) settings.load()
 })
 
-function setMode(mode: 'direct' | 'custom') {
+function setMode(mode: 'direct' | 'system' | 'custom') {
   settings.network.mode = mode
   settings.saveNetwork()
 }
@@ -37,8 +37,23 @@ const platformLines = computed(() => {
   <div class="page-body">
     <div class="panel">
       <div class="panel-title">更新与下载代理</div>
+      <div class="radio-row" @click="setMode('system')">
+        <span class="radio" :class="{ on: settings.network.mode === 'system' }"></span>跟随系统代理
+      </div>
+      <div
+        v-if="settings.network.mode === 'system'"
+        class="tertiary"
+        style="font-size:var(--fs-xs);padding-left:22px;margin-bottom:var(--sp-1)"
+      >
+        <template v-if="settings.systemProxy">
+          当前系统代理：<span class="mono">{{ settings.systemProxy }}</span>
+        </template>
+        <template v-else>
+          未检测到系统代理 —— 若检查更新/下载失败，请改用「自定义 HTTP 代理」
+        </template>
+      </div>
       <div class="radio-row" @click="setMode('direct')">
-        <span class="radio" :class="{ on: settings.network.mode === 'direct' }"></span>直连 / 系统代理
+        <span class="radio" :class="{ on: settings.network.mode === 'direct' }"></span>直连（不使用代理）
       </div>
       <div class="radio-row" @click="setMode('custom')">
         <span class="radio" :class="{ on: settings.network.mode === 'custom' }"></span>自定义 HTTP 代理

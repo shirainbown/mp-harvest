@@ -8,6 +8,7 @@ import STooltip from '../components/STooltip.vue'
 import EmptyState from '../components/EmptyState.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import ImportDrawer from './ImportDrawer.vue'
+import { openExternal } from '../api/desktop'
 import { useAccountsStore } from '../stores/accounts'
 import { useUiStore } from '../stores/ui'
 import { useTicker, fmtCountdown } from '../composables/useTicker'
@@ -90,7 +91,8 @@ function dotCls(a: Account) {
 
 // ---- 行内操作 ----
 function openLink(a: Account) {
-  window.open(a.url, '_blank', 'noopener')
+  // 必须走 shell 的 open_external：window.open(_blank) 在 pywebview 里是静默空操作
+  if (!openExternal(a.url)) ui.error('打开失败：该公众号没有可用的文章链接')
 }
 
 const importOpen = ref(false)

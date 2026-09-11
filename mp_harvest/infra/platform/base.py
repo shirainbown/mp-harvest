@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from mp_harvest.infra.platform import paths
 
-APP_VERSION = "2.1.18"
+APP_VERSION = "2.1.20"
 
 _SSL_CONTEXT = None
 
@@ -49,6 +49,54 @@ def _make_ssl_context():
 GITHUB_REPO = os.environ.get("MP_HARVEST_GITHUB_REPO", "shirainbown/mp-harvest").strip()
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASE_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+# API 被限流时的兜底：atom feed 不消耗 API 配额、不需要认证
+RELEASES_ATOM = f"https://github.com/{GITHUB_REPO}/releases.atom"
+
+
+def _system_proxy() -> str:
+    """当前系统代理（返回 ``http://host:port``，取不到返回空串）。
+
+    供「网络设置 → 更新与下载代理」的三种模式使用（见 routes/update.py
+    的 ``_settings_proxy``）：``direct`` 不走代理、``system`` 走这里探测到的
+    系统代理、``custom`` 走用户填写的地址。未配置时按 ``system`` 处理 ——
+    国内用户开着 Clash 时这是唯一开箱即用的选项。
+
+    注意一个坑：``urllib.request.ProxyHandler()`` 空参会调 ``getproxies()``，
+    而 macOS 上它依赖 ``_scproxy`` 这个 C 扩展；PyInstaller 冻结后一旦漏打包，
+    ``getproxies()`` 会**静默返回空**（spec 已显式打包 ``_scproxy``）。所以本函数
+    在 ``getproxies()`` 之外还补了一条不依赖 C 扩展的 ``scutil --proxy`` 读取。
+    """
+    import urllib.request
+
+    try:
+        proxies = urllib.request.getproxies()
+        for key in ("https", "http"):
+            val = str(proxies.get(key) or "").strip()
+            if val:
+                return val if "://" in val else f"http://{val}"
+    except Exception:  # noqa: BLE001
+        pass
+
+    if sys.platform == "darwin":
+        import re
+        import subprocess
+
+        vals: dict[str, str] = {}
+        try:
+            out = subprocess.run(
+                ["scutil", "--proxy"], capture_output=True, text=True, timeout=10
+            ).stdout or ""
+            for m in re.finditer(r"(\w+)\s*:\s*(\S+)", out):
+                vals[m.group(1)] = m.group(2)
+        except Exception:  # noqa: BLE001
+            return ""
+        for scheme in ("HTTPS", "HTTP"):
+            if vals.get(f"{scheme}Enable") == "1":
+                host = vals.get(f"{scheme}Proxy", "")
+                port = vals.get(f"{scheme}Port", "")
+                if host and port:
+                    return f"http://{host}:{port}"
+    return ""
 
 
 class PlatformError(RuntimeError):
@@ -268,21 +316,79 @@ class GithubUpdater(Updater):
     """基于 GitHub Releases 的更新器基类；子类只实现 :meth:`apply` 与 asset 后缀。"""
 
     asset_suffix: str = ".zip"
+    # atom 兜底时按命名约定拼下载地址用；留空 = 不猜地址（只报版本 + 发布页）
+    asset_prefix: str = ""
     check_timeout: int = 12
     download_timeout: int = 600
 
     def _opener(self, proxy: str | None):
         import urllib.request
 
-        if proxy and str(proxy).strip():
-            handler = urllib.request.ProxyHandler(
-                {"http": proxy.strip(), "https": proxy.strip()}
-            )
+        # 只认调用方显式传入的代理（由「网络设置」的 mode 决定：直连 = 真的直连）。
+        # 不要在这里自动回退到系统代理 —— UI 上「直连（不使用代理）」就是这个意思。
+        effective = str(proxy).strip() if proxy and str(proxy).strip() else ""
+        if effective:
+            handler = urllib.request.ProxyHandler({"http": effective, "https": effective})
         else:
-            handler = urllib.request.ProxyHandler()
+            # 显式空 dict：不要再让 ProxyHandler 去读一次环境（拿不到就是没代理）
+            handler = urllib.request.ProxyHandler({})
         return urllib.request.build_opener(
             handler,
             urllib.request.HTTPSHandler(context=_make_ssl_context()),
+        )
+
+    def _check_via_atom(self, proxy: str | None) -> UpdateCheckResult | None:
+        """API 不可用时的兜底：读 ``releases.atom``（不消耗配额、不需要认证）。
+
+        返回 ``None`` 表示兜底也失败，调用方按原错误处理（2026-09 修复）。
+        """
+        import html as html_mod
+        import re
+        import urllib.request
+
+        try:
+            req = urllib.request.Request(
+                RELEASES_ATOM,
+                headers={
+                    "User-Agent": "MP Harvest-update-check",
+                    "Accept": "application/atom+xml",
+                },
+            )
+            with self._opener(proxy).open(req, timeout=self.check_timeout) as resp:  # noqa: S310
+                xml = resp.read().decode("utf-8", "ignore")
+        except Exception:  # noqa: BLE001
+            return None
+
+        entry_m = re.search(r"<entry>(.*?)</entry>", xml, re.S)
+        if not entry_m:
+            return None
+        entry = entry_m.group(1)
+        tag_m = re.search(r"tag:github\.com,\d+:Repository/\d+/([^<]+)</id>", entry)
+        if not tag_m:
+            return None
+        tag = tag_m.group(1).strip()
+        if not tag:
+            return None
+
+        notes = ""
+        content_m = re.search(r'<content type="html">(.*?)</content>', entry, re.S)
+        if content_m:
+            notes = html_mod.unescape(content_m.group(1)).strip()
+
+        zip_url = ""
+        if self.asset_prefix:
+            # 按仓库约定拼：CI 产物名为 MP-Harvest-mac-<ver>.zip
+            zip_url = (
+                f"https://github.com/{GITHUB_REPO}/releases/download/"
+                f"{tag}/{self.asset_prefix}{tag.lstrip('v')}{self.asset_suffix}"
+            )
+        return UpdateCheckResult(
+            ok=True,
+            available=_parse_version(tag) > _parse_version(APP_VERSION),
+            version=tag,
+            release_url=f"https://github.com/{GITHUB_REPO}/releases/tag/{tag}",
+            zip_url=zip_url,
+            notes=notes,
         )
 
     def check(self, proxy: str | None = None) -> UpdateCheckResult:
@@ -306,9 +412,21 @@ class GithubUpdater(Updater):
             with self._opener(proxy).open(req, timeout=self.check_timeout) as resp:  # noqa: S310
                 payload = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
+            # 未认证的 GitHub API 每小时只有 60 次（走共享代理出口更易耗尽），
+            # 这是限流而非网络故障；改走不限流的 atom feed 兜底（2026-09 修复）。
+            fallback = self._check_via_atom(proxy)
+            if fallback is not None:
+                return fallback
+            import urllib.error
+
+            rate_limited = isinstance(exc, urllib.error.HTTPError) and exc.code == 403
             return UpdateCheckResult(
                 ok=False,
-                message="无法访问 GitHub（请检查网络 / 代理设置）",
+                message=(
+                    "GitHub API 限流（未认证每小时 60 次），请稍后重试"
+                    if rate_limited
+                    else "无法访问 GitHub（请在「网络设置」里配置 HTTP 代理）"
+                ),
                 error=str(exc),
             )
         tag = str(payload.get("tag_name") or "")

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import type { Account, CaStatus, ImportItem, MitmStatus } from '../types'
 import { call, rest, LONG_TIMEOUT } from '../api/rest'
+import { copyText } from '../api/desktop'
 import { useUiStore } from './ui'
 import { MOCK } from '../config'
 
@@ -82,8 +83,12 @@ export const useAccountsStore = defineStore('accounts', {
       }
       const data = await call(rest.get<unknown>(`/api/accounts/${a.id}/credential`))
       if (data !== null) {
-        await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
-        useUiStore().toast('凭证 JSON 已复制')
+        // 看真实结果：剪贴板被拒时不能再弹「已复制」
+        if (await copyText(JSON.stringify(data, null, 2))) {
+          useUiStore().toast('凭证 JSON 已复制')
+        } else {
+          useUiStore().error('复制失败，请手动复制凭证')
+        }
       }
     },
     async toggleMitm() {

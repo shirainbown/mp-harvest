@@ -85,7 +85,8 @@ export interface PlatformInfo {
 }
 
 export interface NetworkSettings {
-  mode: 'direct' | 'custom'
+  /** direct=不走代理；system=跟随系统代理（macOS 读 scutil）；custom=用下面填的地址 */
+  mode: 'direct' | 'system' | 'custom'
   proxy_url: string
 }
 

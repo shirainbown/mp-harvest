@@ -23,7 +23,10 @@ export const useSettingsStore = defineStore('settings', {
     defaultPrinciples: '',
     contentPrinciples: '',
     defaultContentPrinciples: '',
-    network: { mode: 'direct', proxy_url: '' } as NetworkSettings,
+    // 默认「跟随系统代理」：国内用户开着 Clash 时，检查更新/下载开箱即用
+    network: { mode: 'system', proxy_url: '' } as NetworkSettings,
+    /** 后端探测到的系统代理（只读展示，帮助排查「跟随了但没代理」） */
+    systemProxy: '' as string,
     platform: null as PlatformInfo | null,
     testResults: {} as Record<string, ModelTestResult | 'testing'>,
     modelLists: {} as Record<string, string[]>,
@@ -55,7 +58,13 @@ export const useSettingsStore = defineStore('settings', {
         call(rest.get<{ models: AiModel[] }>('/api/ai/models')),
         call(rest.get<{ text: string; default: string }>('/api/ai/principles')),
         call(rest.get<{ text: string; default: string }>('/api/ai/content-principles')),
-        call(rest.get<{ settings: Partial<NetworkSettings> & { proxy?: string } & Record<string, unknown> }>('/api/settings')),
+        call(
+          rest.get<{
+            settings: Partial<NetworkSettings> & { proxy?: string } & Record<string, unknown>
+            /** 后端探测到的系统代理（只读，帮助排查「跟随了但连不上」） */
+            system_proxy?: string
+          }>('/api/settings'),
+        ),
         call(rest.get<PlatformInfo>('/api/platform')),
       ])
       // 装载期间抑制模型自动保存（deep watch 会随赋值触发）
@@ -76,9 +85,10 @@ export const useSettingsStore = defineStore('settings', {
       if (network) {
         const s = network.settings || {}
         this.network = {
-          mode: s.mode === 'custom' ? 'custom' : 'direct',
+          mode: s.mode === 'custom' ? 'custom' : s.mode === 'direct' ? 'direct' : 'system',
           proxy_url: s.proxy ?? s.proxy_url ?? '',
         }
+        this.systemProxy = String(network.system_proxy || '')
         this._applyRawSettings(s)
       } else if (!MOCK) {
         this.prefsError = '设置加载失败：无法连接后端，以下为默认值'

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import type { AiStage, Article, ArticleView } from '../types'
 import { call, rest, LONG_TIMEOUT } from '../api/rest'
+import { copyText } from '../api/desktop'
 import { useAccountsStore } from './accounts'
 import { useTasksStore } from './tasks'
 import { useUiStore } from './ui'
@@ -393,10 +394,11 @@ export const useArticlesStore = defineStore('articles', {
     },
     async copyList() {
       const text = await this.exportListText()
-      if (text !== null) {
-        await navigator.clipboard.writeText(text)
-        useUiStore().toast(`当前视图列表已复制（${LIST_FORMATS.find((f) => f.value === this.listFormat)?.label}）`)
-      }
+      if (text === null) return
+      const label = LIST_FORMATS.find((f) => f.value === this.listFormat)?.label
+      // 看真实结果：剪贴板被拒时不能再弹「已复制」
+      if (await copyText(text)) useUiStore().toast(`当前视图列表已复制（${label}）`)
+      else useUiStore().error('复制失败，请改用「导出列表文件」')
     },
     async exportList() {
       const text = await this.exportListText()

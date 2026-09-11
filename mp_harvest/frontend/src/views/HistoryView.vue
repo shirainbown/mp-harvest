@@ -13,6 +13,7 @@ import ProgressInline from '../components/ProgressInline.vue'
 import EmptyState from '../components/EmptyState.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import { LIST_FORMATS, useArticlesStore } from '../stores/articles'
+import { copyText, openExternal } from '../api/desktop'
 import { useAccountsStore } from '../stores/accounts'
 import { useTasksStore } from '../stores/tasks'
 import { useSettingsStore } from '../stores/settings'
@@ -227,12 +228,13 @@ function mmdd(a: Article) {
 const badgeVariant: Record<Article['source'], 'm' | 'g' | 'bu'> = { M: 'm', G: 'g', 补: 'bu' }
 const badgeTip: Record<Article['source'], string> = { M: 'MITM 目击', G: 'getmsg 拉取', 补: '手动补录' }
 
-function copyLink(a: Article) {
-  navigator.clipboard.writeText(a.url)
-  ui.toast('链接已复制')
+async function copyLink(a: Article) {
+  // 原先是「不 await + 无条件弹『已复制』」——剪贴板被拒时会骗用户。改为看真实结果
+  if (await copyText(a.url)) ui.toast('链接已复制')
+  else ui.error('复制失败，请手动选择链接文本')
 }
 function openArticle(a: Article) {
-  window.open(a.url, '_blank', 'noopener')
+  if (!openExternal(a.url)) ui.error('打开失败：该文章没有可用的链接')
 }
 
 // ---- 虚拟滚动：>500 条启用，行高固定 36px（§5.5/§5.10） ----
