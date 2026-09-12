@@ -5,6 +5,8 @@ import { copyText } from '../api/desktop'
 import { useAccountsStore } from './accounts'
 import { useTasksStore } from './tasks'
 import { useUiStore } from './ui'
+// weekly 不 import articles（单向），所以这里不会成环
+import { useWeeklyStore } from './weekly'
 
 export const LIST_FORMATS = [
   { value: 'md', label: 'Markdown' },
@@ -442,10 +444,29 @@ export const useArticlesStore = defineStore('articles', {
       this.list = this.list.filter((a) => !gone.has(a.id))
       // 选中集合也要清 —— 不清的话「已选 N」会指着已经不在列表里的 id
       for (const id of gone) this.selected.delete(id)
+      this.refreshWeeklyCandidates()
       useUiStore().toast(
         `已从本地列表删除 ${r.removed} 篇（下次「拉取历史」会重新抓到）`,
       )
       return r.removed
+    },
+
+    /**
+     * 文章列表变了 → 周报的候选数就过期了，主动重算。
+     *
+     * 为什么不靠「切到周报页时刷新」：视图是 `v-show` 常驻挂载的，那个刷新得挂在
+     * watch 上、每个视图各写一遍，**漏了就静默过期** —— 2026-09 在「存储占用」和
+     * 「周报候选」上各漏过一次，用户看到的都是「我明明删了，界面没变」。
+     *
+     * 放在动作里还有两个好处：周报页那层 watch 测不了（没有 DOM 测试装置），
+     * 而这里**能**；而且用户不用先切过去再切回来才看到更新。
+     *
+     * `if (wk.preview)`：没加载过就别发这个请求 —— 用户还没打开过周报页时，
+     * 没必要为了一个他看不见的数字去查一遍候选。
+     */
+    refreshWeeklyCandidates() {
+      const wk = useWeeklyStore()
+      if (wk.preview) void wk.loadPreview()
     },
     async exportHtml(ids: string[], outDir?: string) {
       // 必须带 account_id，否则后端拿不到文章列表（2026-08-09 修复）

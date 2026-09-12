@@ -5,7 +5,7 @@
 // - **模板是唯一真相**：界面上的「预览」用后端渲染，改模板立刻能看效果，不调用 AI。
 // - **提示词可人工编辑**，但输出 JSON 格式由后端固定拼接，改坏标准不会改崩解析。
 //   改了哪段，哪段的缓存自动失效（界面会明确提示）。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
 import SIcon from '../components/SIcon.vue'
@@ -40,6 +40,16 @@ onMounted(async () => {
   weekly.seedSelection(accounts.list.map((a) => a.id), ext.sources.map((s) => s.id))
   if (!weekly.preview) await weekly.loadAll()
 })
+
+// 视图是 v-show 常驻挂载的，`onMounted` 只在应用启动时跑一次 —— 所以「候选共 N 篇」
+// 会一直停在首次加载时的数字。用户删掉文章再切过来，看到的还是旧的（2026-09 用户报的）。
+// 每次切到本页都重算一遍候选；`inputsSeeded` 保证这不会覆盖他改过的期号/目录/篇数。
+watch(
+  () => ui.view,
+  (v) => {
+    if (v === 'weekly') void weekly.loadPreview()
+  },
+)
 
 // ---- 打分速度（**持久设置**，不是本期参数）----
 //

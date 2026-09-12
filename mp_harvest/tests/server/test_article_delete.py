@@ -16,14 +16,23 @@ from .conftest import add_account
 
 
 def _seed(account_id: str, n: int = 3, *, tag: str = "d", biz: str = "") -> list[dict]:
+    """塞 n 篇 2026-09-05 的文章。
+
+    日期要用 ``datetime`` 算，**别手写 epoch** —— 之前写了 1757000000，那其实是
+    2025-09-05，于是按 2026-09-05 查窗口时一篇都落不进去（只验列表的用例发现不了，
+    一旦有测试去查「区间内候选数」就红了）。
+    """
+    from datetime import datetime
+
     from mp_harvest.server import state
 
+    base = int(datetime(2026, 9, 5, 10).timestamp())
     rows = []
     for i in range(n):
         row = {
             "title": f"待删文章{tag}{i}",
             "link": f"https://mp.weixin.qq.com/s/{tag}{i}",
-            "publish_ts": 1757000000 + i * 3600,
+            "publish_ts": base + i * 3600,
             "publish_at": "2026-09-05 10:00",
             "identity": f"mid:{tag}{i}",
             "body_text": "正文", "body_html": "<p>x</p>",
@@ -125,6 +134,29 @@ def test_delete_ignores_unknown_and_empty_ids(client, auth):
     assert client.post("/api/articles/delete", params=auth,
                          json={"ids": ["不存在", ""]}).json() == {"ok": True, "removed": 0}
     assert len(_ids(client, auth, acc["id"])) == 3, "什么都没点名却删掉了东西"
+
+
+def test_delete_shrinks_the_weekly_candidate_count(client, auth):
+    """删掉文章后，周报候选数**在服务端**就该变少。
+
+    用户报的：「删除了文章信息之后，周报生成中还是显示有候选文章」。
+    前端那层是「页面没刷新」（已修）；这一条钉住**后端不会**拿着旧数据算 ——
+    两边都成立，用户才不会再看到那个现象。
+    """
+    acc = add_account(client, auth)
+    _seed(acc["id"], n=3)
+    q = {**auth, "from_date": "2026-09-05", "to_date": "2026-09-05"}
+
+    assert client.get("/api/weekly/preview", params=q).json()["total"] == 3
+    target = _ids(client, auth, acc["id"])[0]
+    client.post("/api/articles/delete", params=auth,
+                json={"account_id": acc["id"], "ids": [target]})
+
+    assert client.get("/api/weekly/preview", params=q).json()["total"] == 2
+    # 候选明细也要跟着变 —— 它和 preview 是同一份查询参数、同一个 _gather
+    detail = client.get("/api/weekly/candidates", params=q).json()
+    assert detail["total"] == 2
+    assert target not in {i["key"] for i in detail["items"]}
 
 
 def test_delete_rejects_unknown_account(client, auth):

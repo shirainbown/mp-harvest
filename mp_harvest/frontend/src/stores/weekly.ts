@@ -46,6 +46,9 @@ export const useWeeklyStore = defineStore('weekly', {
     sourceIds: new Set<string>(),
     /** 默认勾选是否已种下 —— 用户改过就不再覆盖 */
     selectionSeeded: false,
+    /** 后端建议值（期号/目录/篇数）是否已填过 —— 同样是「只种一次」，
+     *  之后每次刷新都不能覆盖用户改过的值（2026-09 修复，见 loadPreview） */
+    inputsSeeded: false,
     // ---- 模板 ----
     templatePath: '',
     // ---- 提示词 ----
@@ -121,11 +124,19 @@ export const useWeeklyStore = defineStore('weekly', {
         const r = await call(rest.get<WeeklyPreview>(`/api/weekly/preview?${q}`))
         if (r) {
           this.preview = r
-          // 首次进来时把后端建议的期号/目录/篇数填上；用户改过就不覆盖
-          if (!this.outDir) this.outDir = r.out_dir
-          if (!this.selectedCount || this.selectedCount === 15) this.selectedCount = r.selected_count
-          this.issueNum = r.suggested_issue
-          if (!this.templatePath && r.template_is_custom) this.templatePath = r.template_path
+          // 后端建议的期号/目录/篇数**只在首次加载时**填。
+          //
+          // 原先没有这层一次性守卫：`issueNum` 是无条件赋值，所以用户手改期号之后，
+          // 随便动一下「只看未筛」或勾一个来源（都会走 loadPreview）就被打回建议值
+          // —— 「我明明改了」。另外三个虽然各自带了「空才填」的判断，但含义不同
+          // （用户清空 = 想用默认），一并收进这里，让「只种一次」这件事只有一处。
+          if (!this.inputsSeeded) {
+            this.inputsSeeded = true
+            if (!this.outDir) this.outDir = r.out_dir
+            if (!this.selectedCount || this.selectedCount === 15) this.selectedCount = r.selected_count
+            this.issueNum = r.suggested_issue
+            if (!this.templatePath && r.template_is_custom) this.templatePath = r.template_path
+          }
         }
       } finally {
         this.loadingPreview = false
