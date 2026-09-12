@@ -868,6 +868,15 @@ def collect_candidates(
         if _keep(c):
             out.setdefault(c["key"], c)
     for item in external_items:
+        # ⚠️ **窗口判定必须在 normalize 之前**。`normalize_external` 会算
+        # `read_external_body()` —— 那是要读本地原文的（PDF 可能几百毫秒一篇），
+        # 而窗口外的条目根本进不了候选。周报预览是 GET、改日期勾来源都会重打，
+        # 不先筛就会把**库里所有日期**的原文全解析一遍（2026-09）。
+        #
+        # 等价性：normalize_external 用的就是 item["publish_ts"] 原值
+        # （`ts = int(item.get("publish_ts") or 0)`），这里预筛与筛完再比是同一个数。
+        if not _in_window(int(item.get("publish_ts") or 0), start_ts, end_ts):
+            continue
         c = normalize_external(item)
         if _keep(c):
             out.setdefault(c["key"], c)

@@ -30,6 +30,25 @@ onMounted(() => {
   if (!ext.sources.length) void ext.loadAll()
 })
 
+// ---- 格式说明（2026-09）----
+//
+// 用户要一份「照着写就能导入」的格式说明。内容由后端给（`/api/external/format`），
+// 前端只负责展示 —— 硬编码在前端的话，文档与解析器迟早各说各话。
+// 默认收起：它是参考材料，不是每次都要看的东西。
+const formatOpen = ref(false)
+
+function toggleFormat() {
+  formatOpen.value = !formatOpen.value
+  if (formatOpen.value) void ext.loadFormat()
+}
+
+async function copyExample() {
+  const text = ext.format?.example || ''
+  if (!text) return
+  if (await copyText(text)) ui.toast('已复制格式示例')
+  else ui.error('复制失败，可手动选中复制')
+}
+
 // ---- 添加目录 ----
 const addOpen = ref(false)
 const addName = ref('')
@@ -207,13 +226,59 @@ async function copyLink(a: { url: string }) {
       <SButton size="sm" @click="openAdd">+ 登记目录</SButton>
     </header>
     <div class="page-body">
+      <!-- 格式说明（可折叠）：照着写就能导入。内容来自后端，与解析器同源 -->
+      <div class="panel" style="padding:var(--sp-2) var(--sp-4)">
+        <div class="toolbar" style="cursor:pointer" @click="toggleFormat">
+          <SIcon :name="formatOpen ? 'chevron-down' : 'chevron-right'" :size="12" />
+          <span style="font-weight:500">格式说明</span>
+          <span class="tertiary" style="font-size:var(--fs-sm)">
+            —— 目录里放什么、每个字段是什么意思、怎么加原文
+          </span>
+        </div>
+        <template v-if="formatOpen">
+          <SkeletonRows v-if="!ext.format" :rows="3" />
+          <div v-else class="fmt-body">
+            <div class="muted" style="font-size:var(--fs-sm)">
+              每个日期子目录里放一份
+              <span v-for="(f, i) in ext.format.filenames" :key="f">
+                <span class="mono">{{ f }}</span><template v-if="i < ext.format.filenames.length - 1"> 或 </template>
+              </span>
+              （内容一样，挑一个名字即可）。下面这些字段<b>都可以不写</b>，
+              但至少要有一个标题或链接。
+            </div>
+            <table class="fmt-table">
+              <thead>
+                <tr><th style="width:150px">字段</th><th style="width:70px">必填</th><th>说明</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="f in ext.format.fields" :key="f.name">
+                  <td class="mono">{{ f.name }}</td>
+                  <td class="tertiary">{{ f.need || '—' }}</td>
+                  <td>{{ f.desc }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="toolbar" style="margin-top:var(--sp-3)">
+              <span style="font-weight:500">完整示例</span>
+              <span class="tertiary" style="font-size:var(--fs-sm)">
+                —— 三种情形各一条：带 PDF 原文的、带 HTML 原文的、只有摘要的
+              </span>
+              <span class="spacer"></span>
+              <SButton size="sm" variant="ghost" @click="copyExample">复制示例</SButton>
+            </div>
+            <pre class="ai-principle-preview">{{ ext.format.example }}</pre>
+          </div>
+        </template>
+      </div>
+
       <!-- 来源目录 -->
       <div class="panel">
         <div class="panel-title">来源目录</div>
         <div v-if="!ext.sources.length" class="muted" style="font-size:var(--fs-sm)">
-          还没有登记目录。点右上角「+ 登记目录」选一个外部来源目录
-          （其下按 <span class="mono">YYYY-MM-DD/</span> 分日期子目录、含
-          <span class="mono">papers_data.json</span>），登记后点「扫描」把条目读进来。
+          还没有登记目录。点右上角「+ 登记目录」选一个目录
+          （其下按 <span class="mono">YYYY-MM-DD/</span> 分日期子目录，每个子目录里放一份
+          <span class="mono">papers_data.json</span>）。格式见下面的「格式说明」，
+          登记后点「扫描」把条目读进来。
         </div>
         <div v-else class="ext-table">
           <div class="ext-head">
@@ -358,13 +423,16 @@ async function copyLink(a: { url: string }) {
                 >
                   正文
                 </SButton>
+                <!-- 「本地原文」而不是「PDF」：原文可能是 PDF / HTML / TXT / MD
+                     （2026-09 泛化）。也不叫「原文」—— 那个名字已经被上面打开
+                     在线链接的按钮占了。 -->
                 <SButton
-                  v-if="a.pdf_path"
+                  v-if="a.fulltext_path || a.pdf_path"
                   size="sm"
                   variant="ghost"
-                  @click="openLocal(a.pdf_path, 'PDF')"
+                  @click="openLocal(a.fulltext_path || a.pdf_path, '本地原文')"
                 >
-                  PDF
+                  本地原文
                 </SButton>
                 <SButton size="sm" variant="ghost" @click="copyLink(a)">复制</SButton>
               </span>
@@ -380,7 +448,8 @@ async function copyLink(a: { url: string }) {
       <div style="display:flex;flex-direction:column;gap:8px">
         <span>
           选一个目录，其下按 <span class="mono">YYYY-MM-DD/</span> 分日期子目录，
-          每个子目录里有 <span class="mono">papers_data.json</span>（arXiv 论文流水线的产出格式）。
+          每个子目录里放一份 <span class="mono">papers_data.json</span>。
+          论文、技术文章、网页存档都行 —— 格式见「格式说明」面板，可一键复制示例。
         </span>
         <div class="mitm-row">
           <span class="form-label" style="width:48px">名称</span>
@@ -388,11 +457,11 @@ async function copyLink(a: { url: string }) {
         </div>
         <div class="mitm-row">
           <span class="form-label" style="width:48px">路径</span>
-          <SInput v-model="addPath" mono placeholder="~/Downloads/.../arxiv_paper" style="flex:1" />
+          <SInput v-model="addPath" mono placeholder="~/Downloads/mp-harvest-sources" style="flex:1" />
           <SButton size="sm" @click="pickDir('add')">选择目录…</SButton>
         </div>
         <span class="muted" style="font-size:var(--fs-sm)">
-          支持 <span class="mono">~</span> 展开。登记只是记下路径，**不会改动目录里的任何文件**。
+          支持 <span class="mono">~</span> 展开。登记只是记下路径，<b>不会改动目录里的任何文件</b>。
         </span>
       </div>
       <template #foot>
@@ -485,3 +554,37 @@ async function copyLink(a: { url: string }) {
     </SModal>
   </section>
 </template>
+
+<style scoped>
+/* 格式说明面板（2026-09）。只在本页用，所以留在组件里，不进全局 style.css */
+.fmt-body {
+  padding-top: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.fmt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.fmt-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.fmt-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+/* 示例块复用全局 .ai-principle-preview 的外观（等宽、限高、可滚动），
+   这里只把限高放宽一点 —— 示例有二十多行，140px 看不全 */
+.fmt-body .ai-principle-preview {
+  max-height: 300px;
+}
+</style>

@@ -48,6 +48,10 @@ for pkg in (
     "jinja2",
     "multipart",
     "certifi",
+    # PDF 原文取文（core/external_sources._extract_fulltext 里函数内导入）。
+    # 静态分析本来也能追到函数体，这里整包收集只是为了稳妥：
+    # 真漏了的表现是「原文功能看着实现了但完全没生效」，很难查。
+    "pypdf",
 ):
     try:
         d, b, h = collect_all(pkg)

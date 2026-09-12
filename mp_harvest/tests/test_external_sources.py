@@ -549,3 +549,257 @@ def test_store_survives_broken_db_path(tmp_path):
     st = ExternalStore(broken)
     assert st.list_sources() == [] or True  # 能建就建，建不了也不能抛
     st.close()
+
+
+# ── 本地原文（2026-09）────────────────────────────────────────────
+
+
+def _make_pdf(path: Path, text: str) -> None:
+    """生成一个只含一行文字的最小 PDF。
+
+    手写而不是引第三方库：这里只要「能被 pypdf 抽出文字」这一个性质，
+    为它多一个测试依赖不划算。xref 偏移必须准，否则 pypdf 会走修复分支。
+    """
+    stream = f"BT /F1 24 Tf 72 700 Td ({text}) Tj ET".encode()
+    objs = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R"
+        b"/Resources<</Font<</F1 5 0 R>>>>>>",
+        b"<</Length " + str(len(stream)).encode() + b">>stream\n" + stream + b"\nendstream",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<</Size {len(objs) + 1}/Root 1 0 R>>\n"
+            f"startxref\n{xref_at}\n%%EOF\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(out))
+
+
+def test_parse_items_variant():
+    """``{"items": [...]}`` 是 2026-09 起推荐的写法（格式说明给的就是它）。"""
+    import tempfile
+    import json as _json
+
+    d = Path(tempfile.mkdtemp())
+    f = d / "papers_data.json"
+    f.write_text(_json.dumps({"items": [_paper("2608.9v1", "甲")]}), encoding="utf-8")
+    rows = parse_papers_data(f)
+    assert len(rows) == 1 and rows[0]["title"] == "甲"
+
+
+def test_parse_fulltext_aliases():
+    """``fulltext`` 的四个别名都要认 —— 用户按自己顺手的方式写。"""
+    import json as _json
+
+    for i, key in enumerate(("fulltext", "full_text", "fulltext_path", "original_path")):
+        rec = normalize_record({"title": f"t{i}", key: f"notes/{key}.html"})
+        assert rec is not None
+        assert rec["fulltext_rel"] == f"notes/{key}.html", key
+
+
+def test_scan_picks_the_fulltext_that_actually_exists(tmp_path):
+    """同时写了 ``fulltext`` 与 ``pdf_local_path`` 时，**按文件真的存在**挑。
+
+    用「取第一个非空字段」会在 ``fulltext`` 指向不存在的文件、而
+    ``pdf_local_path`` 指向存在的那份时选中前者 —— 静默失效，而且界面上
+    「原文」按钮因为 fulltext_path || pdf_path 侥幸还能打开，更难发现。
+    """
+    root = tmp_path / "src"
+    real = root / "2026-09-07" / "real.pdf"
+    _make_pdf(real, "TheRealOne")
+    _write_date_dir(root, "2026-09-07", [
+        {**_paper("2608.1v1", "甲"),
+         "fulltext": "不存在.pdf", "pdf_local_path": "real.pdf"},
+    ])
+    st = _store(tmp_path)
+    src = st.add_source(root, "论文")
+    scan_source(st, src["id"])
+    item = st.list_items(src["id"])[0]
+    assert item["fulltext_path"] == str(real), item["fulltext_path"]
+
+
+def test_fulltext_beats_body_and_summary(tmp_path):
+    """有原文时，正文 = 摘要 + 全文（**摘要在前**）。
+
+    顺序是关键：周报「其他入选摘要」阶段只截 600 字符，全文在前的话
+    那一档拿到的是英文 PDF 的标题+作者，信息量比摘要还少。
+    """
+    from mp_harvest.core.external_sources import read_external_body
+
+    root = tmp_path / "src"
+    _make_pdf(root / "2026-09-07" / "p.pdf", "FULLTEXTPDFBODY")
+    _write_date_dir(root, "2026-09-07", [
+        {**_paper("2608.1v1", "甲"), "summary_cn": "中文摘要在此", "fulltext": "p.pdf"},
+    ])
+    st = _store(tmp_path)
+    src = st.add_source(root, "论文")
+    scan_source(st, src["id"])
+    body = read_external_body(st.list_items(src["id"])[0])
+    assert "中文摘要在此" in body and "FULLTEXTPDFBODY" in body
+    assert body.index("中文摘要在此") < body.index("FULLTEXTPDFBODY"), "摘要必须排在全文前面"
+    # 截断到 600 时仍然只看到摘要 —— 这就是「摘要在前」要保住的东西
+    assert "中文摘要在此" in body[:600]
+
+
+def test_fulltext_html_and_text(tmp_path):
+    """HTML 与纯文本原文都要能读（不只有 PDF）。"""
+    from mp_harvest.core.external_sources import read_external_body
+
+    root = tmp_path / "src"
+    day = root / "2026-09-07"
+    (day / "notes").mkdir(parents=True)
+    (day / "notes" / "a.html").write_text(
+        "<html><body><p>HTMLORIGINAL</p></body></html>", encoding="utf-8")
+    (day / "notes" / "b.md").write_text("MARKDOWNORIGINAL", encoding="utf-8")
+    _write_date_dir(root, "2026-09-07", [
+        {**_paper("2608.1v1", "甲"), "fulltext": "notes/a.html"},
+        {**_paper("2608.2v1", "乙"), "fulltext": "notes/b.md"},
+    ])
+    st = _store(tmp_path)
+    src = st.add_source(root, "论文")
+    scan_source(st, src["id"])
+    bodies = {i["title"]: read_external_body(i) for i in st.list_items(src["id"])}
+    assert "HTMLORIGINAL" in bodies["甲"]
+    assert "MARKDOWNORIGINAL" in bodies["乙"]
+
+
+def test_broken_fulltext_falls_back_to_summary(tmp_path):
+    """原文读不了（损坏 PDF / 加密 / 文件被删）必须**安静回退到摘要**，不抛。
+
+    这是「解析失败绝不能把内容筛选或周报搞崩」的护栏。
+    """
+    from mp_harvest.core.external_sources import read_external_body
+
+    root = tmp_path / "src"
+    day = root / "2026-09-07"
+    day.mkdir(parents=True)
+    (day / "broken.pdf").write_bytes("%PDF-1.4\n这不是一个能解析的 PDF".encode("utf-8"))
+    _write_date_dir(root, "2026-09-07", [
+        {**_paper("2608.1v1", "甲"), "summary_cn": "回退到这段", "fulltext": "broken.pdf"},
+    ])
+    st = _store(tmp_path)
+    src = st.add_source(root, "论文")
+    scan_source(st, src["id"])
+    body = read_external_body(st.list_items(src["id"])[0])
+    assert "回退到这段" in body
+
+
+def test_fulltext_cache_invalidates_on_same_second_replace(tmp_path):
+    """同秒内替换文件（大小相同）也要读到新内容。
+
+    缓存键用 ``st_mtime_ns`` 而不是 ``st_mtime``(float) —— 后者在同一秒内
+    替换且大小相同时会命中旧文本，而那种情况用「改文件后重读」的普通写法
+    **测不出来**（时间差一秒以上，float 也变了）。所以这里显式把两次写入
+    压在同一个 mtime 秒内。
+    """
+    import os
+    from mp_harvest.core.external_sources import read_external_body
+
+    root = tmp_path / "src"
+    day = root / "2026-09-07"
+    day.mkdir(parents=True)
+    f = day / "orig.txt"
+    f.write_text("AAAA", encoding="utf-8")
+    _write_date_dir(root, "2026-09-07", [
+        {**_paper("2608.1v1", "甲"), "fulltext": "orig.txt"},
+    ])
+    st = _store(tmp_path)
+    src = st.add_source(root, "论文")
+    scan_source(st, src["id"])
+    item = st.list_items(src["id"])[0]
+    assert "AAAA" in read_external_body(item)
+
+    # 同长度、同一个 mtime 秒
+    st_mtime = f.stat().st_mtime
+    f.write_text("BBBB", encoding="utf-8")
+    os.utime(f, (st_mtime, st_mtime))
+    assert f.stat().st_mtime == st_mtime, "前提：两次写入落在同一秒"
+    assert "BBBB" in read_external_body(item), "同秒替换后读到的还是旧内容"
+
+
+def test_extract_raises_so_failures_are_not_cached(tmp_path):
+    """``_extract_fulltext`` 解析失败必须**抛**，不能返回空串。
+
+    lru_cache **不缓存异常** —— 「抛」正是「一次失败不粘住」的实现方式。
+    若这里改成 ``except: return ""``，那个空串会被当成正常返回值缓存下来，
+    一次临时 IO 错误或 pypdf 没装就把这篇**永久**钉在摘要上，直到文件 mtime 变化。
+    直接测这个契约，比绕道构造「同键下从坏变好」的文件可靠得多。
+    """
+    import pytest as _pytest
+
+    from mp_harvest.core.external_sources import _extract_fulltext
+
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(b"%PDF-1.4\nnot really a pdf")
+    with _pytest.raises(Exception):
+        _extract_fulltext(str(bad), 1, 1)
+
+
+def test_write_back_never_overwrites_the_users_original(tmp_path):
+    """写回产出的正文 HTML 撞上用户登记的**原文**时要换个名字。
+
+    ``body_filename`` 在有 arxiv_id 时算出来就是 ``{arxiv_id}.html``，而用户的
+    原文完全可能就叫这个名字、放在同一个日期目录里 —— 不加判断，写回会把他
+    的原文**覆盖成我们渲染的摘要页**，而且没有任何提示、无法撤销。
+    """
+    src_root = tmp_path / "src"
+    day = src_root / "2026-09-07"
+    day.mkdir(parents=True)
+    original = day / "2608.1v1.html"
+    original.write_text("<html><body>USERORIGINAL</body></html>", encoding="utf-8")
+    _write_date_dir(src_root, "2026-09-07", [
+        {**_paper("2608.1v1", "甲"), "fulltext": "2608.1v1.html"},
+    ])
+    st = _store(tmp_path)
+    src = st.add_source(src_root, "论文")
+    scan_source(st, src["id"])
+    items = st.list_items(src["id"])
+    assert items[0]["fulltext_path"] == str(original), "前提：原文确实被认到了"
+
+    # 写回**同一个来源目录** —— 这才是会撞名的场景（写到别处根本碰不到原文）
+    write_external_export(items, src_root)
+
+    assert "USERORIGINAL" in original.read_text(encoding="utf-8"), "用户原文被覆盖了"
+    assert (day / "2608.1v1.body.html").is_file(), "正文没改名落盘"
+
+
+def test_write_back_records_fulltext_for_roundtrip(tmp_path):
+    """写出的 ``fulltext`` 要能被原样扫回来（相对路径，不是绝对路径）。
+
+    写绝对路径的话，导出目录被拷到别处/别台机器之后所有原文都解析失败、
+    静默退化成摘要 —— 与既有 ``pdf_local_path`` 写 basename 是同一个考虑。
+    """
+    src_root = tmp_path / "src"
+    day = src_root / "2026-09-07"
+    (day / "notes").mkdir(parents=True)
+    (day / "notes" / "orig.txt").write_text("ROUNDTRIPBODY", encoding="utf-8")
+    _write_date_dir(src_root, "2026-09-07", [
+        {**_paper("2608.1v1", "甲"), "fulltext": "notes/orig.txt"},
+    ])
+    st = _store(tmp_path)
+    src = st.add_source(src_root, "论文")
+    scan_source(st, src["id"])
+
+    # 写回来源目录本身：这时原文就在导出树里，相对路径表达得出来
+    payload = write_external_export(st.list_items(src["id"]), src_root)
+    written = json.loads((day / "papers_data.json").read_text(encoding="utf-8"))
+    rec = next(r for r in written if r.get("arxiv_id") == "2608.1v1")
+    assert rec["fulltext"] == "notes/orig.txt", rec.get("fulltext")
+    assert not Path(rec["fulltext"]).is_absolute(), "写绝对路径会让导出目录失去可移植性"
+    assert payload  # 有返回值（既有契约）
+
+    # 写到**别处**时，原文不在导出树里 —— 宁可不写，也不写一个指向别处的路径
+    other = tmp_path / "elsewhere"
+    write_external_export(st.list_items(src["id"]), other)
+    written2 = json.loads((other / "2026-09-07" / "papers_data.json").read_text(encoding="utf-8"))
+    rec2 = next(r for r in written2 if r.get("arxiv_id") == "2608.1v1")
+    assert "fulltext" not in rec2, f"写了个解析不了的路径：{rec2.get('fulltext')}"

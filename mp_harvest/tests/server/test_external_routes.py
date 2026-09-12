@@ -329,3 +329,67 @@ def test_filter_unknown_source_is_404(client, auth):
     r = client.post("/api/external/filter", params=auth,
                     json={"source_id": "无此id", "stage": "title"})
     assert r.status_code == 404
+
+
+def test_list_does_not_parse_bodies(client, auth, tmp_path, monkeypatch):
+    """列表接口**不得**解析原文 —— 它算完就把 body_text 丢掉了。
+
+    读正文现在会去解析本地原文（PDF 可能几百毫秒一篇），而列表对**每一条**都调
+    ``_core_row``，结果 ``mappers.article_out`` 根本不返回 ``body_text``：
+    打开一个有几百篇论文的来源页会当场冷解析全库、看着像卡死。
+    用「被调用次数」断言而不是计时 —— 计时在 CI 上不稳。
+    """
+    from mp_harvest.core import external_sources as ext
+
+    calls: list[int] = []
+    real = ext.read_external_body
+    monkeypatch.setattr(
+        ext, "read_external_body",
+        lambda item: (calls.append(1), real(item))[1],
+    )
+
+    src = _add(client, auth, _make_dir(tmp_path))
+    _scan(client, auth, src["id"])
+
+    rows = client.get("/api/external/items", params=auth).json()
+    assert rows, "前提：确实有条目可列"
+    assert calls == [], f"列表路径解析了 {len(calls)} 次正文"
+
+
+def test_format_endpoint_serves_the_documented_schema(client, auth, tmp_path):
+    """格式说明由后端提供（前端不硬编码），且示例必须真能解析。
+
+    这条同时是「文档与解析器同源」的守卫：示例里改了字段名、写坏了 JSON，
+    或者说明里列的文件名与扫描白名单不一致，都会在这里红。
+    """
+    b = client.get("/api/external/format", params=auth).json()
+    assert set(b) == {"filenames", "fields", "example"}
+    assert "papers_data.json" in b["filenames"]
+    names = {f["name"] for f in b["fields"]}
+    assert {"title", "url", "fulltext"} <= names
+
+    # 示例必须能被**真的解析器**读出来 —— 这是这一整块存在的意义
+    from mp_harvest.core.external_sources import FORMAT_EXAMPLE_ITEM_COUNT, parse_papers_data
+
+    f = tmp_path / "papers_data.json"
+    f.write_text(b["example"], encoding="utf-8")
+    rows = parse_papers_data(f, fallback_date="2026-09-12")
+    assert len(rows) == FORMAT_EXAMPLE_ITEM_COUNT, f"示例只能解析出 {len(rows)} 条"
+    # 三条示例要覆盖三种情形：带原文的、带 HTML 原文的、只有摘要的
+    assert any(r["fulltext_rel"].endswith(".pdf") for r in rows)
+    assert any(r["fulltext_rel"].endswith(".html") for r in rows)
+    assert any(not r["fulltext_rel"] for r in rows)
+
+
+def test_format_text_has_no_markdown_markers(client, auth):
+    """格式说明里的文字**不能带 markdown 标记** —— 界面是纯文本渲染的。
+
+    写 `**原文文件**` 会原样显示成「**原文文件**」。这个错我犯过三次（两次在
+    模板里、一次在这份字段表里），所以钉一条：新增字段时顺手写上星号就会红。
+    示例 JSON 是给用户复制去当文件用的，同样不该有。
+    """
+    b = client.get("/api/external/format", params=auth).json()
+    for f in b["fields"]:
+        for key, val in f.items():
+            assert "**" not in str(val), f"字段 {f['name']} 的 {key} 里有 markdown 标记：{val}"
+    assert "**" not in b["example"]

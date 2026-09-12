@@ -3,7 +3,7 @@
 // 为什么不复用 useArticlesStore：两个视图在 App.vue 里都是 v-show 常驻挂载的，
 // 共用一个 list 会互相覆盖（切页回来数据就串了）。这里独立一套状态。
 import { defineStore } from 'pinia'
-import type { ExternalItem, ExternalSource } from '../types'
+import type { ExternalFormat, ExternalItem, ExternalSource } from '../types'
 import { LONG_TIMEOUT, call, rest } from '../api/rest'
 import { useTasksStore } from './tasks'
 import { useUiStore } from './ui'
@@ -15,6 +15,8 @@ export const useExternalStore = defineStore('external', {
     /** 空 = 全部来源 */
     sourceId: '',
     items: [] as ExternalItem[],
+    /** 格式说明（展开「格式说明」面板时才拉） */
+    format: null as ExternalFormat | null,
     q: '',
     // 排序维度与方向（2026-09：原先只有方向，与「历史文章」页的排序控件对不齐）
     sortBy: 'time' as 'time' | 'name',
@@ -102,6 +104,13 @@ export const useExternalStore = defineStore('external', {
     async loadAll() {
       await this.loadSources()
       await this.load()
+    },
+    /** 拉格式说明（字段表 + 示例）。由后端给，前端不硬编码 —— 免得文档与
+     *  解析器各写各的。只在用户展开说明面板时调，不占启动时间。 */
+    async loadFormat() {
+      if (this.format) return          // 一份就够，不必每次展开都拉
+      const r = await call(rest.get<ExternalFormat>('/api/external/format'))
+      if (r) this.format = r
     },
     /** 切换来源时清空勾选 —— 否则旧来源的 id 会留在 Set 里串味 */
     async setSource(id: string) {

@@ -67,7 +67,8 @@ def _external_identity(item_key: str) -> str:
     return f"ext:{item_key}"
 
 
-def _core_row(item: dict[str, Any], *, verdicts: dict[str, dict], content: dict[str, dict]) -> dict:
+def _core_row(item: dict[str, Any], *, verdicts: dict[str, dict], content: dict[str, dict],
+              with_body: bool = True) -> dict:
     """外部条目 → core 行形状，好让 ``article_out`` / ``judge_articles`` 直接复用。
 
     ``__biz`` 放 ``source_id``：``article_public_id`` 会算出
@@ -84,9 +85,15 @@ def _core_row(item: dict[str, Any], *, verdicts: dict[str, dict], content: dict[
         "publish_ts": int(item.get("publish_ts") or 0),
         "account": str(item.get("source_name") or ""),
         "source": "external",
-        # 内容筛选的输入（judge_articles 的 content_field="body_text"）
-        "body_text": ext.read_external_body(item),
     }
+    if with_body:
+        # 内容筛选的输入（judge_articles 的 content_field="body_text"）。
+        #
+        # ⚠️ **只在真的要判定时才取**。读正文现在会去解析本地原文（PDF 可能几百
+        # 毫秒一篇），而列表路径对每一条都调这个函数、算完却把 body_text 丢掉
+        # （mappers.article_out 根本不返回它）—— 打开一个有几百篇论文的来源页
+        # 会当场冷解析全库。列表传 with_body=False。
+        row["body_text"] = ext.read_external_body(item)
     # 判定结果从缓存合并进来（外部条目不另存判定，避免两处真相）。
     # 标题缓存是裸字段名，内容缓存读出来就带 content_ 前缀，各自 update 即可。
     row.update(verdicts.get(key) or {})
@@ -111,7 +118,8 @@ def _load_verdicts() -> tuple[dict[str, dict], dict[str, dict]]:
 
 def _item_out(item: dict[str, Any], *, verdicts: dict, content: dict) -> dict[str, Any]:
     """外部条目 → 前端行（与 ``article_out`` 同形 + 外部来源特有字段）。"""
-    row = _core_row(item, verdicts=verdicts, content=content)
+    # 列表路径：**不取正文**（详见 _core_row 的说明）
+    row = _core_row(item, verdicts=verdicts, content=content, with_body=False)
     out = article_out(
         row,
         account_id=str(item.get("source_id") or ""),
@@ -127,6 +135,9 @@ def _item_out(item: dict[str, Any], *, verdicts: dict, content: dict) -> dict[st
             "primary_category": str(item.get("primary_category") or ""),
             "authors": item.get("authors") or [],
             "categories": item.get("categories") or [],
+            # 泛化后的「本地原文」（PDF / HTML / TXT / MD）。前端优先用它；
+            # pdf_path 是 2026-09 前的老字段，老数据只有它。
+            "fulltext_path": str(item.get("fulltext_path") or ""),
             "dir_date": str(item.get("dir_date") or ""),
             "pdf_path": str(item.get("pdf_path") or ""),
             "body_path": str(item.get("body_path") or ""),
@@ -134,6 +145,24 @@ def _item_out(item: dict[str, Any], *, verdicts: dict, content: dict) -> dict[st
         }
     )
     return out
+
+
+# ── 格式说明 ──────────────────────────────────────────────────────
+
+
+@router.get("/api/external/format")
+def get_format() -> dict:
+    """「其他来源」的 JSON 格式说明与示例 —— 界面上那块可折叠面板用它。
+
+    内容来自 ``core.external_sources`` 的常量，**不在前端硬编码**：用户是照着
+    这份说明写文件的，前端各存一份迟早与解析器漂移。后端提供还让「示例一定
+    解析得通」成为一条可测的断言（见 tests/test_external_sources.py）。
+    """
+    return {
+        "filenames": list(ext.FORMAT_FILENAMES),
+        "fields": [dict(f) for f in ext.FORMAT_FIELDS],
+        "example": ext.FORMAT_EXAMPLE,
+    }
 
 
 # ── 来源目录 CRUD ─────────────────────────────────────────────────
@@ -277,9 +306,17 @@ def filter_items(body: ExternalFilterIn) -> dict:
     # 标题先行能把抓取量压下来。外部条目没有这个前提：正文来自
     # `read_external_body()`（本地正文文件 → summary_cn → abstract），
     # 全程不联网、不花额外代价，卡它一道纯属照搬了邻居的规则。
-    rows = [_core_row(r, verdicts=verdicts, content=content_cache) for r in articles]
-
+    # ⚠️ 组装行**放进任务里**，不要在这个请求线程里做。标题阶段
+    # （``content_field=None``）压根用不到正文，却会为每一条解析本地原文
+    # （PDF 几百毫秒一篇）—— 用户点「AI 筛选」会先转圈十几秒才拿到 task_id，
+    # 而且期间没有任何进度。移进来之后既能按 stage 少读，也能边走边报进度。
     def work(task: Task) -> dict:
+        task.update(percent=0.0, message="AI 筛选准备中…")
+        rows = [
+            _core_row(r, verdicts=verdicts, content=content_cache,
+                      with_body=(stage == "content"))
+            for r in articles
+        ]
         models = ai_mod.load_models(_models_path())
         principles = (
             ai_mod.load_content_principles(_content_principles_path())
@@ -287,7 +324,6 @@ def filter_items(body: ExternalFilterIn) -> dict:
             else ai_mod.load_principles(_principles_path())
         )
         prompt = ai_mod.build_system_prompt(principles)
-        task.update(percent=0.0, message="AI 筛选准备中…")
         settings = _ai_settings()
         result = ai_mod.judge_articles(
             rows,
@@ -308,7 +344,7 @@ def filter_items(body: ExternalFilterIn) -> dict:
         return result
 
     task = registry.create("external.filter", work)
-    return {"task_id": task.id, "type": task.type, "total": len(rows)}
+    return {"task_id": task.id, "type": task.type, "total": len(articles)}
 
 
 def _ai_settings() -> tuple[int, int]:

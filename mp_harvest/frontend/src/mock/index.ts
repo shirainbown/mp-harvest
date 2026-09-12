@@ -166,6 +166,7 @@ function _mockExtItem(
     authors: ['A. Author', 'B. Author', 'C. Author'],
     categories: ['cs.AR'],
     dir_date: '2026-09-07',
+    fulltext_path: '',
     pdf_path: '',
     body_path: '',
     item_key: `arxiv:2609.${n}`,
@@ -401,6 +402,17 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   if (p === '/api/update/apply' && method === 'POST') return { ok: true } as T
 
   // ---------- 其他来源（外部目录）----------
+  if (p === '/api/external/format' && method === 'GET') {
+    return {
+      filenames: ['papers_data.json', 'items.json', 'articles.json'],
+      fields: [
+        { name: 'title', need: '二选一', desc: '标题' },
+        { name: 'url', need: '二选一', desc: '原文链接（也可以叫 link）' },
+        { name: 'fulltext', need: '', desc: '原文文件：PDF / HTML / TXT / MD 都行' },
+      ],
+      example: '{\n  "items": [\n    { "title": "示例", "url": "https://example.com", "fulltext": "a.pdf" }\n  ]\n}',
+    } as T
+  }
   if (p === '/api/external/sources' && method === 'GET') return mockExtSources as T
   if (p === '/api/external/sources' && method === 'POST') {
     const b = (body || {}) as { name?: string; path?: string }

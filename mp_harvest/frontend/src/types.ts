@@ -47,6 +47,16 @@ export interface Article {
 
 // ---- 其他来源（外部目录，2026-09）----
 
+/** 「其他来源」的 JSON 格式说明（后端给，前端不硬编码 —— 免得与解析器漂移） */
+export interface ExternalFormat {
+  /** 扫描认哪些文件名 */
+  filenames: string[]
+  /** 字段表 */
+  fields: Array<{ name: string; need: string; desc: string }>
+  /** 可直接复制的完整示例 JSON */
+  example: string
+}
+
 /** 登记的一个外部来源目录（其下按 YYYY-MM-DD 分日期子目录） */
 export interface ExternalSource {
   id: string
@@ -72,9 +82,12 @@ export interface ExternalItem extends Article {
   categories: string[]
   /** 所在的日期子目录（YYYY-MM-DD） */
   dir_date: string
-  /** 本地 PDF / 正文文件（可能为空） */
-  pdf_path: string
+  /** 本地原文（PDF / HTML / TXT / MD），后端读它当正文；老的 pdf_path 只装真·PDF */
+  fulltext_path: string
+  /** 写回产出的正文 HTML（内容是摘要） */
   body_path: string
+  /** @deprecated 用 fulltext_path；这一列只装真·PDF */
+  pdf_path: string
   item_key: string
 }
 

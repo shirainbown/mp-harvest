@@ -7,6 +7,7 @@ beautifulsoup4>=4.12.0  # article_reader HTML 解析与 sanitize
 lxml>=5.0.0             # bs4 解析后端（设计稿 §6.2）
 jinja2>=3.1.0           # core/templates/article.html 渲染
 pyperclip>=1.9.0        # clipboard_watch
+pypdf>=5.0.0            # 外部来源的 PDF 原文取文（core/external_sources._extract_fulltext）
 cryptography>=42.0.0    # mitm CA（platform 层 CA 适配共用）
 mitmproxy>=10.0.0       # infra/mitm DumpMaster 抓包
 

@@ -21,6 +21,7 @@ MP 原先只管微信公众号文章。本模块管另一类内容：用户手�
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -61,6 +62,10 @@ CREATE TABLE IF NOT EXISTS items (
     publish_ts       INTEGER NOT NULL DEFAULT 0,
     body_path        TEXT NOT NULL DEFAULT '',
     pdf_path         TEXT NOT NULL DEFAULT '',
+    -- 本地原文文件（PDF / HTML / TXT / MD）。与 pdf_path 的区别：pdf_path 是
+    -- 2026-09 之前唯一的「本地原文」列，语义就是真·PDF；这一列是泛化后的
+    -- 「喂给 AI 的那份原文」，读正文时优先用它、回退才用 pdf_path。
+    fulltext_path    TEXT NOT NULL DEFAULT '',
     origin_file      TEXT NOT NULL DEFAULT '',
     seen_at          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (source_id, item_key)
@@ -71,6 +76,12 @@ CREATE INDEX IF NOT EXISTS idx_ext_items_date ON items(source_id, publish_ts DES
 
 # 日期子目录名（YYYY-MM-DD），只认这一种形态
 DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# 认的元数据文件名。**白名单而不是通配 ``*.json``** —— 目录里常有流水线写的
+# ``excluded_papers_*.json``（记录被排除的条目），通配会把它一起吃进来。
+# 有测试专门钉着「忽略 excluded_papers_*.json」。
+# 同一日期目录里多个文件都存在时，**按这里的顺序覆盖，后面的胜出**。
+_DATA_FILENAMES = ("papers_data.json", "items.json", "articles.json")
 
 # URL 里常见的跟踪参数，参与 item_key 计算前先剔除（否则同一篇会算出不同键）
 _TRACKING_PARAMS = {
@@ -148,6 +159,25 @@ def _publish_ts(date_str: Any, fallback_file_date: str = "") -> int:
     return 0
 
 
+def _first_nonempty(*values: Any) -> str:
+    """取第一个非空字符串。
+
+    ⚠️ 只用于**同一含义的字段别名**之间（``fulltext`` / ``full_text`` /
+    ``fulltext_path`` / ``original_path``）：这几个是同一样东西的不同写法，
+    谁在前面都无所谓。
+
+    **不要**拿它去在「原文路径」和「PDF 路径」之间做选择 —— 那两个是**不同的
+    候选**，得按「哪个文件真的存在」挑（见 :func:`_find_fulltext`）。用「取第一个
+    非空」会在 ``fulltext`` 指向一个不存在的文件、而 ``pdf_local_path`` 指向存在
+    的那份时选中前者，静默失效。
+    """
+    for v in values:
+        s = str(v or "").strip()
+        if s:
+            return s
+    return ""
+
+
 def normalize_record(raw: dict[str, Any], *, fallback_domain: str = "",
                      fallback_date: str = "") -> dict[str, Any] | None:
     """单条原始 JSON → 内部记录；既无标题也无 URL 的条目丢弃（非文章）。"""
@@ -166,6 +196,13 @@ def normalize_record(raw: dict[str, Any], *, fallback_domain: str = "",
         "authors": _as_str_list(raw.get("authors")),
         "categories": _as_str_list(raw.get("categories")),
         "pdf_local_path": str(raw.get("pdf_local_path") or "").strip(),
+        # 原文文件路径（PDF / HTML / TXT / MD）。只取原始字符串，**解析留给
+        # 扫描阶段**（要和 pdf_local_path 一样试三种相对基准，见 _find_fulltext）——
+        # normalize_record 拿不到来源根目录。
+        "fulltext_rel": _first_nonempty(
+            raw.get("fulltext"), raw.get("full_text"),
+            raw.get("fulltext_path"), raw.get("original_path"),
+        ),
     }
     if not rec["title"] and not rec["url"]:
         return None
@@ -209,9 +246,11 @@ def parse_papers_data(path: str | Path, *, fallback_date: str = "") -> list[dict
                     if rec:
                         out.append(rec)
             return out
-        papers = data.get("papers")
-        if isinstance(papers, list):
-            for raw in papers:
+        # ``{"items": [...]}`` 是 2026-09 新增的**推荐写法**（格式说明面板里给的
+        # 就是它）。它和下面那个 ``papers`` 是同一件事的不同键名，都留着。
+        rows = data.get("items") if isinstance(data.get("items"), list) else data.get("papers")
+        if isinstance(rows, list):
+            for raw in rows:
                 rec = normalize_record(raw, fallback_date=fallback_date)
                 if rec:
                     out.append(rec)
@@ -251,16 +290,81 @@ def body_filename(rec: dict[str, Any]) -> str:
 # ── 正文 ──────────────────────────────────────────────────────────
 
 
-def read_external_body(item: dict[str, Any]) -> str:
-    """条目的正文：本地正文文件 → ``summary_cn`` → ``abstract``。
+# 原文提取用 functools.lru_cache 而不是模块级 dict：
+# - **有界**：几千篇 PDF 全文常驻内存会让桌面应用长跑时无限增长；
+# - **线程安全**：内容筛选是多线程跑批的；
+# - **不缓存异常** —— 这一点是刚需。解析失败（加密 PDF、扫描件没有文字层、
+#   文件损坏）必须每次重试，而不是把这篇永久钉在摘要上。
+# 键里带 mtime_ns 与 size：文件被换掉自动失效。**不能用 st_mtime(float)** ——
+# 同一秒内替换且大小相同时会命中旧文本，而那种情况恰好测不出来。
+_FULLTEXT_CACHE_MAX = 256
 
-    外部条目的一个天然优势是**不用联网抓正文** —— 正文要么已经在目录里
-    （写回时产出的自包含 HTML，内容是摘要），要么摘要本身就是可判定的内容
-    （arXiv 摘要信息量足够）。AI 内容筛选与周报都用它。
+
+@functools.lru_cache(maxsize=_FULLTEXT_CACHE_MAX)
+def _extract_fulltext(path: str, mtime_ns: int, size: int) -> str:
+    """读原文文件并抽成纯文本。
+
+    ``mtime_ns`` / ``size`` **只用于做缓存键**，函数体不读它们（文件由 lru_cache
+    的键保证没变）。抽不出来就**抛异常**，由调用方回退 —— 见上面「不缓存异常」。
+
+    支持 PDF（pypdf）、HTML（走既有的 ``_html_to_text``）、其余按纯文本读
+    （``.txt`` / ``.md`` / 无扩展名都落到这一支）。
+    """
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix == ".pdf":
+        # 懒导入：没装 pypdf 也不该影响 HTML/TXT 那几支
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(p))
+        return "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    raw = p.read_text(encoding="utf-8", errors="ignore")
+    if suffix in (".html", ".htm"):
+        from mp_harvest.core.article_reader import _html_to_text
+
+        return _html_to_text(raw).strip()
+    return raw.strip()
+
+
+def _read_fulltext(item: dict[str, Any]) -> str:
+    """本地原文的全文；没有 / 读不了返回空串（调用方回退到摘要）。
+
+    取 ``fulltext_path``，没有就退回 ``pdf_path`` —— 后者是 2026-09 之前唯一的
+    「本地原文」字段，老库里只有它。
+    """
+    path = str(item.get("fulltext_path") or item.get("pdf_path") or "").strip()
+    if not path:
+        return ""
+    try:
+        st = Path(path).stat()
+        return _extract_fulltext(path, st.st_mtime_ns, st.st_size)
+    except Exception:  # noqa: BLE001
+        # 文件已被删 / 加密 PDF / 扫描件没有文字层 / 损坏 —— 一律安静回退。
+        # 外部来源的正文解析绝不能把内容筛选或周报搞崩。
+        return ""
+
+
+def read_external_body(item: dict[str, Any]) -> str:
+    """条目的正文：**摘要 + 原文全文** → ``body_path`` → 摘要。
+
+    外部条目的一个天然优势是**不用联网抓正文** —— 正文要么已经在目录里，
+    要么摘要本身就是可判定的内容。AI 内容筛选与周报都用它。
 
     2026-09 从两处**逐字相同**的实现（``server/routes/external.py`` 与
     ``core/weekly_report.py``）合并到这里 —— 外部来源的正文规则只该有一份。
+
+    ⚠️ **摘要在前、全文在后**，不是二选一。周报三个阶段截的字符数不一样
+    （打分 2000 / 解读 6000 / 其他入选摘要 **600**）。只喂全文的话，「600」
+    那一档拿到的是英文 PDF 的标题+作者+版权头，**信息量比整篇中文摘要还少**；
+    拼接之后截 600 取到摘要、截 6000 取到摘要＋大段全文，两头都对。
+    顺带救回标签兜底 —— ``infer_business_tags`` 匹配的是**中文**关键词，
+    正文换成英文全文会让它一个都不命中、落到「公共」。
     """
+    summary = str(item.get("summary_cn") or item.get("abstract") or "").strip()
+    fulltext = _read_fulltext(item)
+    if fulltext:
+        return f"{summary}\n\n{fulltext}".strip() if summary else fulltext
+
     body_path = str(item.get("body_path") or "")
     if body_path:
         try:
@@ -271,7 +375,7 @@ def read_external_body(item: dict[str, Any]) -> str:
                 return text.strip()
         except Exception:  # noqa: BLE001
             pass
-    return str(item.get("summary_cn") or item.get("abstract") or "").strip()
+    return summary
 
 
 # ── 存储 ──────────────────────────────────────────────────────────
@@ -310,14 +414,38 @@ class ExternalStore:
 
     # ── 连接管理 ──────────────────────────────────────────────────
 
+    # 2026-09 之后新增的列。新库由 SCHEMA 直接建出来；**老库**要靠
+    # _connect 里的幂等 ALTER 补（本仓库第一次 schema 迁移，没有先例可抄）。
+    _ADDED_COLUMNS = (("items", "fulltext_path", "TEXT NOT NULL DEFAULT ''"),)
+
     def _connect(self) -> sqlite3.Connection:
         if self._conn is None:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.executescript(SCHEMA)
+            self._migrate(conn)
             self._conn = conn
         return self._conn
+
+    @classmethod
+    def _migrate(cls, conn: sqlite3.Connection) -> None:
+        """老库补列。幂等：列已存在时 SQLite 报 duplicate column，吞掉即可。
+
+        ⚠️ 失败**不能静默**：``upsert_item`` 写不进去会 ``return False``，
+        而扫描那条链路上原先丢弃了这个返回值 —— 结果是「扫描成功、条目 0、
+        没有任何报错」。所以这里补不上就把异常抛出去，让 ``_connect`` 的调用方
+        （有 try/except 的地方）如实记成扫描错误，而不是变成一次静默空转。
+
+        唯一允许吞掉的是「列已经有了」——那是这个函数存在的意义（幂等）。
+        """
+        for table, col, decl in cls._ADDED_COLUMNS:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" in str(exc).lower():
+                    continue
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -444,15 +572,20 @@ class ExternalStore:
 
     # ── 条目 ──────────────────────────────────────────────────────
 
+    # ⚠️ 这张表与下面 VALUES 的元组是**手工对齐的平行列表**（不像 _row_to_item
+    # 走 dict 名）。新列只能**追加在末尾**：插在中间而只改一处会静默错位，
+    # 而 SQLite 有类型亲和性、TEXT 列接到整数照收不误 —— 不会报错，只会串值。
     _ITEM_COLS = (
         "source_id", "item_key", "dir_date", "title", "title_cn", "abstract", "summary_cn",
         "url", "arxiv_id", "authors", "categories", "primary_category", "domain",
         "publish_ts", "body_path", "pdf_path", "origin_file", "seen_at",
+        "fulltext_path",
     )
 
     def upsert_item(self, source_id: str, rec: dict[str, Any], *,
                     origin_file: str = "", dir_date: str = "",
-                    body_path: str = "", pdf_path: str = "") -> bool:
+                    body_path: str = "", pdf_path: str = "",
+                    fulltext_path: str = "") -> bool:
         """按 ``(source_id, item_key)`` 插入或更新一条；成功返回 True。
 
         ``dir_date`` 取自所在日期子目录。同一篇出现在多个日期目录时，
@@ -484,6 +617,7 @@ class ExternalStore:
                         str(pdf_path or ""),
                         str(origin_file or ""),
                         int(time.time()),
+                        str(fulltext_path or ""),
                     ),
                 )
                 conn.commit()
@@ -599,6 +733,29 @@ def _date_dirs(root: Path) -> list[str]:
     return sorted(names)
 
 
+def _find_fulltext(source_root: Path, date_dir: Path, rec: dict[str, Any]) -> str:
+    """定位 ``fulltext`` 字段声明的原文文件（PDF / HTML / TXT / MD）；没有返回空串。
+
+    **与 ``_find_pdf`` 分开、而不是把它泛化**：``_find_pdf`` 的行为被三条路径
+    测试钉着，且它的 `pdf_local_path` 分支是「存在即认、不看扩展名」—— 统一加
+    扩展名白名单会让 ``.PDF`` / 无扩展名的既有数据静默丢失，而夹具全是小写
+    ``.pdf``，一个都测不出来。所以那支一字不动，这里只多看一个 ``fulltext``。
+
+    三种相对基准都要试（``_find_pdf`` 的注释记着实测教训：两种基准都真的存在）。
+    调用方在它返回空串时回退到 ``_find_pdf`` 的结果。
+    """
+    rel = str(rec.get("fulltext_rel") or "").strip()
+    if not rel:
+        return ""
+    for candidate in (Path(rel), source_root / rel, date_dir / rel):
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
+
+
 def _find_pdf(source_root: Path, date_dir: Path, rec: dict[str, Any]) -> str:
     """定位本地 PDF。
 
@@ -650,36 +807,49 @@ def scan_source(
     # 实际入过库的键（用于把 seen 报成「唯一条目数」，而不是「重复出现次数」）
     indexed: set[str] = set()
 
+    write_failures = 0
     try:
         for dir_name in _date_dirs(root):
             if check_cancelled:
                 check_cancelled()
             date_dir = root / dir_name
-            data_file = date_dir / "papers_data.json"
-            if not data_file.is_file():
-                continue
-            records = parse_papers_data(data_file, fallback_date=dir_name)
-            if on_progress:
-                on_progress(f"{dir_name}：{len(records)} 条")
-            for rec in records:
-                if check_cancelled:
-                    check_cancelled()
-                key = str(rec.get("item_key") or "")
-                if not key:
+            for fname in _DATA_FILENAMES:
+                data_file = date_dir / fname
+                if not data_file.is_file():
                     continue
-                # 跨日期目录重复（arXiv 流水线会跨天重复报告同一篇）：靠
-                # 「升序遍历 + 主键 INSERT OR REPLACE」让**最新**的日期目录最终胜出。
-                # 顺序是这里的前提 —— _date_dirs 必须返回升序，改它就会静默改变语义。
-                indexed.add(key)
-                body_file = date_dir / body_filename(rec)
-                store.upsert_item(
-                    source_id,
-                    rec,
-                    origin_file=str(data_file),
-                    dir_date=dir_name,
-                    body_path=str(body_file) if body_file.is_file() else "",
-                    pdf_path=_find_pdf(root, date_dir, rec),
-                )
+                records = parse_papers_data(data_file, fallback_date=dir_name)
+                if on_progress:
+                    on_progress(f"{dir_name}：{len(records)} 条")
+                for rec in records:
+                    if check_cancelled:
+                        check_cancelled()
+                    key = str(rec.get("item_key") or "")
+                    if not key:
+                        continue
+                    # 跨日期目录重复（arXiv 流水线会跨天重复报告同一篇）：靠
+                    # 「升序遍历 + 主键 INSERT OR REPLACE」让**最新**的日期目录最终胜出。
+                    # 顺序是这里的前提 —— _date_dirs 必须返回升序，改它就会静默改变语义。
+                    # 同一日期目录内多个元数据文件（papers_data.json / items.json / …）
+                    # 也按 _DATA_FILENAMES 的顺序覆盖，**后面的胜出**。
+                    indexed.add(key)
+                    body_file = date_dir / body_filename(rec)
+                    pdf = _find_pdf(root, date_dir, rec)
+                    ok = store.upsert_item(
+                        source_id,
+                        rec,
+                        origin_file=str(data_file),
+                        dir_date=dir_name,
+                        body_path=str(body_file) if body_file.is_file() else "",
+                        pdf_path=pdf,
+                        # 声明的原文优先；没声明就退回 _find_pdf 找到的那份
+                        # （老数据只有 pdf_local_path，走的就是这条）
+                        fulltext_path=_find_fulltext(root, date_dir, rec) or pdf,
+                    )
+                    # 写失败原先被**完全丢弃** —— 表现是「扫描成功、条目 0、
+                    # 没有任何报错」（indexed 在 upsert 之前就 add 了，seen 照样
+                    # 报得像扫到了一样）。这里数下来，扫完如实报出去。
+                    if not ok:
+                        write_failures += 1
     except Exception as exc:  # noqa: BLE001
         # check_cancelled 抛出的取消异常也走这里：已入库的部分保留，如实上报
         msg = str(exc) or exc.__class__.__name__
@@ -692,8 +862,13 @@ def scan_source(
     removed = store.remove_missing_files(source_id)
     after = {it["item_key"] for it in store.list_items(source_id)}
     new = len(after - before)
-    store.mark_scanned(source_id, seen=seen, new=new)
-    return {"ok": True, "seen": seen, "new": new, "removed": removed, "error": ""}
+    # 写不进库**必须出声**。原先 upsert 的返回值被丢弃，于是一次 schema 不匹配
+    # （比如老库缺列、ALTER 没补上）表现为「扫描成功、条目 0、无任何报错」，
+    # 界面上完全看不出发生了什么。
+    err = f"{write_failures} 条写入失败（数据库可能未就绪）" if write_failures else ""
+    store.mark_scanned(source_id, seen=seen, new=new, error=err)
+    return {"ok": not write_failures, "seen": seen, "new": new,
+            "removed": removed, "error": err}
 
 
 # ── 写回 ──────────────────────────────────────────────────────────
@@ -713,7 +888,52 @@ def _export_dir_date(item: dict[str, Any]) -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def _item_to_papers_json(item: dict[str, Any]) -> dict[str, Any]:
+def _same_file(path: Path, item: dict[str, Any]) -> bool:
+    """``path`` 是不是该条目登记的本地原文（→ 写正文时**不能覆盖它**）。
+
+    ``body_filename`` 在有 ``arxiv_id`` 时算出来的就是 ``{arxiv_id}.html``，而用户
+    提供的原文完全可能就叫这个名字放在同一个日期目录里 —— 不加这道判断，
+    写回会**把用户的原文覆盖成我们渲染的摘要页**，而且没有任何提示。
+    """
+    try:
+        target = path.resolve()
+    except Exception:  # noqa: BLE001
+        return False
+    for key in ("fulltext_path", "pdf_path"):
+        raw = str(item.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            if Path(raw).resolve() == target:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _fulltext_json_value(item: dict[str, Any], date_dir: Path | None) -> str:
+    """写进 JSON 的 ``fulltext`` 值 —— **只用相对路径表达**，表达不了就不写。
+
+    写绝对路径的话，导出目录被拷到别处或别台机器之后所有原文都解析失败、
+    静默退化成摘要（既有 ``pdf_local_path`` 写 basename 就是同一个考虑）。
+    优先相对日期目录（与既有约定一致），其次相对来源根目录。
+    """
+    raw = str(item.get("fulltext_path") or "").strip()
+    if not raw or date_dir is None:
+        return ""
+    try:
+        target = Path(raw).resolve()
+    except Exception:  # noqa: BLE001
+        return ""
+    for base in (date_dir, date_dir.parent):
+        try:
+            return target.relative_to(base.resolve()).as_posix()
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
+
+
+def _item_to_papers_json(item: dict[str, Any], *, date_dir: Path | None = None) -> dict[str, Any]:
     """内部条目 → ``papers_data.json`` 的一条（**变体 A 的字段集**）。
 
     与用户给的参考格式一致；解析器两种变体都读，所以往返无损。
@@ -744,6 +964,11 @@ def _item_to_papers_json(item: dict[str, Any]) -> dict[str, Any]:
         out["summary_cn"] = str(item["summary_cn"])
     if str(item.get("pdf_path") or ""):
         out["pdf_local_path"] = Path(str(item["pdf_path"])).name
+    # 泛化后的原文路径（PDF / HTML / TXT / MD 都可能）。
+    # 与 pdf_local_path 并存：那个是「真·PDF」的老字段，老消费方还在读它。
+    fulltext = _fulltext_json_value(item, date_dir)
+    if fulltext:
+        out["fulltext"] = fulltext
     return out
 
 
@@ -839,8 +1064,12 @@ def write_external_export(
                     skipped += 1
                     continue
                 body_file = date_dir / body_filename(item)
+                # 撞上用户登记的原文就换个名字 —— 绝不能把原文覆盖成我们渲染的
+                # 摘要页（body_filename 在有 arxiv_id 时恰好就是 {arxiv_id}.html）
+                if _same_file(body_file, item):
+                    body_file = body_file.with_name(body_file.stem + ".body.html")
                 body_file.write_text(_render_body_html(item), encoding="utf-8")
-                merged[key] = _item_to_papers_json(item)
+                merged[key] = _item_to_papers_json(item, date_dir=date_dir)
                 written += 1
                 if on_progress:
                     on_progress(f"{str(item.get('title') or '')[:24]}（{written}/{total}）")
@@ -883,8 +1112,73 @@ def reset_external_store() -> None:
         _store = None
 
 
+# ── 格式说明（内置，界面上展示给用户）──────────────────────────────
+#
+# **放在后端而不是前端硬编码**：用户是照着这份说明写文件的，文档与解析器
+# 各写一份迟早漂移。放这里还能加一条测试 —— `parse_papers_data(FORMAT_EXAMPLE)`
+# 必须解析出预期条数，示例一旦写坏（改了字段名、JSON 语法错）立刻红。
+
+# 扫描认哪些文件名（＝ _DATA_FILENAMES，给界面展示用公开名）
+FORMAT_FILENAMES = _DATA_FILENAMES
+
+FORMAT_FIELDS: tuple[dict[str, str], ...] = (
+    {"name": "title", "need": "二选一", "desc": "标题"},
+    {"name": "url", "need": "二选一", "desc": "原文链接（也可以叫 link）"},
+    {"name": "title_cn", "need": "", "desc": "中文标题"},
+    {"name": "abstract", "need": "", "desc": "摘要／导语。没有原文时，这一段就是喂给 AI 的正文"},
+    {"name": "summary_cn", "need": "", "desc": "中文摘要。有原文时它会排在全文前面"},
+    {"name": "authors", "need": "", "desc": "作者。数组，或写成「甲、乙、丙」这样的字符串"},
+    {"name": "date", "need": "", "desc": "发布日期 YYYY-MM-DD。不写就用所在日期目录名"},
+    {"name": "domain", "need": "", "desc": "领域／分类。用 domains 分组写法时自动回填"},
+    {"name": "primary_category", "need": "", "desc": "分类，可留空"},
+    {"name": "categories", "need": "", "desc": "分类标签数组，可留空"},
+    {"name": "arxiv_id", "need": "", "desc": "有就填；网页文章留空即可"},
+    {"name": "fulltext", "need": "", "desc": "原文文件：PDF / HTML / TXT / MD 都行。"
+                                            "路径相对日期目录或来源根目录；也可以用 full_text、"
+                                            "fulltext_path、original_path、pdf_local_path"},
+)
+
+# 用户直接抄这段就是合法输入。三种情形各一条：带 PDF 原文的论文、
+# 带 HTML 原文的网页文章、只有标题+摘要的最小条目。
+FORMAT_EXAMPLE = """{
+  "items": [
+    {
+      "title": "Scaling Laws for Chip Design",
+      "title_cn": "芯片设计的规模定律",
+      "url": "https://arxiv.org/abs/2609.10057v1",
+      "arxiv_id": "2609.10057v1",
+      "authors": ["A. Zhang", "B. Li"],
+      "date": "2026-09-12",
+      "domain": "AI 辅助芯片设计",
+      "abstract": "We study how model scale translates into design quality ...",
+      "fulltext": "2609.10057v1.pdf"
+    },
+    {
+      "title": "为什么你的 FPGA 时序总是差一点",
+      "url": "https://example.com/blog/fpga-timing",
+      "authors": ["某博主"],
+      "date": "2026-09-12",
+      "domain": "FPGA",
+      "fulltext": "notes/fpga-timing.html"
+    },
+    {
+      "title": "只有标题和摘要也能进（AI 读摘要）",
+      "url": "https://example.com/minimal",
+      "date": "2026-09-12",
+      "abstract": "没有原文时，摘要就是喂给 AI 的正文。"
+    }
+  ]
+}"""
+
+FORMAT_EXAMPLE_ITEM_COUNT = 3
+
+
 __all__ = [
     "ExternalStore",
+    "FORMAT_EXAMPLE",
+    "FORMAT_EXAMPLE_ITEM_COUNT",
+    "FORMAT_FIELDS",
+    "FORMAT_FILENAMES",
     "get_external_store",
     "reset_external_store",
     "scan_source",
