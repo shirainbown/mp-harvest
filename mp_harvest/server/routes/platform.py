@@ -61,4 +61,27 @@ def shell_open(body: ShellOpenBody) -> dict:
     return {"ok": True, "path": str(p), "is_dir": p.is_dir()}
 
 
+@router.post("/api/shell/reveal")
+def shell_reveal(body: ShellOpenBody) -> dict:
+    """在文件管理器里**定位**到该文件/目录（不打开它本身）。
+
+    与 ``/api/shell/open`` 分开而不是加一个 mode 参数：调用方要的东西不一样
+    （「打开看看」vs「它在哪」），混成一个端点后前端每次都得想一遍传什么。
+    校验与错误文案与 open 一致。
+    """
+    raw = (body.path or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="路径为空")
+    if raw.lower().startswith("file://"):
+        raw = raw[7:]
+    p = Path(raw).expanduser()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"路径不存在：{p}")
+    try:
+        get_platform().shell_reveal(p)
+    except PlatformError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True, "path": str(p), "is_dir": p.is_dir()}
+
+
 __all__ = ["router"]

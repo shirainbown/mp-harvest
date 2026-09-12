@@ -235,3 +235,44 @@ def test_frontend_never_sends_file_scheme_to_open_external():
             if pat.search(line):
                 offenders.append(f"{f.relative_to(src_root)}:{i}")
     assert not offenders, f"这些地方仍在把 file:// 交给 openExternal：{offenders}"
+
+
+# ── /api/shell/reveal：「在文件夹中显示」（2026-09）──────────────────
+#
+# 与 /api/shell/open 分开：模板这类文件，用户想「看一眼它在哪」和「拿编辑器打开」
+# 是两件事。混成一个端点的话前端每次都得想「这次传什么模式」。
+
+
+def test_shell_reveal_locates_file(client, auth, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from mp_harvest.server.routes import platform as platform_routes
+
+    located: list[str] = []
+
+    def _reveal(path):
+        located.append(str(path))
+
+    monkeypatch.setattr(
+        platform_routes, "get_platform", lambda: SimpleNamespace(shell_reveal=_reveal)
+    )
+    f = tmp_path / "weekly_template.html"
+    f.write_text("<html></html>", encoding="utf-8")
+    resp = client.post("/api/shell/reveal", params=auth, json={"path": str(f)})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["path"] == str(f)
+    assert resp.json()["is_dir"] is False
+    # 定位的是**这个文件**（不是它所在目录）—— mac 下对应 open -R
+    assert located == [str(f)]
+
+
+def test_shell_reveal_missing_path_404(client, auth, tmp_path):
+    resp = client.post(
+        "/api/shell/reveal", params=auth, json={"path": str(tmp_path / "nope.html")}
+    )
+    assert resp.status_code == 404
+    assert "不存在" in resp.json()["detail"]
+
+
+def test_shell_reveal_empty_path_400(client, auth):
+    assert client.post("/api/shell/reveal", params=auth, json={"path": "  "}).status_code == 400

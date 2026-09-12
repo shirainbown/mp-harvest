@@ -89,6 +89,27 @@ export async function openLocalPath(path: string): Promise<{ ok: boolean; reason
 }
 
 /**
+ * 在文件管理器里**定位**到该文件/目录（「它在哪」，不是「打开它」）。
+ *
+ * 与 ``openLocalPath`` 分开：macOS 的 ``open -R`` 会在 Finder 里选中该文件，
+ * 而 ``open`` 是拿默认程序把它打开 —— 对模板这类文件来说，用户想「看一眼在哪」
+ * 和「直接编辑」是两件事，界面上给了两个入口。返回形状与 openLocalPath 一致。
+ */
+export async function revealLocalPath(path: string): Promise<{ ok: boolean; reason?: string }> {
+  const target = String(path || '').trim()
+  if (!target) return { ok: false, reason: '路径为空' }
+  try {
+    await rest.post<{ ok: boolean; path: string; is_dir: boolean }>('/api/shell/reveal', {
+      path: target,
+    })
+    return { ok: true }
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e)
+    return { ok: false, reason: `定位失败：${why}` }
+  }
+}
+
+/**
  * 弹出系统目录选择器；返回绝对路径。
  *
  * 返回 ``null`` 区分三种情况，调用方据此决定是否提示：

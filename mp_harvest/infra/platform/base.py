@@ -357,6 +357,16 @@ class Platform(ABC):
     def shell_open(self, path: str | Path) -> None:
         """用系统默认方式打开文件/目录，失败抛 :class:`PlatformError`。"""
 
+    def shell_reveal(self, path: str | Path) -> None:
+        """在文件管理器里**定位到**这个文件/目录（不打开它本身）。
+
+        用于「看一下这文件在哪」——模板、导出目录这类。默认实现退化成打开
+        所在目录（各平台能选中就选中，见 :meth:`MacPlatform.shell_reveal`）。
+        """
+        p = Path(path).expanduser()
+        target = p if p.is_dir() else p.parent
+        self.shell_open(target)
+
     def info(self) -> dict[str, Any]:
         """前端能力矩阵（设计稿 §4 权限 UX）。"""
         return {

@@ -622,3 +622,15 @@ class MacPlatform(Platform):
             raise PlatformError(f"open 调用失败：{p}: {exc}") from exc
         if proc.returncode != 0:
             raise PlatformError(f"open 失败：{p}: {(proc.stderr or '').strip()}")
+
+    def shell_reveal(self, path: str | Path) -> None:
+        """``open -R``：打开所在文件夹并**选中**这个文件（Finder 里的「显示简介」那种）。"""
+        p = Path(path).expanduser()
+        if not p.exists():
+            raise PlatformError(f"路径不存在：{p}")
+        try:
+            proc = _run(["open", "-R", str(p)], timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            raise PlatformError(f"open -R 调用失败：{p}: {exc}") from exc
+        if proc.returncode != 0:
+            raise PlatformError(f"定位失败：{p}: {(proc.stderr or '').strip()}")

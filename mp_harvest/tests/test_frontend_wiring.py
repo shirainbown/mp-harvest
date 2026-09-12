@@ -326,3 +326,29 @@ def test_whole_scope_filter_buttons_pass_no_ids():
             if "pickedIds" in args:
                 continue
             assert "ids" not in args, f"整范围的 {fn} 不该带 ids：{args}"
+
+
+def test_template_panel_has_open_and_reveal():
+    """模板面板要能「直接打开」和「在文件夹中显示」—— 两个入口，两种需求。
+
+    只做「打开」的话，用户想看这文件在哪还得自己去翻路径；只做「定位」的话，
+    想改模板又得多一步。另外路径必须是**可点的**（下划线样式 + @click），
+    否则没人知道它能点。
+    """
+    src = (SRC / "views" / "WeeklyView.vue").read_text(encoding="utf-8")
+    # 两个动作都接了真实路径（不是空串/占位）
+    assert re.search(r"openLocalPath\(currentTemplate\.value\)", src), "打开模板没接当前模板路径"
+    assert re.search(r"revealLocalPath\(currentTemplate\.value\)", src), "定位没接当前模板路径"
+    # 路径本身可点
+    assert re.search(r'class="mono tpl-path"\s+@click="revealTemplate"', src), "路径不可点"
+    # 文案：当前模板（不是「内置模板」——填了自定义模板时那会误导）
+    assert "当前模板（" in src, "标签还是旧的「内置模板」"
+
+
+def test_reveal_helper_posts_to_the_reveal_endpoint():
+    """前端 helper 必须打 /api/shell/reveal，不能图省事复用 open（那是「打开」）。"""
+    src = (SRC / "api" / "desktop.ts").read_text(encoding="utf-8")
+    body = src[src.index("export async function revealLocalPath"):]
+    body = body[: body.index("\n}")] if "\n}" in body else body
+    assert "/api/shell/reveal" in body, "revealLocalPath 打的不是 reveal 端点"
+    assert "/api/shell/open" not in body, "revealLocalPath 误用了 open 端点"

@@ -23,7 +23,7 @@ import { useExternalStore } from '../stores/external'
 import { useTasksStore } from '../stores/tasks'
 import { useSettingsStore } from '../stores/settings'
 import { useUiStore } from '../stores/ui'
-import { chooseDirectory, chooseFile, openLocalPath } from '../api/desktop'
+import { chooseDirectory, chooseFile, openLocalPath, revealLocalPath } from '../api/desktop'
 
 const weekly = useWeeklyStore()
 const accounts = useAccountsStore()
@@ -198,6 +198,24 @@ async function pickTemplate() {
 }
 function useBuiltinTemplate() {
   weekly.templatePath = ''
+}
+
+// ---- 当前模板：打开 / 定位（2026-09）----
+//
+// 「打开」和「在文件夹里显示」是两件事：前者拿去编辑，后者只是想看看它在哪。
+// 两个入口都只在文件**真的存在**时可用 —— 否则点了会弹一句「路径不存在」，
+// 而用户其实只是填错了输入框（那种情况下灰着更清楚）。
+const currentTemplate = computed(() => weekly.preview?.template_path || '')
+const templateExists = computed(() => weekly.preview?.template_exists !== false && !!currentTemplate.value)
+
+async function openTemplate() {
+  const { ok, reason } = await openLocalPath(currentTemplate.value)
+  if (!ok && reason) ui.error(reason)
+}
+
+async function revealTemplate() {
+  const { ok, reason } = await revealLocalPath(currentTemplate.value)
+  if (!ok && reason) ui.error(reason)
 }
 
 // ---- 提示词展开状态 ----
@@ -388,12 +406,20 @@ async function openPath(p: string) {
             <SInput v-model="weekly.templatePath" mono
                     placeholder="留空 = 使用内置模板" style="flex:1;min-width:240px" />
             <SButton size="sm" @click="pickTemplate">选择文件…</SButton>
+            <SButton size="sm" variant="ghost" :disabled="!templateExists" @click="openTemplate">
+              打开模板
+            </SButton>
             <SButton size="sm" variant="ghost" @click="useBuiltinTemplate">用内置模板</SButton>
           </div>
           <div class="muted" style="font-size:var(--fs-xs);margin-top:var(--sp-2);line-height:1.7">
-            内置模板：<span class="mono">{{ weekly.preview?.template_path || '（未知）' }}</span>
+            <!-- 「当前模板」而不是「内置模板」：上面输入框填了自定义模板时，
+                 这一行显示的就是那个自定义文件，写「内置」会让人以为改的没生效 -->
+            当前模板（{{ weekly.preview?.template_is_custom ? '自定义' : '内置' }}）：
+            <STooltip text="在文件夹中显示">
+              <span class="mono tpl-path" @click="revealTemplate">{{ currentTemplate || '（未知）' }}</span>
+            </STooltip>
             <template v-if="weekly.preview && !weekly.preview.template_exists">
-              <br /><span class="status-fail">内置模板缺失，生成会失败</span>
+              <br /><span class="status-fail">模板文件不存在，生成会失败</span>
             </template>
             <br />
             <b>模板是唯一真相</b>：里面的循环、条件和字段就是最终输出。改完点下面任意一期的
@@ -542,6 +568,17 @@ async function openPath(p: string) {
 </template>
 
 <style scoped>
+/* 可点击的模板路径：要一眼看出「这个能点」（点它 = 在文件夹中显示） */
+.tpl-path {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--text-tertiary);
+  word-break: break-all;
+}
+.tpl-path:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
 /* 候选明细抽屉 */
 .cand-sum {
   font-size: var(--fs-sm);

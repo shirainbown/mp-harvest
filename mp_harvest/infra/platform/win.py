@@ -283,3 +283,15 @@ class WinPlatform(Platform):
             raise PlatformError("os.startfile 仅在 Windows 可用") from exc
         except OSError as exc:
             raise PlatformError(f"打开失败：{p}: {exc}") from exc
+
+    def shell_reveal(self, path: str | Path) -> None:
+        """``explorer /select,``：打开资源管理器并选中该文件。"""
+        p = Path(path).expanduser()
+        if not p.exists():
+            raise PlatformError(f"路径不存在：{p}")
+        try:
+            # ⚠️ explorer 即使成功也常常返回非 0，**不能**按返回码判失败
+            # （这是它几十年的老毛病）。只处理「起不来」的情况。
+            subprocess.Popen(["explorer", f"/select,{p}"])  # noqa: S603,S607
+        except OSError as exc:
+            raise PlatformError(f"定位失败：{p}: {exc}") from exc

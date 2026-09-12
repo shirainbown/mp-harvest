@@ -641,6 +641,10 @@ class FakePlatform:
     def shell_open(self, path):
         return None
 
+    def shell_reveal(self, path):
+        """与真实平台同契约（路由会调它）。记录调用，便于断言「定位的是哪个路径」。"""
+        self.revealed = str(path)
+
 
 # ── fixtures ──────────────────────────────────────────────────────
 
