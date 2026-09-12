@@ -91,9 +91,9 @@ function dotCls(a: Account) {
 }
 
 // ---- 行内操作 ----
-function openLink(a: Account) {
+async function openLink(a: Account) {
   // 必须走 shell 的 open_external：window.open(_blank) 在 pywebview 里是静默空操作
-  if (!openExternal(a.url)) ui.error('打开失败：该公众号没有可用的文章链接')
+  if (!(await openExternal(a.url))) ui.error('打开失败：该公众号没有可用的文章链接')
 }
 
 const importOpen = ref(false)

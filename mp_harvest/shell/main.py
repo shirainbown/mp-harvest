@@ -249,6 +249,10 @@ def main(argv: list[str] | None = None) -> int:
             target = str(url or "").strip()
             if not target:
                 return False
+            # 只放行 http(s) 是**故意**的：本地文件走 /api/shell/open
+            # （见 server/routes/platform.py），那条路用平台的 shell_open，
+            # 既能把目录交给 Finder，也会报错。别把 file:// 加进来 ——
+            # 「删掉这个判断」正是 2026-09 那批「点了没反应」按钮的病根。
             if not target.lower().startswith(("http://", "https://")):
                 return False
             try:

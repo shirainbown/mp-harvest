@@ -51,18 +51,175 @@ TAG_COLORS = {
     "芯片硬件": "#f39c12",
 }
 
+# 业务标签的类目定义 + 代表性关键词（写进提示词，让**模型**按场景判断）。
+# 数通/传送/接入 是通信领域的邻接术语，只给名字模型会漂移（「800G 以太网」算哪个？），
+# 必须给场景定义。完整关键词表见下方 BUSINESS_TAG_KEYWORDS（用于模型漏答时兜底）。
+BUSINESS_TAG_STANDARD = """- 数通：数据中心 / AI 集群场景 —— DPU/SmartNIC、可编程数据平面、
+  NVLink/InfiniBand/RoCE、拥塞控制、P4/DPDK、GPU 架构、NoC、Chiplet/先进封装、HBM/CXL
+- 传送：光通信与高速传输 —— 硅光/CPO、相干光、SerDes/PAM4、光 DSP、
+  FEC、DWDM/OTN、800G/1.6T 以太网、LPO、调制器/探测器
+- 接入：接入网与确定性网络 —— PON/OLT/ONU、FTTx、xDSL、DOCSIS、
+  TSN/时间敏感网络、Wi-Fi/5G/6G 接入、IEEE 1588/SyncE 时间同步
+- 公共：跨领域通用芯片设计技术 —— FPGA/HLS/EDA、RTL/Verilog、
+  形式验证、物理设计/布局布线、仿真/原型验证、处理器微架构、存储器与存算一体
+- 芯片硬件：半导体制造 / 器件 / 工艺 —— FinFET/GAA/CMOS、光刻/EUV、
+  刻蚀/沉积（ALD/CVD/PVD）、CMP、晶圆/衬底、键合/混合键合、玻璃基板/金刚石材料
+
+判断顺序建议：先看**应用场景**（数据中心 / 光传输 / 接入网 / 通用设计 / 制造工艺），
+再看关键词。一篇可能命中多个，最多取 3 个最相关的。"""
+
+# 完整关键词表（源自用户原有周报流水线里的 BUSINESS_TAG_KEYWORDS，
+# 即其本人给出的分类标准）。
+# 用途：**模型没给出有效标签时的兜底** —— 绝不静默退化成「公共」。
+BUSINESS_TAG_KEYWORDS: dict[str, list[str]] = {
+    "数通": [
+        "数据中心", "AI集群", "超大规模", "DPU", "SmartNIC", "智能网卡",
+        "可编程数据平面", "网络内计算", "网络处理器", "分组处理器", "线速",
+        "NVMe-oF", "RoCEv2", "iWARP", "GPUDirect", "NVLink", "InfiniBand",
+        "Slingshot", "SHARP", "集合通信", "NCCL", "拥塞控制", "ECN", "PFC",
+        "DCQCN", "负载均衡", "VXLAN", "Geneve", "Segment Routing",
+        "P4", "eBPF", "XDP", "DPDK", "SPDK", "VPC", "NFV", "SDN",
+        "GPU架构", "片上网络", "NoC", "片上互连", "Chiplet", "先进封装",
+        "3D集成", "2.5D集成", "CoWoS", "EMIB", "UCIe", "异构集成",
+        "芯片对芯片", "Die-to-Die", "D2D", "HBM", "CXL",
+    ],
+    "传送": [
+        "硅光子学", "硅光", "相干光", "光互连", "共封装光学", "CPO",
+        "光子集成电路", "PIC", "光DSP", "SerDes", "PAM4", "高速串行",
+        "收发器", "Transceiver", "PHY", "均衡", "CDR", "里德-所罗门码",
+        "LDPC", "长距传输", "城域网", "骨干网", "DWDM", "CWDM", "OTN",
+        "光交叉连接", "OXC", "ROADM", "Mux/Demux", "TIA", "驱动器",
+        "调制器", "探测器", "APD", "PIN", "EDFA", "拉曼放大器", "SOA",
+        "色散", "PMD", "CD", "DGD", "OSNR", "Q因子", "误码率", "BER",
+        "前向纠错", "FEC", "KP4-FEC", "SC-FEC", "Staircase FEC",
+        "OpenZR+", "OSFP", "QSFP-DD", "CFP", "OIF", "IEEE 802.3",
+        "800G以太网", "1.6T以太网", "线性驱动可插拔", "LPO",
+        "低功耗SerDes", "模拟前端", "AFE", "ADC/DAC", "PLL", "VCO",
+    ],
+    "接入": [
+        "TSN", "时间敏感网络", "确定性网络", "实时以太网",
+        "PON", "无源光网络", "OLT", "ONU", "ONT", "ODN", "光分路器",
+        "EPON", "GPON", "10G-EPON", "XG-PON", "XGS-PON", "NG-PON2", "WDM-PON",
+        "FTTx", "FTTH", "FTTB", "FTTC", "FTTdp",
+        "xDSL", "ADSL", "VDSL", "VDSL2", "G.fast", "DSLAM",
+        "HFC", "Cable Modem", "DOCSIS", "以太网接入",
+        "Wi-Fi", "5G接入", "6G接入", "PPPoE", "L2TP",
+        "接入网", "UNI", "SNI", "本地交换局", "业务节点", "CPN",
+        "最后一公里", "时间同步", "IEEE 802.1AS", "流量整形",
+        "TAS", "时间感知整形器", "CQF", "循环排队转发", "帧抢占",
+        "FRER", "URLLC", "TSN交换机", "TSN端点", "门控调度",
+        "PTP", "IEEE 1588", "SyncE", "同步以太网",
+    ],
+    "公共": [
+        "FPGA", "可编程", "可重构", "HDL", "Verilog", "VHDL", "RTL",
+        "EDA", "电子设计自动化", "HLS", "高层次综合", "逻辑综合",
+        "布局", "布线", "时序", "LUT", "BRAM", "DSP", "可配置逻辑",
+        "芯片设计", "处理器设计", "CPU设计", "SoC", "RISC-V", "ARM处理器",
+        "微架构", "缓存层次结构", "内存子系统",
+        "SRAM", "DRAM", "非易失性存储器", "NVM", "存储级内存", "SCM",
+        "持久性内存", "PMem", "内存墙",
+        "形式验证", "模型检查", "等价性检查", "SAT求解器",
+        "物理设计", "布局规划", "功耗分析", "热分析",
+        "原型验证", "仿真", "硬件仿真", "FPGA原型验证", "快速原型验证",
+        "在线仿真", "ICE", "仿真平台", "硬件在环", "HIL",
+        "近似计算", "随机计算", "内存计算", "存内计算", "CIM",
+        "自旋电子学", "忆阻器", "相变存储器", "PCM", "铁电存储器", "FeRAM",
+        "量子计算硬件", "超导电路", "离子阱", "低温计算", "低温CMOS",
+        "AI工作负载", "DSA", "特定域架构", "SIMD", "SIMT", "VLIW",
+        "乱序执行", "OoO", "超标量", "分支预测", "虚拟内存", "MMU",
+        "中断控制器", "DMA", "AHB", "APB", "AXI", "AMBA",
+        "片上调试", "JTAG", "边界扫描", "BIST", "ATPG", "ECO",
+        "时序收敛", "信号完整性", "SI", "电源完整性", "PI", "IR压降",
+        "电迁移", "EM", "静态时序分析", "STA", "动态仿真",
+        "回归测试", "覆盖率", "性能计数器", "Trace",
+        "功耗门控", "时钟门控", "电压频率缩放", "内存一致性模型",
+        "安全启动", "可信执行环境", "TEE", "PUF", "互连", "DCI",
+    ],
+    "芯片硬件": [
+        "FinFET", "GAA", "MOSFET", "CMOS工艺", "工艺节点", "工艺技术",
+        "光刻", "Lithography", "EUV", "DUV", "刻蚀", "沉积",
+        "CMP", "化学机械抛光", "离子注入", "外延", "MBE", "分子束外延",
+        "ALD", "原子层沉积", "CVD", "化学气相沉积", "PVD", "物理气相沉积",
+        "溅射", "电镀", "盲孔工艺", "BEOL", "FEOL", "金属层", "通孔",
+        "接触孔", "栅极", "源极", "漏极", "衬底", "晶圆", "Wafer",
+        "芯片", "Die", "光掩模", "Photomask", "OPC", "光学邻近校正",
+        "SADP", "SAQP", "自对准", "多重图案化", "DSA", "定向自组装",
+        "晶体管", "器件", "制程",
+        "玻璃基板", "金刚石", "材料", "键合", "混合键合",
+    ],
+}
+
+
+# 短 ASCII 缩写必须整词匹配，不能当子串。
+# 关键词表是按中文语料写的，`SI`（信号完整性）/`EM`（电迁移）/`PI`（电源完整性）/
+# `CD`（色散）在中文标题里不会误伤；但周报要一起跑 arXiv 英文摘要 —— 在那里
+# `SI` 会撞上 **silicon**、`EM` 撞上 **system**、`PI` 撞上 **pipeline**，
+# 于是「硅光 CPO 模块」被分到「公共」。整词匹配解决它。
+# 中文关键词（含 CJK）不走这条路：中文没有词边界，本来就得子串匹配。
+_ASCII_ABBREV = re.compile(r"^[A-Za-z0-9]{1,3}$")
+_BOUNDARY_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _kw_hit(keyword: str, low_text: str) -> bool:
+    kw = keyword.lower()
+    if _ASCII_ABBREV.match(keyword):
+        pat = _BOUNDARY_CACHE.get(kw)
+        if pat is None:
+            # (?!…) / (?<!…) 只挡字母：`HBM3`、`800G`、`TSN交换机` 都要能命中，
+            # 而 `silicon`、`system`、`pipeline` 不命中。
+            pat = re.compile(rf"(?<![a-z]){re.escape(kw)}(?![a-z])")
+            _BOUNDARY_CACHE[kw] = pat
+        return pat.search(low_text) is not None
+    return kw in low_text
+
+
+def _kw_strong(keyword: str) -> bool:
+    """强关键词 = 中文词或长词，单个就足以定类；短 ASCII 缩写需要旁证。"""
+    return not _ASCII_ABBREV.match(keyword)
+
+
+def infer_business_tags(*parts: str, limit: int = 3) -> list[str]:
+    """按关键词表推断业务标签（大小写不敏感）。
+
+    只在**模型没给出有效标签**时兜底 —— 绝不静默退化成「公共」。
+
+    类目入选门槛：命中 ≥2 个，或至少命中一个强关键词（中文词 / 长词）。
+    一个孤立的短缩写不足以定类 —— 实测 arXiv 语料里 `TAS`（TSN 的 Time-Aware Shaper）
+    会撞上论文自带的 **Gen-TAS**，「原子尺度噪声」那篇也因此被错标成「接入」。
+    宁可交还给「公共」这个诚实的通用位置，也不要报一个看着很确定的错标。
+
+    命中多个类目时按命中数降序（并列按 BUSINESS_TAGS 声明顺序），取前 ``limit`` 个。
+    """
+    text = " ".join(str(p or "") for p in parts).lower()
+    if not text.strip():
+        return []
+    hits: list[tuple[int, str]] = []
+    for tag, words in BUSINESS_TAG_KEYWORDS.items():
+        matched = [w for w in words if _kw_hit(w, text)]
+        if len(matched) >= 2 or any(_kw_strong(w) for w in matched):
+            hits.append((len(matched), tag))
+    hits.sort(key=lambda x: (-x[0], BUSINESS_TAGS.index(x[1])))
+    return [t for _, t in hits[:limit]]
+
 
 # ── 四段可编辑提示词（默认值 = 旧脚本原文）──────────────────────────
 
-DEFAULT_SCORING = """你是芯片与半导体产业技术分析师。请逐篇评估以下文章/论文，重点考察硬件/架构/工艺层面的实质创新，并按五类之一归档领域。
+DEFAULT_SCORING = (
+    """你是芯片与半导体产业技术分析师。请逐篇评估以下文章/论文，重点考察硬件/架构/工艺层面的实质创新，并按五类之一归档领域。
 
 评分维度参考：
 - 硬件/架构/工艺层面的实质创新性（这是主要权重）
 - 是否有可验证的量化结果或工程实现
 - 与半导体/芯片硬件技术的相关性（纯软件、纯市场新闻不相关）
-- 业务领域归属（公共 / 数通 / 传送 / 接入 / 芯片硬件）
+- 业务领域归属（公共 / 数通 / 传送 / 接入 / 芯片硬件），判定标准见下
+
+【业务领域判定标准】
+"""
+    + BUSINESS_TAG_STANDARD
+    + """
 
 入选理由要具体：写明关键数据或创新点，不要写「值得一读」这类空话。"""
+)
 
 DEFAULT_DETAIL = """你是芯片与半导体领域技术专家。请深度解读以下文章/论文：
 
@@ -112,7 +269,8 @@ FIXED_OUTPUT: dict[str, str] = {
 - score 为 1-10 浮点，可一位小数；
 - semiconductor 为 true/false，纯软件/纯市场新闻为 false；
 - domain 必须严格取自这五个之一：AI芯片架构与推理优化 / FPGA/可编程计算与架构 / 芯片互联与存储架构 / 处理器安全与可信架构 / 半导体制造与先进封装；
-- business_tags 取自 ["公共","数通","传送","接入","芯片硬件"]，1-3 个；
+- business_tags 严格取自 ["公共","数通","传送","接入","芯片硬件"] 这五个字面量（不要自造新词），
+  按上面「业务领域判定标准」的场景定义判断，1-3 个；判不准就给 1 个最贴近的；
 - title_cn：英文标题给准确中文译名，中文标题原样返回。""",
     "detail": """【输出格式（软件固定，不可更改）】
 只输出严格 JSON 对象（不要 Markdown 代码块、不要任何多余文字）：
@@ -213,25 +371,70 @@ def llm_json(
     max_tokens: int = 6000,
     timeout: float = 300,
     retries: int = 1,
+    validate: Callable[[Any], str | None] | None = None,
 ) -> Any:
-    """调用模型并解析 JSON；解析失败时补一句「只输出 JSON」重试一次。
+    """调用模型并解析 JSON；不合格时补一句话重试一次。
 
     传输层复用 ``ai_filter._call_model``（它自带的 HTTP 重试/限流退避照旧生效），
     这里只负责「拿到的文本 → 结构化数据」这一段。
+
+    ``validate`` 检查解析出来的数据是否**内容**合格（返回 ``None`` 通过，返回字符串
+    说明哪里不合格）。这很关键：模型可能返回一个语法完全正确、但漏了必填字段的
+    JSON —— 那种情况以前会直接落到关键词兜底，等于放弃了模型对正文的理解。
+
+    重试后仍不合格时**返回那份不合格的数据**而不是抛错，让调用方决定怎么兜底；
+    只有从头到尾连 JSON 都没解析出来才抛。
     """
     from mp_harvest.core import ai_filter as ai_mod
 
     last_err: Exception | None = None
+    last_data: Any = None
     for attempt in range(retries + 1):
         prompt = system_prompt
         if attempt:
-            prompt = prompt + "\n\n【重要】上一次回复无法解析。请只输出 JSON 本身，不要任何解释或代码块。"
+            why = last_err or "内容不完整"
+            prompt = prompt + f"\n\n【重要】上一次回复不合格：{why}。请只输出 JSON 本身，不要任何解释或代码块。"
         text = ai_mod._call_model(cfg, prompt, user_content, max_tokens=max_tokens, timeout=timeout)
         try:
-            return _extract_json(text)
+            data = _extract_json(text)
         except Exception as exc:  # noqa: BLE001
-            last_err = exc
+            last_err = f"无法解析为 JSON（{exc}）"
+            continue
+        if validate is not None:
+            problem = validate(data)
+            if problem:
+                # 留着这份「语法对但内容不全」的结果：重试仍不合格时交回调用方，
+                # 由它走自己的兜底 —— 总好过把整篇丢掉
+                last_data, last_err = data, problem
+                continue
+        return data
+    if last_data is not None:
+        return last_data
     raise RuntimeError(f"模型「{getattr(cfg, 'name', '')}」返回的内容无法解析为 JSON：{last_err}")
+
+
+# 打分阶段的正文窗口。旧脚本 gen_weekly_17.py:183 是 700，照抄了过来，
+# 但拿真实语料量过：arXiv 摘要中位数 1474 字、最长 1916，**30% 的领域关键词落在
+# 700 字之后**，56 篇里有 10 篇因此判不出领域（全是「截断后判不出 → 全文能判出」，
+# 截断只丢信号、从不加噪声）。2000 字覆盖整个摘要长度分布。
+# 代价：打分阶段（跑全部候选）的字符量约 2 倍，且有缓存，同一提示词只花一次。
+SCORING_TEXT_CHARS = 2000
+
+
+def _pick_item(data: Any) -> dict[str, Any]:
+    """从模型回复里取出单篇记录：兼容「包一层 items」与「直接给单对象」两种写法。"""
+    if isinstance(data, dict) and isinstance(data.get("items"), list) and data["items"]:
+        first = data["items"][0]
+        return first if isinstance(first, dict) else {}
+    return data if isinstance(data, dict) else {}
+
+
+def valid_business_tags(rec: dict[str, Any]) -> bool:
+    """记录里的 business_tags 是否是至少一个合法标签。"""
+    raw = rec.get("business_tags")
+    if not isinstance(raw, list):
+        return False
+    return any(t in BUSINESS_TAGS for t in raw)
 
 
 def _map_parallel(
@@ -503,17 +706,24 @@ def score_candidates(
     def work(it: dict[str, Any], model: Any) -> dict[str, Any]:
         user = (
             f"类型:{it['kind']} 来源:{it['source']} 日期:{it['date']}\n"
-            f"标题: {it['title']}\n正文/摘要: {it['text'][:700] or '（无正文）'}"
+            f"标题: {it['title']}\n正文/摘要: "
+            f"{it['text'][:SCORING_TEXT_CHARS] or '（无正文）'}"
         )
-        data = llm_json(model, system, user, max_tokens=4000)
-        # 兼容「包一层 items」与「直接给单对象」两种写法
-        rec: dict[str, Any] = {}
-        if isinstance(data, dict) and isinstance(data.get("items"), list) and data["items"]:
-            rec = data["items"][0]
-        elif isinstance(data, dict):
-            rec = data
+        data = llm_json(
+            model, system, user, max_tokens=4000,
+            # 漏了 business_tags 就带着这句话重试 —— 让模型再读一遍正文去判，
+            # 别急着用关键词表替它做决定
+            validate=lambda d: None if valid_business_tags(_pick_item(d))
+            else "business_tags 缺失或不在允许的五个取值内",
+        )
+        rec = _pick_item(data)
         score = _as_float(rec.get("score"), 0.0)
-        tags = [t for t in (rec.get("business_tags") or []) if t in BUSINESS_TAGS][:3] or ["公共"]
+        # 模型给的有效标签优先；一个都没给（漏字段 / 自造词）才降级到关键词匹配 ——
+        # 不能静默退化成「公共」，那会把分类错误伪装成正常结果。
+        tags = [t for t in (rec.get("business_tags") or []) if t in BUSINESS_TAGS][:3]
+        if not tags:
+            # 关键词也没命中时，「公共」= 跨领域通用，是诚实的兜底位置
+            tags = infer_business_tags(it["title"], it.get("text") or "") or ["公共"]
         domain = str(rec.get("domain") or "")
         return {
             "score": score,
@@ -1290,6 +1500,9 @@ def generate_issue(
 
 __all__ = [
     "BUSINESS_TAGS",
+    "BUSINESS_TAG_KEYWORDS",
+    "BUSINESS_TAG_STANDARD",
+    "infer_business_tags",
     "archive_articles",
     "archive_article",
     "generate_issue",

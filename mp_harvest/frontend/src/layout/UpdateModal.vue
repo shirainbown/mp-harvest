@@ -22,12 +22,12 @@ const downloading = computed(() => !!settings.updateTaskId)
  * 「normal navigation, allow」——**会把应用窗口本身导航走**，而 pywebview 窗口没有
  * 后退按钮，用户就卡在网页上了（2026-09）。
  */
-function onNotesClick(e: MouseEvent) {
+async function onNotesClick(e: MouseEvent) {
   const anchor = (e.target as HTMLElement | null)?.closest?.('a')
   const href = anchor?.getAttribute('href') || ''
   if (!href) return
   e.preventDefault()
-  if (!openExternal(href)) ui.error('打开链接失败，请手动复制到浏览器')
+  if (!(await openExternal(href))) ui.error('打开链接失败，请手动复制到浏览器')
 }
 
 function later() {

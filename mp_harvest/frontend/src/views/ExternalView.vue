@@ -18,7 +18,7 @@ import ProgressInline from '../components/ProgressInline.vue'
 import { useExternalStore } from '../stores/external'
 import { useTasksStore } from '../stores/tasks'
 import { useUiStore } from '../stores/ui'
-import { chooseDirectory, copyText, openExternal } from '../api/desktop'
+import { chooseDirectory, copyText, openExternal, openLocalPath } from '../api/desktop'
 
 const ext = useExternalStore()
 const tasks = useTasksStore()
@@ -174,21 +174,22 @@ function rowReason(a: { verdict: string | null; reason: string; title_reason: st
   return a.content_reason || a.title_reason || a.reason || ''
 }
 
-function openItem(a: { url: string }) {
+async function openItem(a: { url: string }) {
   if (!a.url) {
     ui.error('该条目没有原文链接')
     return
   }
-  openExternal(a.url)
+  if (!(await openExternal(a.url))) ui.error('打开失败：链接无法在浏览器中打开')
 }
 
-function openLocal(path: string, what: string) {
+async function openLocal(path: string, what: string) {
   if (!path) {
     ui.error(`该条目没有本地${what}`)
     return
   }
-  // file:// 交给系统默认程序；pywebview 侧 webbrowser.open 能处理
-  openExternal(`file://${path}`)
+  // 走 shell_open，不走 openExternal('file://')：后者只放行 http(s)，会被静默挡下
+  const { ok, reason } = await openLocalPath(path)
+  if (!ok) ui.error(reason || `打开本地${what}失败`)
 }
 
 async function copyLink(a: { url: string }) {

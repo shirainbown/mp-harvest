@@ -16,6 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from mp_harvest.core import ai_filter as af  # noqa: E402
 from mp_harvest.core import weekly_report as wr  # noqa: E402
 from mp_harvest.core.ai_filter import ModelConfig  # noqa: E402
 
@@ -616,3 +617,281 @@ def test_builtin_template_links_to_local_archive():
     assert h.count('href="articles/a3.html"') == 1     # 其他入选只有板块三表格
     # 没有归档文件的文章不应出现空链接
     assert 'href=""' not in h
+
+
+# ── 业务领域归属：标准要喂给模型，漏答要关键词兜底 ──────────────────
+#
+# 用户 2026-09-12 的原话：「AI 模型怎么知道哪些文章应该分类到正确的领域中？
+# 我记得我在曾经给过分类的标准」。此前 DEFAULT_SCORING 只列了五个标签**名字**，
+# 模型只能靠猜 —— 数通/传送/接入是邻接术语，必然漂移且不可复现。
+
+
+@pytest.mark.parametrize("text,expect", [
+    ("基于 DPU 的 RoCEv2 拥塞控制与集合通信优化", "数通"),
+    ("硅光 CPO 模块中的 PAM4 SerDes 与相干光 DSP 设计", "传送"),
+    ("XGS-PON OLT 与 TSN 时间敏感网络的 IEEE 1588 同步", "接入"),
+    ("面向 FPGA 的 HLS 高层次综合与 RTL 形式验证", "公共"),
+    ("EUV 光刻与原子层沉积 ALD 工艺中的 FinFET 器件", "芯片硬件"),
+])
+def test_infer_business_tags_picks_the_right_domain(text, expect):
+    """关键词兜底必须把典型文本分到正确领域 —— 这是标准落到代码的那一半。"""
+    assert wr.infer_business_tags(text)[0] == expect
+
+
+def test_infer_business_tags_is_case_insensitive():
+    """论文标题里 DPU/cpo 大小写混写很常见，匹配必须归一化。"""
+    assert wr.infer_business_tags("a dpu-based smartnic")[0] == "数通"
+    assert wr.infer_business_tags("硅光 cpo 模块")[0] == "传送"
+
+
+def test_lone_short_acronym_is_not_enough_to_classify():
+    """一个孤立的短缩写不足以定类 —— 实测 arXiv 语料里 `TAS` 撞上论文名 **Gen-TAS**。
+
+    这类误报比「不分类」更糟：报告里会印出一个看着很确定的错标。
+    交还给「公共」比报一个错标诚实。
+    """
+    assert wr.infer_business_tags("Gen-TAS: A Generative AI-Aided Framework") == []
+    assert wr.infer_business_tags("silicon photonics cpo module") == []
+    # 同一批缩写，凑够两个就能定类
+    assert wr.infer_business_tags("XGS-PON OLT 部署") == ["接入"]
+
+
+@pytest.mark.parametrize("text", [
+    # `SI`（信号完整性）撞上 silicon：曾让「硅光 CPO」被误判成「公共」
+    "silicon photonics cpo module",
+    "high purity silicon substrate growth",
+    # `EM`（电迁移）撞上 system
+    "system level thermal analysis",
+    # `PI`（电源完整性）撞上 pipeline
+    "pipeline architecture for inference",
+])
+def test_short_ascii_keywords_do_not_match_inside_english_words(text):
+    """关键词表是按中文语料写的，跑 arXiv 英文摘要时短缩写会误伤整词。
+
+    这是修 `SI`∈silicon 时发现的真 bug：中文语料碰不到，英文摘要遍地都是。
+    """
+    assert wr.infer_business_tags(text) == []
+
+
+def test_short_ascii_keywords_match_across_separators():
+    """整词匹配不能紧到把 HBM3 / 800G / TSN交换机 这类真实写法漏掉。"""
+    assert "数通" in wr.infer_business_tags("HBM3 与 CXL 内存扩展")
+    assert "接入" in wr.infer_business_tags("TSN交换机与门控调度")
+    assert "接入" in wr.infer_business_tags("XGS-PON OLT 部署")
+    assert "数通" in wr.infer_business_tags("DPU-based smartnic")
+
+
+def test_infer_business_tags_ranks_by_hit_count():
+    """多个类目都命中时，按命中关键词数量排序，取最贴近的。"""
+    # 传送 3 个（硅光/CPO/PAM4），数通 2 个（DPU/集合通信）
+    assert wr.infer_business_tags("硅光 CPO PAM4 模块与 DPU 集合通信") == ["传送", "数通"]
+
+
+def test_infer_business_tags_limits_to_three():
+    tags = wr.infer_business_tags(
+        "硅光 CPO PAM4 相干光 DWDM DPU RoCEv2 集合通信 PON OLT TSN 光刻 EUV ALD")
+    assert len(tags) == 3
+    assert len(set(tags)) == 3
+
+
+def test_infer_business_tags_empty_without_match():
+    """什么都没命中要返回空列表，由调用方决定兜底 —— 不在这里偷偷给默认值。"""
+    assert wr.infer_business_tags("今天天气不错，适合出门散步") == []
+    assert wr.infer_business_tags("") == []
+
+
+def test_business_tag_keywords_cover_exactly_the_five_tags():
+    """关键词表的键必须与 BUSINESS_TAGS 一一对应（不然排序会 KeyError）。"""
+    assert set(wr.BUSINESS_TAG_KEYWORDS) == set(wr.BUSINESS_TAGS)
+    assert all(words for words in wr.BUSINESS_TAG_KEYWORDS.values())
+
+
+def test_scoring_prompt_carries_the_business_tag_standard(monkeypatch, tmp_path):
+    """判定标准必须真的进到 system prompt —— 否则模型还是只能看名字猜。"""
+    seen: list[str] = []
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        seen.append(system)
+        return json.dumps({"items": [{"idx": 0, "score": 8, "semiconductor": True,
+                                      "title_cn": "译名", "domain": wr.DOMAINS[0],
+                                      "business_tags": ["数通"], "reason": "r"}]},
+                          ensure_ascii=False)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    wr.score_candidates([_cand("a1", "标题")], [_cfg()],
+                        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+                        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+
+    assert seen, "打分阶段没有调用模型"
+    sys_prompt = seen[0]
+    # 五个标签的场景定义都要在（光看名字模型分不清数通/传送/接入）
+    for kw in ("数据中心", "硅光", "PON", "FPGA", "光刻"):
+        assert kw in sys_prompt, kw
+    assert "业务领域判定标准" in sys_prompt
+
+
+def test_scoring_falls_back_to_keywords_when_model_omits_tags(monkeypatch, tmp_path):
+    """模型没给 business_tags 时，用关键词兜底 —— 绝不能静默退化成「公共」。
+
+    这是修复的核心断言：标题明明是光刻工艺，旧代码会给「公共」。
+    """
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        return json.dumps({"items": [{"idx": 0, "score": 8, "semiconductor": True,
+                                      "title_cn": "译名", "domain": wr.DOMAINS[0],
+                                      "reason": "r"}]}, ensure_ascii=False)   # 漏了 business_tags
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    got, _ = wr.score_candidates(
+        [_cand("a1", "EUV 光刻与原子层沉积 ALD 工艺中的 FinFET 器件")], [_cfg()],
+        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+    assert got["a1"]["business_tags"] == ["芯片硬件"]
+
+
+def test_scoring_falls_back_when_model_returns_bogus_tags(monkeypatch, tmp_path):
+    """模型自造标签（不在五类里）等同漏答，走同样的兜底路径。"""
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        return json.dumps({"items": [{"idx": 0, "score": 8, "semiconductor": True,
+                                      "title_cn": "译名", "domain": wr.DOMAINS[0],
+                                      "business_tags": ["光通信", "半导体"], "reason": "r"}]},
+                          ensure_ascii=False)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    got, _ = wr.score_candidates(
+        [_cand("a1", "XGS-PON OLT 与 TSN 时间敏感网络")], [_cfg()],
+        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+    assert got["a1"]["business_tags"] == ["接入"]
+
+
+def test_scoring_prefers_valid_model_tags_over_keywords(monkeypatch, tmp_path):
+    """模型给了合法标签就听模型的 —— 它读过正文，比关键词匹配更准。"""
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        return json.dumps({"items": [{"idx": 0, "score": 8, "semiconductor": True,
+                                      "title_cn": "译名", "domain": wr.DOMAINS[0],
+                                      "business_tags": ["传送", "公共"], "reason": "r"}]},
+                          ensure_ascii=False)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    # 标题命中「光刻」（芯片硬件），但模型说是「传送」—— 以模型为准
+    got, _ = wr.score_candidates(
+        [_cand("a1", "EUV 光刻工艺综述")], [_cfg()],
+        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+    assert got["a1"]["business_tags"] == ["传送", "公共"]
+
+
+def test_scoring_public_is_last_resort_only(monkeypatch, tmp_path):
+    """关键词也全军覆没时才落到「公共」（跨领域通用），且确实只在这一种情况下发生。"""
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        return json.dumps({"items": [{"idx": 0, "score": 5, "semiconductor": True,
+                                      "title_cn": "译名", "domain": wr.DOMAINS[0],
+                                      "reason": "r"}]}, ensure_ascii=False)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    got, _ = wr.score_candidates(
+        [_cand("a1", "行业周度观察与随笔", text="本周的一些零散想法。")], [_cfg()],
+        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+    assert got["a1"]["business_tags"] == ["公共"]
+
+
+def test_llm_json_retries_on_missing_field_then_returns_good_data(monkeypatch):
+    """语法对但漏字段 → 带话重试；重试给了合格答案就用它，不走关键词。"""
+    replies = iter([
+        json.dumps({"items": [{"score": 8, "title_cn": "t", "domain": wr.DOMAINS[0],
+                               "reason": "r"}]}, ensure_ascii=False),      # 漏 business_tags
+        json.dumps({"items": [{"score": 8, "title_cn": "t", "domain": wr.DOMAINS[0],
+                               "business_tags": ["传送"], "reason": "r"}]}, ensure_ascii=False),
+    ])
+    prompts: list[str] = []
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        prompts.append(system)
+        return next(replies)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    data = wr.llm_json(_cfg(), "SYS", "USER",
+                       validate=lambda d: None if wr.valid_business_tags(wr._pick_item(d)) else "缺标签")
+    assert wr._pick_item(data)["business_tags"] == ["传送"]
+    assert len(prompts) == 2
+    assert "缺标签" in prompts[1]        # 重试提示里带上了具体原因
+
+
+def test_llm_json_returns_incomplete_data_instead_of_raising(monkeypatch):
+    """重试后仍不合格 → 返回那份数据交给调用方兜底，别把整篇丢掉。"""
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        return json.dumps({"items": [{"score": 7, "reason": "r"}]}, ensure_ascii=False)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    data = wr.llm_json(_cfg(), "SYS", "USER",
+                       validate=lambda d: None if wr.valid_business_tags(wr._pick_item(d)) else "缺标签")
+    assert wr._pick_item(data)["score"] == 7      # 数据还在
+
+
+def test_scoring_retry_beats_keyword_fallback(monkeypatch, tmp_path):
+    """模型第一次漏标签、重试补上 → 用模型答案，**不**用关键词兜底。
+
+    标题命中「光刻」（芯片硬件），但模型重试后说是「接入」—— 听模型的，
+    它读的是正文，关键词表只看了标题。
+    """
+    replies = iter([
+        json.dumps({"items": [{"idx": 0, "score": 8, "semiconductor": True, "title_cn": "译名",
+                               "domain": wr.DOMAINS[0], "reason": "r"}]}, ensure_ascii=False),
+        json.dumps({"items": [{"idx": 0, "score": 8, "semiconductor": True, "title_cn": "译名",
+                               "domain": wr.DOMAINS[0], "business_tags": ["接入"],
+                               "reason": "r"}]}, ensure_ascii=False),
+    ])
+    monkeypatch.setattr(af, "_call_model", lambda *a, **kw: next(replies))
+    got, _ = wr.score_candidates(
+        [_cand("a1", "EUV 光刻与原子层沉积 ALD 工艺")], [_cfg()],
+        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+    assert got["a1"]["business_tags"] == ["接入"]
+
+
+def test_scoring_keeps_article_when_model_never_gives_tags(monkeypatch, tmp_path):
+    """重试后还是不给标签 → 关键词兜底，且**不丢这篇**（打分结果照样产出）。"""
+    calls = []
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        calls.append(1)
+        return json.dumps({"items": [{"idx": 0, "score": 6, "semiconductor": True, "title_cn": "译名",
+                                      "domain": wr.DOMAINS[0], "reason": "r"}]}, ensure_ascii=False)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    got, errors = wr.score_candidates(
+        [_cand("a1", "XGS-PON OLT 与 TSN 时间敏感网络")], [_cfg()],
+        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+    assert not errors, errors
+    assert got["a1"]["business_tags"] == ["接入"]     # 关键词兜底生效
+    assert got["a1"]["score"] == 6                   # 这篇没被丢掉
+    assert len(calls) == 2                           # 重试过一次
+
+
+def test_scoring_sends_enough_context_to_classify(monkeypatch, tmp_path):
+    """打分阶段必须给足正文 —— 领域信号大量落在前 700 字之后。
+
+    实测 arXiv 语料：摘要中位数 1474 字，30% 的领域关键词在 700 字之后，
+    56 篇里 10 篇因此判不出领域。窗口被改窄会静默丢分类准确度，所以钉住。
+    """
+    seen: list[str] = []
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        seen.append(user)
+        return json.dumps({"items": [{"idx": 0, "score": 8, "semiconductor": True,
+                                      "title_cn": "译名", "domain": wr.DOMAINS[0],
+                                      "business_tags": ["公共"], "reason": "r"}]},
+                          ensure_ascii=False)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    # 领域关键词只在第 1500 字附近出现
+    body = "开场白。" * 300 + "本文提出一种硅光 CPO 封装方案。" + "后文。" * 300
+    wr.score_candidates([_cand("a1", "标题", text=body)], [_cfg()],
+                        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+                        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1)
+
+    assert seen, "打分阶段没有调用模型"
+    assert "硅光 CPO 封装方案" in seen[0], "正文被截断，模型看不到第 1500 字的领域信号"
+    assert wr.SCORING_TEXT_CHARS >= 2000

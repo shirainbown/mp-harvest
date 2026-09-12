@@ -301,8 +301,8 @@ async function copyLink(a: Article) {
   if (await copyText(a.url)) ui.toast('链接已复制')
   else ui.error('复制失败，请手动选择链接文本')
 }
-function openArticle(a: Article) {
-  if (!openExternal(a.url)) ui.error('打开失败：该文章没有可用的链接')
+async function openArticle(a: Article) {
+  if (!(await openExternal(a.url))) ui.error('打开失败：该文章没有可用的链接')
 }
 
 // ---- 虚拟滚动：>500 条启用，行高固定 36px（§5.5/§5.10） ----

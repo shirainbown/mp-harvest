@@ -18,7 +18,7 @@ import { useAccountsStore } from '../stores/accounts'
 import { useExternalStore } from '../stores/external'
 import { useTasksStore } from '../stores/tasks'
 import { useUiStore } from '../stores/ui'
-import { chooseDirectory, chooseFile, openExternal } from '../api/desktop'
+import { chooseDirectory, chooseFile, openLocalPath } from '../api/desktop'
 
 const weekly = useWeeklyStore()
 const accounts = useAccountsStore()
@@ -87,9 +87,15 @@ const genTask = computed(() => (weekly.genTaskId ? tasks.tasks[weekly.genTaskId]
 const renderTask = computed(() => (weekly.renderTaskId ? tasks.tasks[weekly.renderTaskId] : null))
 const busy = computed(() => !!weekly.genTaskId || !!weekly.renderTaskId)
 
-function openPath(p: string) {
-  if (!p) return
-  openExternal(`file://${p}`)
+/** 打开本地文件/目录（往期报告、期目录、上次输出）—— 走后端 shell_open，
+ *  不能走 openExternal('file://')：shell 侧只放行 http(s)，file:// 会被静默挡下。 */
+async function openPath(p: string) {
+  if (!p) {
+    ui.error('没有可打开的路径')
+    return
+  }
+  const { ok, reason } = await openLocalPath(p)
+  if (!ok) ui.error(reason || '打开失败')
 }
 </script>
 

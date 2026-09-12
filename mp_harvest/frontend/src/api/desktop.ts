@@ -11,8 +11,10 @@
 //    WKWebView 里该 API 可能因权限被 rejected，于是要么静默失败、要么更糟：
 //    没 await 的调用点会照样弹「已复制」。这里统一兜底并返回真实结果。
 
+import { rest } from './rest'
+
 interface PywebviewApi {
-  open_external?: (url: string) => unknown
+  open_external?: (url: string) => Promise<unknown> | unknown
   choose_directory?: () => Promise<string>
   choose_file?: (kind?: string) => Promise<string>
 }
@@ -22,16 +24,24 @@ function shellApi(): PywebviewApi | undefined {
   return w.pywebview?.api
 }
 
-/** 在系统浏览器中打开链接；返回是否已发起（调用方据此提示失败）。 */
-export function openExternal(url: string): boolean {
+/**
+ * 在系统浏览器中打开链接；返回是否**真的**打开了（调用方据此提示失败）。
+ *
+ * 注意要 ``await``：``bridge.open_external`` 是 pywebview 的异步 JS-API，
+ * 返回 Promise，而 shell 侧会因为协议不允许（只放行 http/https）而返回 False。
+ * 早先这里不 await 就无条件 ``return true``，于是「打开失败」被吞掉 ——
+ * 调用方的 ``if (!ok)`` 分支永远不触发，用户看到的就是「点了没反应」。
+ */
+export async function openExternal(url: string): Promise<boolean> {
   const target = String(url || '').trim()
   if (!target) return false
 
   const bridge = shellApi()
   if (bridge?.open_external) {
     try {
-      bridge.open_external(target)
-      return true
+      const ok = await bridge.open_external(target)
+      // pywebview 会把 Python 的返回值原样带回；显式 False 才算失败
+      if (ok !== false) return true
     } catch {
       /* 落到下面的兜底 */
     }
@@ -52,6 +62,29 @@ export function openExternal(url: string): boolean {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * 用系统默认程序打开**本地**文件或目录。
+ *
+ * 不能像 http 链接那样走 ``openExternal('file://…')`` —— shell 侧的
+ * ``open_external`` 只放行 http/https，``file://`` 一律被挡（2026-09 修复）。
+ * 走后端 ``/api/shell/open`` 还能把目录交给 Finder，而不是让浏览器列目录。
+ *
+ * 返回 ``{ok, reason}``：``reason`` 有值表示要提示用户（路径不存在、系统拒绝等）。
+ */
+export async function openLocalPath(path: string): Promise<{ ok: boolean; reason?: string }> {
+  const target = String(path || '').trim()
+  if (!target) return { ok: false, reason: '路径为空' }
+  try {
+    await rest.post<{ ok: boolean; path: string; is_dir: boolean }>('/api/shell/open', {
+      path: target,
+    })
+    return { ok: true }
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e)
+    return { ok: false, reason: `打开失败：${why}` }
   }
 }
 

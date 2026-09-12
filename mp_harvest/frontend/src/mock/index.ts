@@ -363,6 +363,10 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
     return { ok: true, latency_ms: 189 } as T
   }
   if (p === '/api/platform' && method === 'GET') return platform as T
+  // 用系统默认程序打开本地路径；mock 下只回报成功，不真的开
+  if (p === '/api/shell/open' && method === 'POST') {
+    return { ok: true, path: String(b.path || ''), is_dir: false } as T
+  }
   if (p === '/api/update/check' && method === 'GET') {
     await delay(900)
     return {
