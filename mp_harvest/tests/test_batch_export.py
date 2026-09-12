@@ -126,9 +126,9 @@ def test_batch_export_is_idempotent_across_batches():
         assert calls == ["https://mp.weixin.qq.com/s/a1", "https://mp.weixin.qq.com/s/b1"]  # a1 未重复拉取
         html_files = [p for p in out.rglob("*.html") if p.name != "index.html"]
         assert len(html_files) == 2  # 不产生副本
-        # 文件被删后重跑：重新拉取（remove_missing 语义）
+        # 文件被删后重跑：**不用去清记录**也该重新拉 —— 跳过与否看的是文件还在不在，
+        # 不是记录表里有没有行（2026-09 把判定挪到了读侧，原先靠 remove_missing 清记录）
         Path(r1["written"][0]).unlink()
-        records.remove_missing()
         r3 = batch_export_articles([row], out_dir=out, fetch_article=fake_fetch, records=records)
         assert r3["exported"] == 1 and r3["skipped"] == 0
 

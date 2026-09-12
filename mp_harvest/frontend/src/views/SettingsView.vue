@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 页面：设置（GET/PUT /api/settings 扁平 KV）——导出目录、图片下载、AI 默认值、
 // 网络代理、平台能力。2026-09 把原「网络设置」整页并入本页。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
 import SSwitch from '../components/SSwitch.vue'
@@ -19,6 +19,16 @@ onMounted(() => {
   if (!settings.loaded) settings.load()
   void storage.load()
 })
+
+// 视图是 v-show 常驻挂载的，`onMounted` 只在应用启动时跑一次 —— 不补这个 watch，
+// 用户删完文件再切回本页看到的还是启动那一刻的旧数字（2026-09 用户报的「删了导出
+// 材料，界面完全没有变化」）。每次切到本页都重扫一遍磁盘。
+watch(
+  () => ui.view,
+  (v) => {
+    if (v === 'settings') void storage.load()
+  },
+)
 
 // ---- 存储占用与清理（2026-09）----
 //
@@ -199,9 +209,20 @@ function onWorkers() {
           <span class="tertiary" style="font-weight:400;margin-left:8px">
             共 {{ fmtSize(storage.total_bytes) }} · 其中可清理 {{ fmtSize(storage.clearable_bytes) }}
           </span>
+          <!-- 你在应用外面把文件删了（比如直接删导出的 HTML），数字不会自己变 ——
+               重扫一遍磁盘。切回本页时也会自动重扫。 -->
+          <SButton size="sm" variant="ghost" style="margin-left:8px"
+                   :loading="storage.loading" @click="storage.load()">
+            刷新
+          </SButton>
         </div>
         <SkeletonRows v-if="storage.showSkeleton" :rows="3" />
         <template v-else>
+          <!-- 空项不列（删光了就消失），所以全新安装时这里会一条都没有 ——
+               得说一句，否则看着像加载失败 -->
+          <div v-if="!storage.items.length" class="muted" style="font-size:var(--fs-sm)">
+            本地还没产生什么数据。拉取文章、跑一次筛选或导出之后，这里会列出各项占用。
+          </div>
           <div v-for="it in storage.items" :key="it.key" class="st-row">
             <input v-if="it.safe" type="checkbox" class="cb" :checked="picked.has(it.key)"
                    @change="togglePick(it.key, ($event.target as HTMLInputElement).checked)" />

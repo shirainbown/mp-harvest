@@ -40,6 +40,9 @@ export interface Article {
   /** 内容筛选判定（第二阶段；未做内容筛选为 null） */
   content_verdict: 'keep' | 'drop' | null
   content_reason: string
+  /** 本地**还留着**这篇导出的 HTML（2026-09）。后端每次请求都按文件是否存在
+   *  重新判定 —— 把导出文件删掉再刷新，这个标记就会消失。 */
+  exported: boolean
 }
 
 // ---- 其他来源（外部目录，2026-09）----

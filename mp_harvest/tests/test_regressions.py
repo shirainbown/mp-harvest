@@ -433,7 +433,7 @@ def test_article_id_includes_biz():
     row = {"identity": "mid:1|idx:1|sn:x", "link": "https://mp.weixin.qq.com/s/A",
            "title": "T", "publish_ts": 1754400000, "__biz": "MzA"}
     assert article_public_id(row) == "MzA:mid:1|idx:1|sn:x"
-    assert article_out(row, account_id="acc1")["id"] == "MzA:mid:1|idx:1|sn:x"
+    assert article_out(row, account_id="acc1", exported=False)["id"] == "MzA:mid:1|idx:1|sn:x"
     # 没有 __biz 时退回 identity（兼容旧缓存）
     assert article_public_id({"identity": "i1"}) == "i1"
 

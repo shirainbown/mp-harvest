@@ -78,12 +78,26 @@ def article_source(source: Any) -> str:
     return "M" if s else "G"
 
 
-def article_out(row: dict[str, Any], *, account_id: str = "", account_name: str = "") -> dict[str, Any]:
+def article_out(
+    row: dict[str, Any],
+    *,
+    account_id: str = "",
+    account_name: str = "",
+    exported: bool,          # **必填、无默认值**：见下
+) -> dict[str, Any]:
     """core 文章行（history_client / sightings 合并行）→ 前端 ``Article``（types.ts）。
 
     字段映射：``identity→id``、``link→url``、``publish_ts→date``（本地 ISO 字符串，
     ``Date.parse`` 可解析）、``source→M/G/补``、``keep True/False/None→keep/drop/null``、
     ``reason``（缺省空串）。
+
+    ``exported``：本地是否**还留着**导出的 HTML。由调用方查好传进来（映射函数
+    不该自己去碰导出记录库）。
+
+    **刻意不给默认值**：写 `= False` 看着无害，但变异测试证明它躲得过所有用例
+    —— 真的把默认值翻成 True，历史那条路每行都显式传参、照常绿，只有**没传的**
+    调用点（外部来源）会静默挂上假的「已导出」。必填就把这个位置堵死了，
+    改的人必须对每个调用点表态。
     """
     keep = row.get("keep")
     title_keep = row.get("title_keep")
@@ -116,6 +130,7 @@ def article_out(row: dict[str, Any], *, account_id: str = "", account_name: str 
         "title_reason": str(row.get("title_reason") or ""),
         "content_verdict": content_verdict,
         "content_reason": str(row.get("content_reason") or ""),
+        "exported": bool(exported),
     }
 
 

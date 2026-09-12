@@ -1,4 +1,4 @@
-"""导出记录库（core/export_records.py）单元测试：幂等键、过滤、remove_missing、容错。"""
+"""导出记录库（core/export_records.py）单元测试：幂等键、过滤、已导出集合、容错。"""
 
 from __future__ import annotations
 
@@ -51,7 +51,15 @@ def test_list_exports_filter_by_account_and_dir(tmp_path):
     assert len(r.list_exports(out_dir="/out")) == 2
 
 
-def test_remove_missing(tmp_path):
+def test_exported_article_ids_only_counts_files_that_still_exist(tmp_path):
+    """**文件还在**才算「已导出」—— 用户报的那个 bug 的护栏。
+
+    用户删掉导出的 HTML 之后，列表必须跟着变。若这里返回的是「有记录」的集合，
+    界面就会一直挂着「已导出」而本地空空如也，比不显示更误导。
+
+    （原 `remove_missing()` 靠删记录达到同样效果，但它从来没被调用过，而且是写
+    操作、不该挂在读路径上 —— 删掉后由这条测试接管。）
+    """
     out = tmp_path / "out"
     out.mkdir()
     f = out / "a.html"
@@ -59,13 +67,28 @@ def test_remove_missing(tmp_path):
     r = _rec(tmp_path / "t.db")
     r.record_export(article_id="a1", out_path=str(f), exported_at=1)
     r.record_export(article_id="a2", out_path=str(out / "gone.html"), exported_at=2)
-    assert r.remove_missing() == 1
-    assert r.find_export("a2", str(out / "gone.html")) is None
-    assert r.find_export("a1", str(f)) is not None
-    # 文件删除后重跑可重新导出
+
+    assert r.exported_article_ids() == {"a1"}, "只该算文件还在的那条"
+    # 记录仍在（读侧不写库），但集合里必须消失
+    assert r.find_export("a2", str(out / "gone.html")) is not None
     f.unlink()
-    assert r.remove_missing() == 1
-    assert r.list_exports() == []
+    assert r.exported_article_ids() == set(), "文件删光后一篇都不该算已导出"
+
+
+def test_exported_article_ids_merges_repeat_exports(tmp_path):
+    """同一篇导出过两次（换目录/改标题）只算一条 —— 与 find_by_article 同口径。"""
+    out = tmp_path / "out"
+    out.mkdir()
+    a, b = out / "a.html", out / "b.html"
+    a.write_text("x", encoding="utf-8")
+    b.write_text("y", encoding="utf-8")
+    r = _rec(tmp_path / "t.db")
+    r.record_export(article_id="a1", out_path=str(a), exported_at=1)
+    r.record_export(article_id="a1", out_path=str(b), exported_at=2)
+    assert r.exported_article_ids() == {"a1"}
+    # 删掉其中一份，另一份还在 → 仍算已导出
+    a.unlink()
+    assert r.exported_article_ids() == {"a1"}
 
 
 def test_fault_tolerance_on_bad_path(tmp_path):
@@ -74,4 +97,4 @@ def test_fault_tolerance_on_bad_path(tmp_path):
     assert r.record_export(article_id="a1", out_path="/x") is False
     assert r.find_export("a1", "/x") is None
     assert r.list_exports() == []
-    assert r.remove_missing() == 0
+    assert r.exported_article_ids() == set()

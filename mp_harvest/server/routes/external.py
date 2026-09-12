@@ -116,6 +116,9 @@ def _item_out(item: dict[str, Any], *, verdicts: dict, content: dict) -> dict[st
         row,
         account_id=str(item.get("source_id") or ""),
         account_name=str(item.get("source_name") or ""),
+        # 外部条目不走「导出到本地 HTML」那条路（导出接口只收公众号文章），
+        # 恒为未导出
+        exported=False,
     )
     out.update(
         {

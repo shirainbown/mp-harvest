@@ -65,6 +65,8 @@ const articles: Article[] = []
       title_reason: reason,
       content_verdict: null,
       content_reason: '',
+      // 前几条标成「已导出」，好让列表里的标记在 mock 模式下看得见
+      exported: i % 3 === 0,
     })
   }
 }
@@ -156,6 +158,8 @@ function _mockExtItem(
     title_reason: verdict === 'keep' ? '与芯片设计相关' : '',
     content_verdict: null,
     content_reason: '',
+    // 外部来源不走「导出到本地 HTML」那条路，恒为 false
+    exported: false,
     arxiv_id: `2609.${n}v1`,
     domain,
     primary_category: 'cs.AR',
@@ -306,6 +310,7 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
       title_reason: '',
       content_verdict: null,
       content_reason: '',
+      exported: false,
     }
     articles.unshift(art)
     return art as T

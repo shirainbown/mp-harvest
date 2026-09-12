@@ -552,6 +552,9 @@ function toggleAiIncludeContent() {
             <STooltip :text="badgeTip[rows[vr.index].source]">
               <SBadge :variant="badgeVariant[rows[vr.index].source]">{{ rows[vr.index].source }}</SBadge>
             </STooltip>
+            <!-- 本地还留着导出文件才显示。删掉文件后点「刷新」它就消失 ——
+                 标记由后端按**文件是否存在**判定，不是查导出记录表里有没有行 -->
+            <SBadge v-if="rows[vr.index].exported" variant="g" title="本地已存有这篇的 HTML">已导出</SBadge>
             <span class="row-actions">
               <SButton size="sm" variant="ghost" @click="openArticle(rows[vr.index])">打开</SButton>
               <SButton size="sm" variant="ghost" @click="copyLink(rows[vr.index])">复制</SButton>
@@ -578,6 +581,7 @@ function toggleAiIncludeContent() {
             <span v-else class="art-reason"></span>
             <span class="mono muted">{{ mmdd(a) }}</span>
             <STooltip :text="badgeTip[a.source]"><SBadge :variant="badgeVariant[a.source]">{{ a.source }}</SBadge></STooltip>
+            <SBadge v-if="a.exported" variant="g" title="本地已存有这篇的 HTML">已导出</SBadge>
             <span class="row-actions">
               <SButton size="sm" variant="ghost" @click="openArticle(a)">打开</SButton>
               <SButton size="sm" variant="ghost" @click="copyLink(a)">复制</SButton>

@@ -19,6 +19,7 @@ ARTICLE_KEYS = {
     "id", "account_id", "account_name", "title", "url", "date", "fetched_at", "source",
     "verdict", "reason",
     "title_verdict", "title_reason", "content_verdict", "content_reason",
+    "exported",
 }
 
 
@@ -108,6 +109,68 @@ def test_articles_bare_array_shape(client, auth):
         assert art["title_reason"] == ""
         assert art["content_verdict"] is None
         assert art["content_reason"] == ""
+        # 没导出过就是 False —— 默认成 True 会让每篇都挂个「已导出」的假标记
+        assert art["exported"] is False
+
+
+def test_articles_exported_flag_follows_the_file_on_disk(client, auth, tmp_path):
+    """「已导出」按**文件是否还在**判定 —— 删掉导出的 HTML，标记必须跟着消失。
+
+    用户报的原话：「已经删除了文章导出的材料，但是历史文章里面完全没有变化」。
+    根因是那一页压根不显示导出状态；补上这个字段之后，判定必须落在磁盘上，
+    否则标记会一直骗人（记录表里那行还在，本地其实什么都没有）。
+
+    这里直接验路线：写一条导出记录 + 一个真实文件 → 标记亮；删文件 → 标记灭。
+    """
+    from mp_harvest.core.export_records import get_records
+    from mp_harvest.server import state
+
+    acc = add_account(client, auth)
+    state.set_articles(acc["id"], [{
+        "title": "有导出的文章", "link": "https://mp.weixin.qq.com/s/e1",
+        "publish_ts": 1757000000, "publish_at": "2026-09-05 10:00",
+        "identity": "art-exp-1", "body_text": "正文", "body_html": "<p>x</p>",
+    }])
+    html = tmp_path / "out" / "a.html"
+    html.parent.mkdir(parents=True, exist_ok=True)
+    html.write_text("<p>x</p>", encoding="utf-8")
+    # 与路由同一个单例（隔离目录里的 harvest.db）
+    get_records().record_export(article_id="art-exp-1", out_path=str(html), exported_at=1)
+
+    def exported() -> bool:
+        rows = client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()
+        hit = [r for r in rows if r["title"] == "有导出的文章"]
+        assert len(hit) == 1, rows
+        return hit[0]["exported"]
+
+    assert exported() is True
+    html.unlink()
+    assert exported() is False, "文件已删还显示「已导出」—— 正是用户报的那个现象"
+
+
+def test_articles_exported_matches_identity_not_the_public_id(client, auth, tmp_path):
+    """导出记录存的是 ``identity``，而前端看到的 ``id`` 是 ``{__biz}:{identity}``。
+
+    拿后者去比会**一篇都对不上** —— 而且不报错，只是标记永远不亮。这里用一个
+    带 ``__biz`` 的行钉住：必须按 identity 匹配。
+    """
+    from mp_harvest.core.export_records import get_records
+    from mp_harvest.server import state
+
+    acc = add_account(client, auth)
+    state.set_articles(acc["id"], [{
+        "title": "带 biz 的文章", "link": "https://mp.weixin.qq.com/s/e2",
+        "publish_ts": 1757000000, "identity": "art-exp-2", "__biz": "MzA5demo",
+        "body_text": "正文", "body_html": "<p>x</p>",
+    }])
+    html = tmp_path / "b.html"
+    html.write_text("<p>x</p>", encoding="utf-8")
+    get_records().record_export(article_id="art-exp-2", out_path=str(html), exported_at=1)
+
+    rows = client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()
+    hit = [r for r in rows if r["title"] == "带 biz 的文章"][0]
+    assert hit["id"] == "MzA5demo:art-exp-2", "前提：公开 id 确实带了 __biz 前缀"
+    assert hit["exported"] is True, "按公开 id 去比会永远不亮"
 
 
 def test_articles_verdict_and_source_mapping(client, auth):

@@ -149,6 +149,10 @@ def test_items_shape_and_public_id(client, auth, tmp_path):
     assert row["verdict"] is None
     assert row["domain"] == ""
     assert row["item_key"] == "arxiv:2608.1"
+    # 外部条目不走「导出到本地 HTML」那条路，恒为未导出。
+    # 这条专门堵住「默认值写错」那类静默 bug：`article_out` 曾经可以有个
+    # exported 默认值，翻成 True 时历史那条路照样绿，只有外部行会挂假标记。
+    assert row["exported"] is False
 
 
 def test_same_paper_in_two_sources_gets_distinct_ids(client, auth, tmp_path):

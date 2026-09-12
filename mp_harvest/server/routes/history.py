@@ -19,6 +19,26 @@ from mp_harvest.server.ws import broadcast_event
 router = APIRouter(tags=["history"])
 
 
+def _identity_of(row: dict[str, Any]) -> str:
+    """导出记录里用的键。
+
+    必须与 ``article_reader`` 写记录时**完全一致**（那里是 ``identity or link``）——
+    导出记录存的是 identity，而前端可见的 ``id`` 是 ``{__biz}:{identity}``，
+    拿后者去比会一篇都对不上（这是个不报错的静默失配）。
+    """
+    return str(row.get("identity") or row.get("link") or "")
+
+
+def _exported_ids() -> set[str]:
+    """本地**还留着**导出 HTML 的文章 id；记录库不可用就返回空集（一律显示未导出）。"""
+    from mp_harvest.core.export_records import get_records
+
+    try:
+        return get_records().exported_article_ids()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def parse_date_range(start_date: str, end_date: str) -> tuple[int, int]:
     """YYYY-MM-DD → 本地时区闭区间 (start_ts, end_ts)；都为空返回 (0, 0)。
 
@@ -307,8 +327,16 @@ def list_articles(
     tagged.sort(
         key=lambda t: int(t[2].get("publish_ts") or 0), reverse=(order == "desc")
     )
+    # 「已导出」在**读的时候**判定（文件是否还在），不是查记录表里有没有行 ——
+    # 用户删掉导出的 HTML 之后，列表就该跟着变（2026-09 用户报的）
+    exported = _exported_ids()
     return [
-        mappers.article_out(a, account_id=aid, account_name=name)
+        mappers.article_out(
+            a,
+            account_id=aid,
+            account_name=name,
+            exported=_identity_of(a) in exported,
+        )
         for aid, name, a in tagged
     ]
 
@@ -333,4 +361,8 @@ def supplement_article(body: SupplementIn) -> dict:
             # 原子追加：读-改-写收进 state 的锁内，避免与后台拉取并发时
             # 把刚拉到的文章覆盖掉（2026-09 修复）
             state.append_article(body.account_id, new_row)
-    return mappers.article_out(row, account_id=body.account_id or "")
+    return mappers.article_out(
+        row,
+        account_id=body.account_id or "",
+        exported=_identity_of(row) in _exported_ids(),
+    )

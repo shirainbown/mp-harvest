@@ -644,6 +644,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     import mp_harvest.core.ai_filter as ai_mod
     import mp_harvest.core.event_log as log_mod
     import mp_harvest.core.external_sources as ext_mod
+    import mp_harvest.core.export_records as rec_mod
     import mp_harvest.core.settings as settings_mod
     import mp_harvest.core.sightings as sightings_mod
     import mp_harvest.infra.platform.paths as paths_mod
@@ -652,14 +653,19 @@ def isolated_data_dir(tmp_path, monkeypatch):
     d.mkdir(parents=True, exist_ok=True)
     for mod in (paths_mod, settings_mod, sightings_mod, ai_mod):
         monkeypatch.setattr(mod, "data_dir", lambda *a, **k: d, raising=False)
-    # 外部来源库与执行日志都是**进程内单例**，DB 路径在首次取用时才解析。
+    # 外部来源库 / 执行日志 / 导出记录都是**进程内单例**，DB 路径在首次取用时才解析。
     # 不复位的话第二个测试仍连着上一个测试的 tmp 数据目录 —— 条目会跨测试串味，
     # 日志则会被写进一个已经删掉的目录（静默丢失，测试也断言不了内容）。
+    #
+    # 导出记录是 2026-09 补的：`/api/articles` 现在每次请求都会读它（判定「已导出」），
+    # 不复位的话第一个测试建的库会被后面所有测试共用，导出标记跨测试乱亮。
     ext_mod.reset_external_store()
     log_mod.reset_event_log()
+    rec_mod.reset_records()
     yield d
     ext_mod.reset_external_store()
     log_mod.reset_event_log()
+    rec_mod.reset_records()
 
 
 @pytest.fixture()

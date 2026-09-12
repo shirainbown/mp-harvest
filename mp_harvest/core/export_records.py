@@ -180,24 +180,34 @@ class ExportRecords:
         except Exception:  # noqa: BLE001
             return []
 
-    def remove_missing(self) -> int:
-        """清除 out_path 文件已不存在的记录（文件被手动删除后重跑会重新拉取）。"""
-        removed = 0
+    def exported_article_ids(self) -> set[str]:
+        """**文件仍然存在**的已导出文章 id 集合（供列表页显示「已导出」）。
+
+        只按 ``article_id`` 归并：同一篇导出过多次（改了标题/换了目录）在这里
+        只算一条，与 ``find_by_article`` 的「以文章为单位」口径一致。
+
+        ⚠️ **必须逐个确认文件还在**。用户会把导出的 HTML 删掉，而记录还在
+        ——2026-09 用户报的正是这个：删了导出材料，界面毫无变化。若返回
+        「有记录」而不是「有文件」，列表就会一直挂着「已导出」而本地空空如也，
+        比不显示更误导。
+
+        （原 `remove_missing()` 想做同一件事，靠**删记录**让列表变干净；但它
+        从来没被调用过，而且删记录是写操作、不该挂在读路径上。判定文件是否
+        存在本来就该在**读**的时候做，于是删掉那个方法，只留这一个。）
+        """
+        out: set[str] = set()
         try:
             with self._lock:
-                conn = self._connect()
-                rows = conn.execute("SELECT article_id, out_path FROM exports").fetchall()
-                for r in rows:
-                    if not Path(r["out_path"]).is_file():
-                        conn.execute(
-                            "DELETE FROM exports WHERE article_id=? AND out_path=?",
-                            (r["article_id"], r["out_path"]),
-                        )
-                        removed += 1
-                conn.commit()
+                rows = self._connect().execute(
+                    "SELECT DISTINCT article_id, out_path FROM exports"
+                ).fetchall()
         except Exception:  # noqa: BLE001
-            return 0
-        return removed
+            return out
+        for r in rows:
+            aid = str(r["article_id"] or "")
+            if aid and Path(str(r["out_path"])).is_file():
+                out.add(aid)
+        return out
 
 
 # ── 进程内单例（惰性；测试可 reset_records / 传显式路径）──────────────

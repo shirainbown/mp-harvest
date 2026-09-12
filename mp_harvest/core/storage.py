@@ -73,6 +73,10 @@ def inventory() -> list[dict[str, Any]]:
         safe=True, note="只是历史记录，删掉不影响任何功能")
     add("export_records", "正文导出记录", d / _SINGLE_FILES["export_records"],
         safe=True, note="删掉后重复导出**会把已导出的文章再下一遍**；目录页也不再累积")
+    # 导出的 HTML 本身 —— 2026-09 补。原先只列了记录库（12KB），真正占地方的
+    # 导出文件（实测 55 篇 2.6MB，且会随导出的批次持续涨）一项都没列。
+    add("exports", "导出的文章 HTML", d / "exports",
+        safe=True, note="删掉后重新导出要联网重拉；历史列表的「已导出」标记随之消失")
 
     # 以下**不可清理**，列出来是为了让用户看见「这些不归清理管」
     add("articles_cache", "文章缓存（含已抓正文）", d / "articles_cache",
@@ -90,6 +94,10 @@ def inventory() -> list[dict[str, Any]]:
     add("mitm_conf", "抓包 CA 证书", d / "mitm_conf",
         safe=False, note="删了要重新安装 CA（需要管理员密码）")
 
+    # 材料已经删光的项**不列出来**（2026-09 用户要求：「本地保存的材料都已经
+    # 删除了，那么就移除」）。判据是磁盘上的实际占用，不是「这个键配过没有」——
+    # 所以删掉导出的 HTML 再刷新，那一项就自己消失了。
+    items = [i for i in items if int(i["size"]) > 0 or int(i["count"]) > 0]
     items.sort(key=lambda x: -int(x["size"]))
     return items
 
