@@ -10,6 +10,7 @@ from mp_harvest.server.routes import (
     mitm,
     platform,
     settings,
+    storage,
     tasks,
     update,
     weekly,
@@ -28,6 +29,7 @@ ALL_ROUTERS = [
     update.router,
     tasks.router,
     logs.router,
+    storage.router,
 ]
 
 __all__ = ["ALL_ROUTERS"]

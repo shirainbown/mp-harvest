@@ -26,6 +26,60 @@ from typing import Any, Callable
 
 from mp_harvest.infra.platform import paths
 
+# 更新包目录里保留几个。**一个就够**（要装的就是最新的那个），
+# 多留几个纯粹是占地方。
+UPDATE_KEEP = 1
+
+
+def update_dir() -> Path:
+    return paths.data_dir() / "update"
+
+
+def prune_update_packages(keep: int = UPDATE_KEEP) -> int:
+    """只保留最新的 ``keep`` 个更新包，其余删掉。返回删掉的个数。
+
+    **原先从来不删**（2026-09 用户报「815MB 数据目录」时发现）：每次点
+    「立即更新」都会在 ``data/update/`` 留一个 ~50MB 的 zip，下载后、应用后、
+    下次启动都没有任何清理 —— 实测一个用户的目录里积了 16 个包共 806MB，
+    而其余全部数据加起来不到 9MB。
+
+    按 mtime 排序（下载时间），保留最新的。非 ``.zip`` 的文件一律不碰
+    （应用脚本就写在这个目录里）。任何异常都不抛 —— 这是启动路径上的清理。
+    """
+    d = update_dir()
+    try:
+        zips = [p for p in d.glob("*.zip") if p.is_file()]
+        if len(zips) <= max(0, int(keep)):
+            return 0
+        zips.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        removed = 0
+        for p in zips[max(0, int(keep)):]:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                continue
+        return removed
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def dir_size(path: Path) -> tuple[int, int]:
+    """目录占用 ``(字节, 文件数)``；不存在或读不到时返回 ``(0, 0)``。"""
+    total = 0
+    count = 0
+    try:
+        for p in path.rglob("*"):
+            try:
+                if p.is_file():
+                    total += p.stat().st_size
+                    count += 1
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001
+        return 0, 0
+    return total, count
+
 APP_VERSION = "2.1.29"
 
 _SSL_CONTEXT = None
@@ -569,4 +623,6 @@ class GithubUpdater(Updater):
                             on_progress(done, total)
         except Exception as exc:  # noqa: BLE001
             return DownloadResult(ok=False, error=str(exc), message=f"下载失败：{exc}")
+        # 新包到手，把旧的清掉（否则每更新一次留 50MB，只增不减）
+        prune_update_packages()
         return DownloadResult(ok=True, path=str(out), message=f"已下载到 {out}")

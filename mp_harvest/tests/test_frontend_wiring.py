@@ -175,6 +175,9 @@ BUTTON_BINDINGS: list[tuple[str, str, str, int]] = [
     # 排序两段控件（2026-09 由「下拉 + 方向按钮」合并而来）——两个列表页各一处
     ("views/HistoryView.vue", "排序控件", "articles.pickSort", 1),
     ("views/ExternalView.vue", "排序控件", "ext.pickSort", 1),
+    # 设置页「存储占用」（2026-09）：勾选框 + 清理按钮
+    ("views/SettingsView.vue", "存储项勾选", "togglePick", 1),
+    ("views/SettingsView.vue", "清理选中（二次确认后执行）", "doClean", 1),
     # 打分速度两个输入框（每批篇数 / 并发请求数，2026-09）
     ("views/WeeklyView.vue", "打分批大小", "setScoreBatch", 1),
     ("views/WeeklyView.vue", "打分并发请求数", "setScoreWorkers", 1),
@@ -204,6 +207,8 @@ HANDLER_BODIES: list[tuple[str, str, str]] = [
     ("views/LogsView.vue", "copyAll", "copyText("),
     ("views/LogsView.vue", "copyOne", "copyText("),
     ("views/LogsView.vue", "doClear", "logs.clear("),
+    # 清理必须真的打到后端（只在前端清列表等于骗人）
+    ("views/SettingsView.vue", "doClean", "storage.clean("),
 ]
 
 

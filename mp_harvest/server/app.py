@@ -59,11 +59,64 @@ class TokenAuthMiddleware:
         await self.app(scope, receive, send)
 
 
+def _check_local_data() -> None:
+    """启动时体检本地数据（2026-09）。**绝不抛异常** —— 这是启动路径。
+
+    做两件事：
+
+    1. **清理历史更新包**：原先只增不减，实测一个用户的 data/ 里积了 16 个包
+       共 806MB（其余全部数据加起来不到 9MB）。应用后的包没有任何用处。
+    2. **数据文件缺失要出声**：`settings.json` / `weekly/prompts.json` 被删掉后
+       会**静默回退默认值** —— 用户改过的打分标准、默认目录会无声消失，
+       只会觉得「我明明改过」。这里在**事实成立**时记一笔，说清后果与恢复方式。
+
+       判据带上「目录里还有别的东西」：全新安装同样没有这两个文件，那不是异常。
+       对提示词用 `weekly/cache.json` 作证 —— 它每生成一期就会写，说明这目录用过。
+    """
+    from mp_harvest.infra.platform import paths as _paths
+
+    try:
+        from mp_harvest.core.event_log import log_event
+    except Exception:  # noqa: BLE001
+        return
+
+    try:
+        from mp_harvest.infra.platform import base as platform_base
+
+        removed = platform_base.prune_update_packages()
+        if removed:
+            log_event("info", "storage", f"清理了 {removed} 个历史更新包（只保留最新一个）",
+                      {"removed": removed})
+    except Exception:  # noqa: BLE001
+        pass
+
+    data = _paths.data_dir()
+    try:
+        if not (data / "settings.json").is_file() and (data / "accounts.json").is_file():
+            log_event(
+                "warn", "storage",
+                "设置文件缺失（data/settings.json），本次全部使用默认值 ——"
+                "若你此前改过默认导出目录、周报标题、批大小等，需要重新设置。",
+                {"missing": str(data / "settings.json")},
+            )
+        prompts = data / "weekly" / "prompts.json"
+        if not prompts.is_file() and (data / "weekly" / "cache.json").is_file():
+            log_event(
+                "warn", "storage",
+                "自定义提示词缺失（data/weekly/prompts.json），本次按内置默认标准打分 ——"
+                "若你此前改过打分/解读/洞察标准，需要重新填写（周报页 → 提示词）。",
+                {"missing": str(prompts)},
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
     from mp_harvest.server.credential_watcher import CredentialWatcher
 
+    _check_local_data()
     hub.bind_loop(asyncio.get_running_loop())
     watcher = CredentialWatcher()
     watcher.start()

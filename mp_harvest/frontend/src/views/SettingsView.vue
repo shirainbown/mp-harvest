@@ -1,21 +1,49 @@
 <script setup lang="ts">
 // 页面：设置（GET/PUT /api/settings 扁平 KV）——导出目录、图片下载、AI 默认值、
 // 网络代理、平台能力。2026-09 把原「网络设置」整页并入本页。
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import SButton from '../components/SButton.vue'
 import SInput from '../components/SInput.vue'
 import SSwitch from '../components/SSwitch.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import { useSettingsStore } from '../stores/settings'
+import { fmtSize, useStorageStore } from '../stores/storage'
 import { useUiStore } from '../stores/ui'
 import { chooseDirectory } from '../api/desktop'
 
 const settings = useSettingsStore()
+const storage = useStorageStore()
 const ui = useUiStore()
 
 onMounted(() => {
   if (!settings.loaded) settings.load()
+  void storage.load()
 })
+
+// ---- 存储占用与清理（2026-09）----
+//
+// 只列**可重建**的项供勾选；账号/凭证/模型配置/CA/提示词/设置/文章缓存显示为
+// 「保留」—— 删了要重新抓包或重新联网拉，不能混在「清缓存」里被顺手清掉。
+const picked = ref(new Set<string>())
+const confirmClean = ref(false)
+
+const pickedSize = computed(() =>
+  storage.items.filter((i) => picked.value.has(i.key)).reduce((n, i) => n + i.size, 0),
+)
+
+function togglePick(key: string, on: boolean) {
+  const s = new Set(picked.value)
+  if (on) s.add(key)
+  else s.delete(key)
+  picked.value = s
+}
+
+async function doClean() {
+  confirmClean.value = false
+  const keys = [...picked.value]
+  picked.value = new Set()
+  await storage.clean(keys)
+}
 
 // ---- 网络代理（原「网络设置」页）----
 function setMode(mode: 'direct' | 'system' | 'custom') {
@@ -166,6 +194,43 @@ function onWorkers() {
       </div>
 
       <div class="panel">
+        <div class="panel-title">
+          存储占用
+          <span class="tertiary" style="font-weight:400;margin-left:8px">
+            共 {{ fmtSize(storage.total_bytes) }} · 其中可清理 {{ fmtSize(storage.clearable_bytes) }}
+          </span>
+        </div>
+        <SkeletonRows v-if="storage.loading && !storage.items.length" :rows="3" />
+        <template v-else>
+          <div v-for="it in storage.items" :key="it.key" class="st-row">
+            <input v-if="it.safe" type="checkbox" class="cb" :checked="picked.has(it.key)"
+                   @change="togglePick(it.key, ($event.target as HTMLInputElement).checked)" />
+            <span v-else class="st-keep" title="清掉会丢数据，不提供清理">保留</span>
+            <span class="st-label" :title="it.note">{{ it.label }}</span>
+            <span class="muted mono" style="font-size:var(--fs-xs);white-space:nowrap">
+              {{ fmtSize(it.size) }}
+            </span>
+          </div>
+          <div class="toolbar" style="margin-top:var(--sp-3)">
+            <span class="tertiary" style="font-size:var(--fs-sm)">
+              勾选的都是<b>可重建</b>的；标「保留」的（账号、凭证、模型配置、CA、自定义提示词、
+              设置、文章缓存）删了就没了，不提供清理。
+            </span>
+            <span class="spacer"></span>
+            <SButton v-if="!confirmClean" size="sm" variant="danger" :disabled="!picked.size"
+                     @click="confirmClean = true">
+              清理选中（{{ fmtSize(pickedSize) }}）
+            </SButton>
+            <template v-else>
+              <span class="tertiary" style="font-size:var(--fs-sm)">确定清理？不可撤销</span>
+              <SButton size="sm" variant="danger" @click="doClean">确定清理</SButton>
+              <SButton size="sm" variant="ghost" @click="confirmClean = false">取消</SButton>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <div class="panel">
         <div class="panel-title">平台能力</div>
         <SkeletonRows v-if="!settings.platform" :rows="3" />
         <div v-else class="cap-list">
@@ -176,3 +241,31 @@ function onWorkers() {
   </div>
   </section>
 </template>
+
+<style scoped>
+/* 存储占用清单：一行一项，大小右对齐便于扫读 */
+.st-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: var(--fs-sm);
+}
+.st-row .st-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+/* 不可清理的项：占住勾选框那一格，让两列对齐。
+   宽度要够放两个中文字 —— 13px 会把「保留」竖排折成两行（实测截图看到的）。 */
+.st-keep {
+  flex-shrink: 0;
+  width: 30px;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+</style>

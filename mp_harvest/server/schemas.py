@@ -191,6 +191,12 @@ class WeeklyRenderIn(BaseModel):
     template_path: str = ""
 
 
+class StorageCleanIn(BaseModel):
+    """清理本地可重建数据。只接受 ``safe=true`` 的键。"""
+
+    keys: list[str] = Field(default_factory=list)
+
+
 class WeeklyPromptIn(BaseModel):
     key: str = Field(min_length=1)
     text: str = ""

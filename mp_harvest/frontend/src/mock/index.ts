@@ -437,6 +437,24 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   }
 
   // ---------- 周报 ----------
+  if (p === '/api/storage' && method === 'GET') {
+    return {
+      items: [
+        { key: 'update', label: '更新包（已下载的安装包，装完就没用）',
+          path: '~/data/update', size: 845414400, count: 16, safe: true,
+          note: '每次「立即更新」都会下一个 ~50MB 的包' },
+        { key: 'weekly_cache', label: '周报打分 / 解读缓存', path: '~/data/weekly/cache.json',
+          size: 49152, count: 1, safe: true, note: '删掉后下次生成要重新打分（会调用模型）' },
+        { key: 'accounts', label: '公众号与凭证', path: '~/data/accounts.json',
+          size: 32768, count: 1, safe: false, note: '删了要重新添加公众号并重新抓包' },
+      ],
+      clearable_bytes: 845463552,
+      total_bytes: 845496320,
+    } as T
+  }
+  if (p === '/api/storage/clean' && method === 'POST') {
+    return { ok: true, freed: 845414400, removed: ['update'], errors: [] } as T
+  }
   if (p === '/api/weekly/preview' && method === 'GET') {
     return {
       from_date: '2026-08-31', to_date: '2026-09-06', suggested_issue: 17,
