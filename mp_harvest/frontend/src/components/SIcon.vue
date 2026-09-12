@@ -13,7 +13,7 @@ export type IconName =
   | 'refresh' | 'download' | 'sparkles'
   | 'eye' | 'eye-off'
   | 'chevron-down' | 'chevron-right'
-  | 'check' | 'x' | 'info' | 'dot' | 'inbox'
+  | 'check' | 'x' | 'info' | 'dot' | 'inbox' | 'copy'
 
 const props = withDefaults(
   defineProps<{ name: IconName; size?: number | string; stroke?: number }>(),
@@ -45,6 +45,9 @@ const PATHS: Record<IconName, string> = {
   dot: '<circle cx="12" cy="12" r="5" fill="currentColor" stroke="none"/>',
   inbox:
     '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
+  // 复制报错信息：两张叠起来的纸
+  copy:
+    '<rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 }
 
 const svg = computed(() => PATHS[props.name] ?? PATHS.info)

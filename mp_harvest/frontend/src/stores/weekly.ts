@@ -22,9 +22,16 @@ export const useWeeklyStore = defineStore('weekly', {
     outDir: '',
     reportTitle: '',
     downloadImages: false,
-    // ---- 来源勾选（空 = 全部）----
+    // ---- 来源勾选（**勾了才算**，默认全选）----
+    //
+    // 2026-09 改：原先是「空 = 全部」，默认一个都不勾 —— 「全部」链接在默认
+    // 状态下点了等于没点（本来就是全部），表现成「按钮没反应」。
+    // 现在默认全选、勾 = 纳入，所见即所得。后端契约不变（空列表仍当「全部」），
+    // 但前端全不勾时会拦住生成并提示，不会把空列表发出去。
     accountIds: new Set<string>(),
     sourceIds: new Set<string>(),
+    /** 默认勾选是否已种下 —— 用户改过就不再覆盖 */
+    selectionSeeded: false,
     // ---- 模板 ----
     templatePath: '',
     // ---- 提示词 ----
@@ -52,6 +59,32 @@ export const useWeeklyStore = defineStore('weekly', {
     },
   },
   actions: {
+    /**
+     * 种下默认的全选（每个公众号与外部来源都勾上）。**只种一次** ——
+     * 之后用户手动改过的选择不会被列表刷新冲掉。
+     */
+    seedSelection(accountIds: string[], sourceIds: string[]) {
+      if (this.selectionSeeded) return
+      if (!accountIds.length && !sourceIds.length) return   // 数据还没到，等下次
+      this.accountIds = new Set(accountIds)
+      this.sourceIds = new Set(sourceIds)
+      this.selectionSeeded = true
+    },
+    /**
+     * 「全选 / 全不选」一键切换（公众号）。返回切换后是否处于全选。
+     *
+     * 放在 store 而不是视图里：视图里的逻辑没法单测，而这正是出过问题的地方。
+     */
+    toggleAllAccounts(allIds: string[]): boolean {
+      const all = allIds.length > 0 && this.accountIds.size === allIds.length
+      this.accountIds = all ? new Set<string>() : new Set(allIds)
+      return !all
+    },
+    toggleAllSources(allIds: string[]): boolean {
+      const all = allIds.length > 0 && this.sourceIds.size === allIds.length
+      this.sourceIds = all ? new Set<string>() : new Set(allIds)
+      return !all
+    },
     // ---- 预览 ----
     async loadPreview() {
       this.loadingPreview = true
@@ -122,6 +155,12 @@ export const useWeeklyStore = defineStore('weekly', {
       const ui = useUiStore()
       if (!this.fromDate || !this.toDate) {
         ui.error('请先选择日期区间')
+        return
+      }
+      // 兜底：界面上按钮已禁用，但别让别的调用路径把「一个都没选」当成
+      // 空列表发出去 —— 后端把空列表读作「全部」，会静默生成一份全量周报
+      if (!this.accountIds.size && !this.sourceIds.size) {
+        ui.error('未选择任何来源，请至少勾选一个公众号或来源目录')
         return
       }
       if (!this.preview?.total) {

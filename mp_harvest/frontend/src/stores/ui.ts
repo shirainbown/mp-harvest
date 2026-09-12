@@ -37,6 +37,29 @@ export function errorDuration(msg: string): number {
   return Math.min(ERROR_MS + extra, ERROR_MS_MAX)
 }
 
+/** 一位补零 */
+function p2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+/**
+ * 把一条错误记录格式化成可粘贴的文本。
+ *
+ * 带**完整日期时间**而不只是时刻：错误中心里可能横跨好几天，
+ * 只给 HH:MM:SS 的话对方无法判断是哪一次。
+ */
+export function formatError(e: { time: number; msg: string }): string {
+  const d = new Date(e.time)
+  const ts = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} `
+    + `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+  return `[${ts}] ${e.msg}`
+}
+
+/** 多条错误拼成一段（用空行分隔，便于阅读） */
+export function formatErrors(list: { time: number; msg: string }[]): string {
+  return list.map(formatError).join('\n\n')
+}
+
 export const useUiStore = defineStore('ui', {
   state: () => ({
     view: 'credentials' as ViewId,

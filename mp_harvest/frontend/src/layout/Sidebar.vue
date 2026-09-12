@@ -1,13 +1,36 @@
 <script setup lang="ts">
 // 侧边栏 200px：两组导航（主功能/配置）+ 错误中心 + 版本号（§5.3）
+import { ref } from 'vue'
 import { APP_VERSION } from '../config'
 import SButton from '../components/SButton.vue'
+import SIcon from '../components/SIcon.vue'
 import SModal from '../components/SModal.vue'
 import { useSettingsStore } from '../stores/settings'
-import { useUiStore, type ViewId } from '../stores/ui'
+import { formatError, formatErrors, useUiStore, type ViewId } from '../stores/ui'
+import { copyText } from '../api/desktop'
 
 const ui = useUiStore()
 const settings = useSettingsStore()
+
+/** 刚复制成功的那条错误 id（短暂把按钮切成对勾） */
+const copiedId = ref(0)
+
+async function copyOne(e: { id: number; time: number; msg: string }) {
+  if (await copyText(formatError(e))) {
+    copiedId.value = e.id
+    setTimeout(() => {
+      if (copiedId.value === e.id) copiedId.value = 0
+    }, 1500)
+  } else {
+    ui.error('复制失败，请手动选择错误文本')
+  }
+}
+
+async function copyAll() {
+  const text = formatErrors([...ui.errors].reverse())   // 与界面展示顺序一致：新的在上
+  if (await copyText(text)) ui.toast(`已复制 ${ui.errors.length} 条错误`)
+  else ui.error('复制失败，请手动选择错误文本')
+}
 
 const groups: Array<Array<{ id: ViewId; label: string }>> = [
   [
@@ -79,10 +102,15 @@ function fmtTime(ts: number) {
       <div v-for="e in [...ui.errors].reverse()" :key="e.id" class="err-item">
         <span class="mono muted err-time">{{ fmtTime(e.time) }}</span>
         <span class="err-msg">{{ e.msg }}</span>
+        <button class="err-copy" :class="{ ok: copiedId === e.id }"
+                :title="copiedId === e.id ? '已复制' : '复制这条报错'" @click="copyOne(e)">
+          <SIcon :name="copiedId === e.id ? 'check' : 'copy'" :size="13" />
+        </button>
       </div>
     </div>
     <template #foot>
       <SButton variant="ghost" :disabled="!ui.errors.length" @click="ui.clearErrors()">清空</SButton>
+      <SButton :disabled="!ui.errors.length" @click="copyAll()">复制全部</SButton>
       <SButton variant="primary" @click="ui.errorCenterOpen = false">关闭</SButton>
     </template>
   </SModal>
@@ -114,8 +142,33 @@ function fmtTime(ts: number) {
   padding-top: 1px;
 }
 .err-msg {
+  flex: 1;
+  min-width: 0;          /* 不加则 flex 子项不肯收缩，长 URL 会把复制按钮挤出面板 */
   white-space: pre-wrap;
   word-break: break-all;
+  color: var(--text-primary);
+}
+/* 复制按钮：平时淡出，悬停该行才显形 —— 列表以读为主，不抢视线 */
+.err-copy {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.err-item:hover .err-copy,
+.err-copy:focus-visible {
+  opacity: 1;
+}
+/* 复制成功：对勾常显并转绿，不用再靠 title 才知道点到了 */
+.err-copy.ok {
+  opacity: 1;
+  color: var(--success);
+}
+.err-copy:hover {
   color: var(--text-primary);
 }
 </style>

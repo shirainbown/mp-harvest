@@ -29,30 +29,50 @@ const ui = useUiStore()
 onMounted(async () => {
   if (!accounts.loaded) await accounts.load()
   if (!ext.sources.length) await ext.loadAll()
+  // 默认全选（只种一次 —— 用户改过就不覆盖）
+  weekly.seedSelection(accounts.list.map((a) => a.id), ext.sources.map((s) => s.id))
   if (!weekly.preview) await weekly.loadAll()
 })
 
-// ---- 来源勾选（不勾 = 全部）----
-const allAccounts = computed(() => weekly.accountIds.size === 0)
-const allSources = computed(() => weekly.sourceIds.size === 0)
+// ---- 来源勾选（**勾了才算**）----
+//
+// 2026-09 改：原先是「不勾 = 全部」，默认一个都不勾。于是「全部」这个链接
+// 在默认状态下点了等于没点（状态本来就是全部），用户看到的就是「点了没反应」。
+// 现在默认全选，勾 = 纳入、取消勾 = 排除，所见即所得。
+const allAccounts = computed(
+  () => accounts.list.length > 0 && weekly.accountIds.size === accounts.list.length,
+)
+const allSources = computed(
+  () => ext.sources.length > 0 && weekly.sourceIds.size === ext.sources.length,
+)
+/** 一个来源都没勾 —— 生成不了，界面要明确说出来而不是让后端当「全部」处理 */
+const noneSelected = computed(
+  () => accounts.list.length + ext.sources.length > 0
+    && weekly.accountIds.size === 0 && weekly.sourceIds.size === 0,
+)
+
+/** 勾选变了才值得重新统计；全不勾时不请求（后端把空列表当「全部」） */
+function refreshPreview() {
+  if (!noneSelected.value) void weekly.loadPreview()
+}
 
 function toggleAccount(id: string, on: boolean) {
   if (on) weekly.accountIds.add(id)
   else weekly.accountIds.delete(id)
-  void weekly.loadPreview()
+  refreshPreview()
 }
 function toggleSource(id: string, on: boolean) {
   if (on) weekly.sourceIds.add(id)
   else weekly.sourceIds.delete(id)
-  void weekly.loadPreview()
+  refreshPreview()
 }
 function selectAllAccounts() {
-  weekly.accountIds.clear()
-  void weekly.loadPreview()
+  weekly.toggleAllAccounts(accounts.list.map((a) => a.id))
+  refreshPreview()
 }
 function selectAllSources() {
-  weekly.sourceIds.clear()
-  void weekly.loadPreview()
+  weekly.toggleAllSources(ext.sources.map((s) => s.id))
+  refreshPreview()
 }
 
 // ---- 目录 / 模板文件 ----
@@ -147,19 +167,22 @@ async function openPath(p: string) {
         <div class="panel">
           <div class="panel-title">
             候选来源
-            <span class="badge" style="margin-left:8px">
-              共 {{ weekly.preview?.total ?? 0 }} 篇候选
-            </span>
-            <span class="tertiary" style="font-weight:400;margin-left:8px">
-              公众号 {{ weekly.preview?.wechat ?? 0 }} · 论文 {{ weekly.preview?.arxiv ?? 0 }}
-            </span>
+            <span v-if="noneSelected" class="badge bu" style="margin-left:8px">未选择任何来源</span>
+            <template v-else>
+              <span class="badge" style="margin-left:8px">
+                共 {{ weekly.preview?.total ?? 0 }} 篇候选
+              </span>
+              <span class="tertiary" style="font-weight:400;margin-left:8px">
+                公众号 {{ weekly.preview?.wechat ?? 0 }} · 论文 {{ weekly.preview?.arxiv ?? 0 }}
+              </span>
+            </template>
           </div>
           <div class="mitm-row" style="align-items:flex-start">
             <div style="min-width:240px;flex:1">
               <div class="muted" style="font-size:var(--fs-sm);margin-bottom:6px">
                 公众号
                 <a href="#" style="margin-left:6px" @click.prevent="selectAllAccounts">
-                  {{ allAccounts ? '（全部）' : '全部' }}
+                  {{ allAccounts ? '全不选' : '全选' }}
                 </a>
               </div>
               <EmptyState v-if="!accounts.list.length" text="还没有添加公众号" />
@@ -173,7 +196,7 @@ async function openPath(p: string) {
               <div class="muted" style="font-size:var(--fs-sm);margin-bottom:6px">
                 其他来源目录
                 <a href="#" style="margin-left:6px" @click.prevent="selectAllSources">
-                  {{ allSources ? '（全部）' : '全部' }}
+                  {{ allSources ? '全不选' : '全选' }}
                 </a>
               </div>
               <EmptyState v-if="!ext.sources.length" text="还没有登记外部来源目录" />
@@ -185,7 +208,10 @@ async function openPath(p: string) {
               </label>
             </div>
           </div>
-          <div v-if="!weekly.preview?.total" class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">
+          <div v-if="noneSelected" class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">
+            一个来源都没勾 —— 上面的勾选决定哪些内容参与选题，至少勾一个才能生成。
+          </div>
+          <div v-else-if="!weekly.preview?.total" class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">
             当前条件下没有候选文章 —— 检查日期区间是否覆盖了已拉取/已扫描的内容。
           </div>
         </div>
@@ -216,7 +242,7 @@ async function openPath(p: string) {
         <div class="panel">
           <div class="panel-title">生成</div>
           <div class="mitm-row">
-            <SButton variant="primary" :disabled="busy || !weekly.preview?.total"
+            <SButton variant="primary" :disabled="busy || noneSelected || !weekly.preview?.total"
                      @click="weekly.generate()">
               生成第 {{ weekly.issueNum }} 期
             </SButton>
