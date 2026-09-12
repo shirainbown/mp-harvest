@@ -88,6 +88,35 @@ def apply_time_filter(
     return out
 
 
+def _fetch_policy():
+    """拉取节奏与容错（设置页可调；默认值见 ``SETTING_DEFAULTS``）。
+
+    集中在这里换算，而不是让 core 自己去读设置 —— core 读不到注入的测试配置，
+    而且「哪个键叫什么」属于 server 层的事（与 ``weekly._score_settings`` 同）。
+    """
+    from mp_harvest.core import history_client as hc
+    from mp_harvest.core import settings as settings_mod
+
+    s = settings_mod.load_settings()
+    d = hc.DEFAULT_POLICY
+
+    def _int(key: str, fallback: int, lo: int, hi: int) -> int:
+        try:
+            n = int(s.get(key, fallback))
+        except (TypeError, ValueError):
+            n = fallback
+        return max(lo, min(hi, n))
+
+    return hc.FetchPolicy(
+        delay_min=float(_int("fetch.delay_min", int(d.delay_min), 0, 300)),
+        delay_max=float(_int("fetch.delay_max", int(d.delay_max), 0, 300)),
+        cooldown_every=_int("fetch.cooldown_pages", d.cooldown_every, 0, 1000),
+        cooldown_seconds=float(_int("fetch.cooldown_seconds", int(d.cooldown_seconds), 0, 3600)),
+        retries=_int("fetch.retries", d.retries, 0, 10),
+        max_pages=_int("fetch.max_pages", d.max_pages, 1, 1000),
+    )
+
+
 def _get_account_or_404(account_id: str) -> dict[str, Any]:
     account = state.get_store().get(account_id)
     if account is None:
@@ -132,6 +161,7 @@ def _fetch_one_account(
             cred,
             start_ts=start_ts,
             end_ts=end_ts,
+            policy=_fetch_policy(),
             on_progress=on_progress,
             sightings=sightings,
             known_keys=known_keys,
@@ -140,6 +170,7 @@ def _fetch_one_account(
         result = history_client.fetch_history_days(
             cred,
             days=days,
+            policy=_fetch_policy(),
             on_progress=on_progress,
             sightings=sightings,
             known_keys=known_keys,
@@ -182,6 +213,9 @@ def _fetch_one_account(
         "truncated": bool(result.get("truncated")),
         "notice": str(result.get("notice") or ""),
         "error": result.get("error") or "",
+        # 被微信限流（与「凭证过期」不是一回事，应对完全相反）。前端据此把提示
+        # 做成**劝阻**语气 —— 用户最不该做的事就是马上再点一次。
+        "rate_limited": bool(result.get("rate_limited")),
         # 断点拉取命中：没重复翻页（前端可据此提示「已是最新」而不是让用户困惑页数变少）
         "stopped_early": bool(result.get("stopped_early")),
     }
@@ -223,6 +257,9 @@ def fetch_history(body: HistoryFetchIn) -> dict:
             "truncated": res.get("truncated", False),
             "notice": res.get("notice", ""),
             "error": res["error"],
+            # 必须透出：前端据此把提示做成**劝阻**语气。漏了这个字段，界面上就
+            # 只剩一句普通红色报错，用户的下一个动作就是再点一次 —— 最坏的选择。
+            "rate_limited": bool(res.get("rate_limited")),
         }
 
     task = registry.create("history.fetch", work)

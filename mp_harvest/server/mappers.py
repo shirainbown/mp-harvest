@@ -106,11 +106,13 @@ def article_out(
     title_verdict = "keep" if title_keep is True else ("drop" if title_keep is False else None)
     content_verdict = "keep" if content_keep is True else ("drop" if content_keep is False else None)
     ts = int(row.get("publish_ts") or 0)
+    seen_at = str(row.get("seen_at") or "")
     if ts:
         date = datetime.fromtimestamp(ts).isoformat(timespec="seconds")
     else:
-        # 无发布时间（如手动补录）：退到 seen_at（ISO），再退 publish_at，保可解析
-        date = str(row.get("seen_at") or row.get("publish_at") or "")
+        # 无发布时间（抓包目击 / 手动补录）：退到 seen_at（ISO），再退 publish_at，
+        # 保可解析 —— 前端排序和「按时间」筛选都指着它。
+        date = seen_at or str(row.get("publish_at") or "")
     fetched_ts = int(row.get("fetched_ts") or 0)
     fetched_at = (
         datetime.fromtimestamp(fetched_ts).isoformat(timespec="seconds") if fetched_ts else ""
@@ -122,6 +124,12 @@ def article_out(
         "title": str(row.get("title") or ""),
         "url": str(row.get("link") or ""),
         "date": date,
+        # ``date`` 是**能拿来排序的最早已知时间**，不等于发布时间：抓包目击
+        # （source=M）只有「看到这篇文章的时刻」，微信在链接里不给发布时间。
+        # 不把这件事说出来，界面就会把目击时刻当发布时间显示 —— 一篇几个月前的
+        # 文章挂着今天的日期，用户只会觉得数据坏了（2026-09 用户报的）。
+        "has_publish_time": bool(ts),
+        "seen_at": seen_at,
         "fetched_at": fetched_at,
         "source": article_source(row.get("source")),
         "verdict": verdict,

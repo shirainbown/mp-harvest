@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import html
 import json
+import random
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
@@ -28,6 +30,73 @@ USER_AGENT = (
 # Busy accounts may push many times/day; keep paging until date cutoff.
 DEFAULT_PAGE_COUNT = 10
 DEFAULT_MAX_PAGES = 100
+
+# ── 限流（2026-09）─────────────────────────────────────────────────
+#
+# 微信**没有公开的限流文档**，下面这些来自社区实测，代码按「宁可慢也不要多打
+# 没用的请求」来写。最要命的一条：**在 msg_count=0 之后继续请求**会触发**账号级**
+# 风控（ret=-6），之后该微信号抓任何公众号都返回它，恢复约 24 小时，
+# **换一个微信号可立即恢复**。
+#
+# -6 / unknownerror：账号级风控（换号可解）
+# 200013：另一种频控，实测绑定账号，换号换 cookie 隔天都无效
+# -3：频率限制
+_RATE_LIMIT_CODES = frozenset({"-6", "-3", "200013"})
+_RATE_LIMIT_HINTS = ("频繁", "过快", "too many", "freq", "limit", "unknownerror")
+
+# 这段文案会**原样显示**在界面上（toast / 任务错误），所以不写 markdown ——
+# 写 `**请不要反复重试**` 会连星号一起显示出来。
+RATE_LIMIT_MESSAGE = (
+    "被微信限流了。请不要反复重试——越试封锁越久，可能影响到该微信号抓取"
+    "任何公众号。建议等约 24 小时再试，或换一个微信号重新抓包（换号通常立刻可用）。"
+)
+
+
+def is_rate_limited(ret: Any, errmsg: str) -> bool:
+    """这个返回是不是「被限流」而不是「凭证坏了」。
+
+    两者的应对**完全相反**：限流要停手等（或换号），凭证过期要重新抓包。
+    混在一起报，用户只会看到一串原始 errmsg，然后本能地再点一次 ——
+    那正好是最该避免的动作。
+    """
+    if str(ret).strip() in _RATE_LIMIT_CODES:
+        return True
+    low = str(errmsg or "").lower()
+    return any(h in low for h in _RATE_LIMIT_HINTS)
+
+
+@dataclass(frozen=True)
+class FetchPolicy:
+    """拉取的节奏与容错。默认值按社区实测的「别被封」建议给。
+
+    延迟是**随机区间**而不是固定值：固定间隔本身就是一个可识别的特征。
+    """
+
+    # 页间等待的随机区间（秒）
+    delay_min: float = 3.0
+    delay_max: float = 8.0
+    # 每翻这么多页额外歇一次；0 = 不额外歇
+    cooldown_every: int = 20
+    cooldown_seconds: float = 60.0
+    # 网络类错误的重试次数。**限流不在此列** —— 那只会让封锁更久
+    retries: int = 2
+    max_pages: int = 100
+
+    def delay(self) -> float:
+        lo, hi = float(self.delay_min), float(self.delay_max)
+        if hi < lo:
+            lo, hi = hi, lo
+        return lo if hi <= lo else random.uniform(lo, hi)
+
+
+# 默认策略（＝界面上的默认值）。测试用 NO_DELAY 覆盖成「不等待」。
+DEFAULT_POLICY = FetchPolicy()
+
+# 测试用：不等待、不重试。翻页用例要跑几十次，真等就慢死了。
+NO_DELAY = FetchPolicy(
+    delay_min=0.0, delay_max=0.0, cooldown_every=0,
+    cooldown_seconds=0.0, retries=0, max_pages=DEFAULT_MAX_PAGES,
+)
 
 
 def _fully_unquote(value: str) -> str:
@@ -239,9 +308,13 @@ def parse_getmsg_response(payload: dict[str, Any]) -> dict[str, Any]:
     ret = payload.get("ret")
     errmsg = str(payload.get("errmsg") or "")
     if ret not in (0, "0") and errmsg != "ok":
+        limited = is_rate_limited(ret, errmsg)
         return {
             "ok": False,
-            "error": errmsg or f"ret={ret}",
+            # 限流单独给一句能指导行动的话，而不是把 ret=-6 原样丢给用户 ——
+            # 他看不懂，只会再点一次
+            "error": RATE_LIMIT_MESSAGE if limited else (errmsg or f"ret={ret}"),
+            "rate_limited": limited,
             "articles": [],
             "can_continue": False,
             "next_offset": None,
@@ -256,6 +329,7 @@ def parse_getmsg_response(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True,
         "error": "",
+        "rate_limited": False,
         "articles": articles,
         "can_continue": bool(int(can)) if can is not None and str(can).isdigit() else bool(can),
         "next_offset": payload.get("next_offset"),
@@ -413,6 +487,60 @@ def fetch_profile_nickname(
 ProgressCb = Callable[[str], None]
 
 
+def _fetch_page_with_retry(
+    cred: dict[str, Any],
+    *,
+    offset: int,
+    count: int,
+    session: requests.Session,
+    policy: FetchPolicy,
+    on_progress: ProgressCb | None = None,
+) -> dict[str, Any]:
+    """抓一页；**只对网络类错误**重试（超时、连接被断）。
+
+    ⚠️ **被限流绝不重试**。这是本次改动里最要紧的一条：用户看到失败会本能地
+    再点一次，而我们如果还自动重试，就是在被封锁时继续敲门 —— 社区实测
+    这么做会把封锁拖得更久。限流原样返回给上层，由它带一句「请等 24 小时」出去。
+
+    业务性失败（ret 非 0 且不是限流）同样不重试 —— 那多半是凭证或参数问题，
+    重试只会打更多无用请求。
+    """
+    attempts = max(0, int(policy.retries))
+    last_exc: Exception | None = None
+    for attempt in range(attempts + 1):
+        try:
+            page = fetch_getmsg_page(cred, offset=offset, count=count, session=session)
+        except Exception as exc:  # noqa: BLE001
+            # 网络类（超时 / 连接重置 / DNS）：值得退避重试
+            last_exc = exc
+            if attempt < attempts:
+                wait = 2 ** attempt          # 2s、4s、8s……
+                if on_progress:
+                    on_progress(f"网络不稳（{exc}），{wait} 秒后重试…")
+                time.sleep(wait)
+                continue
+            return {
+                "ok": False,
+                "rate_limited": False,
+                "error": f"网络错误：{exc}",
+                "articles": [],
+                "can_continue": False,
+                "next_offset": None,
+            }
+        # 拿到响应就原样返回 —— **限流和业务失败都不重试**（见 docstring）。
+        # 只有上面的网络异常分支会重试。
+        return page
+    # 理论上到不了（循环里必有 return），保底
+    return {
+        "ok": False,
+        "rate_limited": False,
+        "error": f"网络错误：{last_exc}",
+        "articles": [],
+        "can_continue": False,
+        "next_offset": None,
+    }
+
+
 def _page_newest_ts(batch: list[dict[str, Any]]) -> int:
     newest = 0
     for a in batch:
@@ -546,9 +674,8 @@ def fetch_history_range(
     start_ts: int,
     end_ts: int = 0,
     days: int = 0,
-    max_pages: int = DEFAULT_MAX_PAGES,
+    policy: FetchPolicy = DEFAULT_POLICY,
     count: int = DEFAULT_PAGE_COUNT,
-    sleep_s: float = 1.2,
     on_progress: ProgressCb | None = None,
     sightings: list[dict[str, Any]] | None = None,
     known_keys: set[str] | None = None,
@@ -594,11 +721,14 @@ def fetch_history_range(
     known = known_keys or set()
     biz = str(cred.get("__biz") or "").strip()
 
-    page_limit = max(1, int(max_pages))
+    page_limit = max(1, int(policy.max_pages))
     for i in range(page_limit):
         if on_progress:
             on_progress(f"正在拉取第 {i + 1} 页（已收录 {len(articles)} 篇）…")
-        page = fetch_getmsg_page(cred, offset=offset, count=count, session=sess)
+        page = _fetch_page_with_retry(
+            cred, offset=offset, count=count, session=sess, policy=policy,
+            on_progress=on_progress,
+        )
         pages += 1
         if not page.get("ok"):
             partial = merge_articles_with_sightings(
@@ -607,6 +737,9 @@ def fetch_history_range(
             return {
                 "ok": False,
                 "error": page.get("error") or "getmsg 失败",
+                # 限流与其它失败要分开：上层提示语完全不同，而且限流时
+                # 界面必须劝阻「再点一次」
+                "rate_limited": bool(page.get("rate_limited")),
                 "articles": partial,
                 "pages": pages,
                 "days": days,
@@ -660,6 +793,15 @@ def fetch_history_range(
         if page_fully_old:
             break
 
+        # 微信说没有下一页了 → 立刻停。
+        #
+        # 这条 2026-09 才接上：此前 can_msg_continue 一直被读出来、却只用于最后
+        # 的「可能没拉完」提示，翻页循环不看它。结果是每次拉取都会多打一个
+        # **必然为空**的请求，而「在 msg_count=0 之后继续请求」正是社区实测里
+        # 触发账号级风控（ret=-6，恢复约 24 小时）的那条路径。
+        if not last_can_continue:
+            break
+
         # 断点拉取：这一页窗口内的文章全都已入库 → 更旧的页上次已翻过，不必再请求。
         # 只认「窗口内」的文章：比 end_ts 新的文章本轮本就要跳过，不能因为它们
         # 未知就一路翻下去；窗口内一篇都没有时也无从判断，继续翻。
@@ -683,7 +825,15 @@ def fetch_history_range(
         offset = nxt_i
 
         if i + 1 < page_limit:
-            time.sleep(sleep_s)
+            # 每翻 cooldown_every 页额外歇一次 —— 长历史账号一次要翻几十页，
+            # 匀速翻到底比「翻一会儿歇一会儿」更像机器
+            if policy.cooldown_every > 0 and (i + 1) % policy.cooldown_every == 0:
+                if on_progress:
+                    on_progress(
+                        f"已翻 {i + 1} 页，按设置歇 {int(policy.cooldown_seconds)} 秒…"
+                    )
+                time.sleep(policy.cooldown_seconds)
+            time.sleep(policy.delay())
         else:
             hit_page_cap = True
             last_can_continue = True
@@ -742,9 +892,8 @@ def fetch_history_days(
     cred: dict[str, Any],
     *,
     days: int = 7,
-    max_pages: int = DEFAULT_MAX_PAGES,
+    policy: FetchPolicy = DEFAULT_POLICY,
     count: int = DEFAULT_PAGE_COUNT,
-    sleep_s: float = 1.2,
     on_progress: ProgressCb | None = None,
     sightings: list[dict[str, Any]] | None = None,
     known_keys: set[str] | None = None,
@@ -760,9 +909,8 @@ def fetch_history_days(
         cred,
         start_ts=cutoff,
         days=days,
-        max_pages=max_pages,
+        policy=policy,
         count=count,
-        sleep_s=sleep_s,
         on_progress=on_progress,
         sightings=sightings,
         known_keys=known_keys,

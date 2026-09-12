@@ -25,8 +25,14 @@ export interface Article {
   account_name?: string
   title: string
   url: string
-  /** ISO 日期或 epoch 秒，渲染为 MM-DD */
+  /** 能用来排序的**最早已知时间**（ISO 或 epoch 秒），渲染为 MM-DD。
+   *  ⚠️ 不等于发布时间：抓包目击的行没有发布时间，这里退成「看到的时刻」。
+   *  显示发布时间前必须看 `has_publish_time`。 */
   date: string
+  /** `date` 是不是真正的发布时间。false = 只有目击时刻（source='M' 的抓包行） */
+  has_publish_time?: boolean
+  /** 抓包目击时看到的时刻（ISO）；非目击行为空 */
+  seen_at?: string
   /** 最近一次被抓取到的时间（ISO）；旧缓存可能为空（2026-08-23） */
   fetched_at?: string
   source: ArticleSource

@@ -148,7 +148,11 @@ def _fake_sightings() -> types.ModuleType:
                 "link": link,
                 "__biz": "fakebiz",
                 "identity": f"id-{len(self.rows)}",
-                "publish_ts": 1700000000,
+                # 发布时间**跟着调用方走**，不再写死：手动补录只有链接，真实
+                # core.sightings 也是存 0（有测试钉「补录行没有发布时间」）。
+                # 想造带时间的目击，由测试自己传 publish_ts。
+                "publish_ts": int(sighting.get("publish_ts") or 0),
+                "seen_at": "2026-09-12T10:00:00",
                 "source": sighting.get("source", "manual"),
             }
             self.rows.append(row)
@@ -164,7 +168,35 @@ def _fake_history_client() -> types.ModuleType:
     mod = types.ModuleType("mp_harvest.core.history_client")
     mod.pages_before_return = 2  # cancel 测试可改大
 
+    # 路由会用 FetchPolicy 组装「拉取节奏」（`_fetch_policy`），所以假模块也得有。
+    # 契约测试不碰节奏，给个**同形状**的替身即可 —— 这里刻意只保留字段名，
+    # 默认值抄真实的那份没有意义（假 client 根本不看它）。
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class FetchPolicy:
+        delay_min: float = 0.0
+        delay_max: float = 0.0
+        cooldown_every: int = 0
+        cooldown_seconds: float = 0.0
+        retries: int = 0
+        max_pages: int = 100
+
+    mod.FetchPolicy = FetchPolicy
+    mod.DEFAULT_POLICY = FetchPolicy()
+    # 限流文案：路由会把它原样透出给前端，契约测试只需要一个**可辨认**的值
+    # （真实文案的内容由 tests/test_history_range.py 钉）
+    mod.RATE_LIMIT_MESSAGE = "被微信限流了（契约测试文案）"
+
+    # 想模拟「限流 / 失败」这类返回时，测试把它设成一个结果字典（用完记得清）
+    mod.next_result = None
+
     def fetch_history_days(cred, *, days=7, on_progress=None, sightings=None, **kw):
+        # 路由组装出来的拉取节奏要能被断言 —— 否则「设置里改了没生效」这类问题
+        # 只能靠人去界面上点，测不到
+        mod.last_policy = kw.get("policy")
+        if mod.next_result is not None:
+            return dict(mod.next_result)
         articles = []
         for i in range(mod.pages_before_return):
             if on_progress:
@@ -188,6 +220,9 @@ def _fake_history_client() -> types.ModuleType:
     def fetch_history_range(cred, *, start_ts, end_ts=0, on_progress=None, sightings=None, **kw):
         """fake：记录调用参数，返回一篇落在窗口内的文章。"""
         mod.last_range_call = {"start_ts": start_ts, "end_ts": end_ts}
+        mod.last_policy = kw.get("policy")
+        if mod.next_result is not None:
+            return dict(mod.next_result)
         if on_progress:
             on_progress("正在拉取第 1 页")
         return {

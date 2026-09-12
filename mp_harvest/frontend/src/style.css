@@ -146,8 +146,17 @@ select.input{cursor:pointer}
 .menu-item:hover{background:var(--bg-hover)}
 .art-table{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg-panel);overflow:hidden;flex:1;display:flex;flex-direction:column;min-height:260px}
 .art-scroll{overflow-y:auto;flex:1}
-.art-head,.art-row{display:grid;grid-template-columns:32px minmax(90px,.7fr) minmax(180px,1.2fr) minmax(100px,.7fr) 64px 40px auto;align-items:center;gap:var(--sp-3);padding:0 var(--sp-3)}
-.art-head{height:30px;font-size:var(--fs-xs);color:var(--text-tertiary);border-bottom:1px solid var(--border);background:var(--bg-sidebar);flex-shrink:0}
+/* 表头与数据行**必须**用同一套列宽，否则两边的 fr 分配会不一样。
+   原先最后一列是 auto：表头那格是空的（0px），行里装着四个按钮（166px），
+   于是表头把多出来的 166px 全分给了 fr 列 —— 标题/AI 理由/时间三列整体
+   对不上，看起来像数据错位（2026-09 用户报的「和下方的内容不匹配」）。
+   最后两列（已导出 / 操作）改成固定宽度，两边算出来的列宽就完全一致；
+   行里的「已导出」也必须**永远占一格**（没有就留空），否则行会少一个
+   子元素、后面的按钮整体前移一格。 */
+.art-head,.art-row{display:grid;grid-template-columns:32px minmax(90px,.7fr) minmax(180px,1.2fr) minmax(100px,.7fr) 64px 56px 56px 176px;align-items:center;gap:var(--sp-3);padding:0 var(--sp-3)}
+.art-head{height:30px;font-size:var(--fs-xs);color:var(--text-tertiary);border-bottom:1px solid var(--border);background:var(--bg-sidebar);/* 吸顶：表头在滚动容器内部（必须同宽，见 HistoryView 里的注释）。
+   z-index 要盖住下面绝对定位的虚拟滚动行。 */
+position:sticky;top:0;z-index:2;flex-shrink:0}
 .art-row{height:36px;border-bottom:1px solid var(--border);transition:background var(--dur-fast) var(--ease);box-sizing:border-box;cursor:pointer}
 .art-row:hover{background:var(--bg-hover)}
 .art-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

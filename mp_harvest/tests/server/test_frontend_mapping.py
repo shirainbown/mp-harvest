@@ -20,6 +20,8 @@ ARTICLE_KEYS = {
     "verdict", "reason",
     "title_verdict", "title_reason", "content_verdict", "content_reason",
     "exported",
+    # date 是不是真正的发布时间（false = 抓包目击/补录，只有看到它的时刻）
+    "has_publish_time", "seen_at",
 }
 
 
@@ -225,3 +227,57 @@ def test_supplement_bare_article_shape(client, auth):
     assert art["content_verdict"] is None
     assert art["content_reason"] == ""
     assert art["reason"] == ""
+    # 补录只有链接：时间列必须显示「未知」，不能把补录时刻当成发布时间
+    assert art["has_publish_time"] is False
+
+
+# ── 发布时间 vs 抓取时间（2026-09 用户报的「时间不对」）────────────────
+
+
+def test_publish_time_flag_distinguishes_capture_time_from_publish_time():
+    """抓包目击/补录的行没有发布时间，界面必须能分清 —— 否则会把目击时刻当发布时间。
+
+    用户的直觉是「时间列 = 文章发布时间」。目击行只有「我什么时候看到它」，
+    两者可以差几个月；把后者显示成前者，一篇老文章会挂着今天的日期，
+    看着就是数据坏了（2026-09 用户报的）。
+    """
+    from mp_harvest.server import mappers
+
+    mitm_row = {
+        "title": "长鑫上市，市值突破3万亿",
+        "link": "https://mp.weixin.qq.com/s?__biz=X&mid=1&idx=1&sn=abc",
+        "identity": "mid:1|idx:1|sn:abc",
+        "publish_ts": 0,
+        "source": "mitm",
+        "seen_at": "2026-09-12T17:39:44",
+    }
+    out = mappers.article_out(mitm_row, exported=False)
+    assert out["source"] == "M"
+    assert out["has_publish_time"] is False
+    assert out["seen_at"] == "2026-09-12T17:39:44"
+    # date 仍要给出「最早已知时间」：列表排序与时间筛选都指着它，不能空
+    assert out["date"] == "2026-09-12T17:39:44"
+
+    # 同一行被历史拉取补上发布时间后（source 也跟着变成 getmsg），标记必须翻过来
+    got = dict(mitm_row, publish_ts=1786000000, source="getmsg")
+    out2 = mappers.article_out(got, exported=False)
+    assert out2["source"] == "G"
+    assert out2["has_publish_time"] is True
+    assert out2["date"].startswith("2026-08")
+
+
+def test_missing_time_and_seen_at_still_yields_a_parsable_date():
+    """连 seen_at 都没有（老缓存里的补录行）也不能给出没法解析的 date。
+
+    前端按 `Date.parse(date)` 排序，空串会得到 NaN —— 排序函数返回 NaN 时
+    V8 的比较结果不稳定，列表顺序会看着像随机（这类 bug 极难复现定位）。
+    """
+    from mp_harvest.server import mappers
+
+    out = mappers.article_out(
+        {"title": "只有链接", "link": "https://mp.weixin.qq.com/s/x", "source": "sighting"},
+        exported=False,
+    )
+    assert out["has_publish_time"] is False
+    assert out["date"] == ""
+    assert out["source"] == "M"

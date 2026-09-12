@@ -302,16 +302,40 @@ async function submitSupplement() {
 }
 
 // ---- 行渲染辅助 ----
+/** 时间列：只有**发布时间**才显示 MM-DD。
+ *
+ * 抓包目击/补录的行没有发布时间（微信的链接里就没有），后端把 ``date`` 退成了
+ * 「看到的时刻」用于排序与筛选。把那个时刻当发布时间显示出来是在骗人 ——
+ * 一篇几个月前的文章会挂着今天的日期（2026-09 用户报的「时间不对」）。
+ * 不知道就写「未知」，鼠标悬停给出目击时刻。 */
 function mmdd(a: Article) {
+  if (a.has_publish_time === false) return '未知'
   const d = new Date(a.date)
   if (isNaN(d.getTime())) return a.date
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+/** 时间列的悬停说明：把「为什么没有时间」讲清楚 */
+function timeTip(a: Article) {
+  if (a.has_publish_time !== false) return a.date
+  const seen = (a.seen_at || a.date || '').replace('T', ' ')
+  return seen ? `微信没给发布时间（这篇文章是 ${seen} 抓到的）` : '微信没给发布时间'
 }
 const badgeVariant: Record<Article['source'], 'm' | 'g' | 'bu' | 'x'> = {
   M: 'm', G: 'g', 补: 'bu', 外: 'x',
 }
 const badgeTip: Record<Article['source'], string> = {
-  M: 'MITM 目击', G: 'getmsg 拉取', 补: '手动补录', 外: '其他来源（外部目录）',
+  M: '抓包目击：浏览这篇文章时代理看到的，微信只给了链接（没有发布时间）',
+  G: '历史拉取：从公众号历史接口拉到的',
+  补: '手动补录：你贴的链接',
+  外: '其他来源（外部目录）',
+}
+/** 徽标上显示的字。
+ *
+ * 2026-09 之前显示的是后端给的 M/G/补/外 单字母 —— 用户看到「M」只能来问
+ * 「这是不是坏了」。字母本身是有含义的（后端契约里的取值），留在这里做映射，
+ * 界面上说人话。 */
+const badgeText: Record<Article['source'], string> = {
+  M: '抓包', G: '拉取', 补: '补录', 外: '其他',
 }
 
 async function copyLink(a: Article) {
@@ -543,8 +567,13 @@ function toggleAiIncludeContent() {
 
     <!-- 文章表格 -->
     <div class="art-table">
-      <div class="art-head"><span></span><span>{{ sourceScope === 'wechat' ? '公众号' : '来源' }}</span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span></div>
       <div ref="scrollRef" class="art-scroll">
+        <!-- 表头放在**滚动容器里面**（sticky 吸顶）：它必须和数据行同宽。
+            放在外面时，一旦行数多到出现纵向滚动条，滚动区就比 .art-table 窄
+            （实测 macOS 上差 8px），表头的 fr 列随之宽松一点 —— 整列向右漂移
+            最多 8px，越靠右越明显（2026-09 用户报的「和下方的内容不匹配」）。
+            8 格对应 .art-row 的 8 个子元素（列宽见 style.css 的 grid-template-columns）。 -->
+        <div class="art-head"><span></span><span>{{ sourceScope === 'wechat' ? '公众号' : '来源' }}</span><span>标题</span><span>AI 理由</span><span>时间</span><span>来源</span><span></span><span></span></div>
         <SkeletonRows v-if="articles.loading || ext.loading" :rows="8" />
         <EmptyState v-else-if="!rows.length" :text="sourceScope === 'wechat' ? '选好公众号后点「拉取历史」；想看全部账号就先在下拉里选「全部公众号」' : '这个范围还没有条目；到「其他来源」页登记目录并扫描'" />
         <!-- 虚拟滚动（>500 条） -->
@@ -574,13 +603,14 @@ function toggleAiIncludeContent() {
               <span class="art-reason">{{ rowReason(rows[vr.index]) }}</span>
             </STooltip>
             <span v-else class="art-reason"></span>
-            <span class="mono muted">{{ mmdd(rows[vr.index]) }}</span>
+            <span class="mono muted" :title="timeTip(rows[vr.index])">{{ mmdd(rows[vr.index]) }}</span>
             <STooltip :text="badgeTip[rows[vr.index].source]">
-              <SBadge :variant="badgeVariant[rows[vr.index].source]">{{ rows[vr.index].source }}</SBadge>
+              <SBadge :variant="badgeVariant[rows[vr.index].source]">{{ badgeText[rows[vr.index].source] }}</SBadge>
             </STooltip>
             <!-- 本地还留着导出文件才显示。删掉文件后点「刷新」它就消失 ——
                  标记由后端按**文件是否存在**判定，不是查导出记录表里有没有行 -->
             <SBadge v-if="rows[vr.index].exported" variant="g" title="本地已存有这篇的 HTML">已导出</SBadge>
+            <span v-else></span>
             <span class="row-actions">
               <SButton size="sm" variant="ghost" @click="openArticle(rows[vr.index])">打开</SButton>
               <SButton size="sm" variant="ghost" @click="copyLink(rows[vr.index])">复制</SButton>
@@ -606,9 +636,10 @@ function toggleAiIncludeContent() {
             <STooltip :text="a.title" style="min-width:0"><span class="art-title">{{ a.title }}</span></STooltip>
             <STooltip v-if="rowReason(a)" :text="rowReason(a)" style="min-width:0"><span class="art-reason">{{ rowReason(a) }}</span></STooltip>
             <span v-else class="art-reason"></span>
-            <span class="mono muted">{{ mmdd(a) }}</span>
-            <STooltip :text="badgeTip[a.source]"><SBadge :variant="badgeVariant[a.source]">{{ a.source }}</SBadge></STooltip>
+            <span class="mono muted" :title="timeTip(a)">{{ mmdd(a) }}</span>
+            <STooltip :text="badgeTip[a.source]"><SBadge :variant="badgeVariant[a.source]">{{ badgeText[a.source] }}</SBadge></STooltip>
             <SBadge v-if="a.exported" variant="g" title="本地已存有这篇的 HTML">已导出</SBadge>
+            <span v-else></span>
             <span class="row-actions">
               <SButton size="sm" variant="ghost" @click="openArticle(a)">打开</SButton>
               <SButton size="sm" variant="ghost" @click="copyLink(a)">复制</SButton>

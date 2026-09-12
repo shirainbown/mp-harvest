@@ -5,7 +5,7 @@ from __future__ import annotations
 import socket
 import threading
 
-from mp_harvest.tests.server.conftest import wait_task
+from mp_harvest.tests.server.conftest import add_account, give_credential, wait_task
 
 
 def test_settings_get_put(client, auth):
@@ -196,3 +196,137 @@ def test_update_apply_platform_error_500(client, auth, fake_platform, monkeypatc
     monkeypatch.setattr(fake_platform.updater, "apply", _boom)
     resp = client.post("/api/update/apply", params=auth)
     assert resp.status_code == 500
+
+
+# ── 拉取节奏设置真的生效（2026-09）────────────────────────────────
+#
+# 「设置页能改」只是第一步；真正会坏在中间那段：设置键名 → `_fetch_policy()`
+# → core 的 FetchPolicy。中间任何一环对不上，界面照样能填、能存、返回 200，
+# 而拉取时用的还是老一套 —— 用户看不出任何异常。
+
+FETCH_KEYS = {
+    "fetch.delay_min": ("delay_min", 7),
+    "fetch.delay_max": ("delay_max", 9),
+    "fetch.cooldown_pages": ("cooldown_every", 3),
+    "fetch.cooldown_seconds": ("cooldown_seconds", 11),
+    "fetch.retries": ("retries", 5),
+    "fetch.max_pages": ("max_pages", 42),
+}
+
+
+def _set_fetch_settings(client, auth, **over):
+    body = {k: v for k, v in over.items()}
+    resp = client.put("/api/settings", params=auth, json=body)
+    assert resp.status_code == 200, resp.text
+
+
+def test_fetch_settings_reach_the_fetch_policy(client, auth):
+    """六个设置键逐个走到 FetchPolicy 的同名字段上。
+
+    用**每个字段各不相同**的值，任何一处键名错位（比如 cooldown_pages 写进了
+    cooldown_seconds）都会露馅；全都填同一个值就会互相顶包。
+    """
+    from mp_harvest.core import history_client as hc
+
+    acc = add_account(client, auth)
+    give_credential(acc["id"])
+    _set_fetch_settings(client, auth, **{k: v[1] for k, v in FETCH_KEYS.items()})
+
+    resp = client.post(
+        "/api/history/fetch", params=auth, json={"account_id": acc["id"], "days": 7}
+    )
+    assert resp.status_code == 202, resp.text
+    wait_task(resp.json()["task_id"])
+
+    policy = hc.last_policy
+    assert policy is not None, "路由没有把 policy 传给 history_client"
+    for key, (field, want) in FETCH_KEYS.items():
+        got = getattr(policy, field)
+        assert float(got) == float(want), f"{key} → policy.{field} 应为 {want}，实际 {got}"
+
+
+def test_fetch_settings_are_clamped(client, auth):
+    """设置页边上能填的值也要夹住：后端不能假设前端一定校验过。
+
+    越界的后果不是报错而是**拉取变哑**：`retries` 填成 1000 会把一次网络抖动
+    放大成上千次请求，`max_pages` 填 0 则一页都不翻（看着像「拉不到文章」）。
+    """
+    from mp_harvest.core import history_client as hc
+
+    acc = add_account(client, auth)
+    give_credential(acc["id"])
+    _set_fetch_settings(
+        client, auth,
+        **{"fetch.delay_min": -5, "fetch.delay_max": 99999,
+           "fetch.cooldown_pages": -1, "fetch.cooldown_seconds": 99999,
+           "fetch.retries": 1000, "fetch.max_pages": 0},
+    )
+
+    resp = client.post(
+        "/api/history/fetch", params=auth, json={"account_id": acc["id"], "days": 7}
+    )
+    wait_task(resp.json()["task_id"])
+
+    policy = hc.last_policy
+    assert policy.delay_min == 0 and policy.delay_max == 300
+    assert policy.cooldown_every == 0 and policy.cooldown_seconds == 3600
+    assert policy.retries == 10
+    assert policy.max_pages == 1, "max_pages 必须有下界，0 会一页都不翻"
+
+
+def test_rate_limited_is_passed_through_to_the_ui(client, auth):
+    """限流要**单独透出** `rate_limited`，不能只丢一句 error。
+
+    前端靠这个标记把提示做成「先别急着重试」；缺了它，界面上只是一条普通红色
+    报错 —— 而用户的下一动作就是再点一次，那正是让封锁变久的那一下。
+    """
+    from mp_harvest.core import history_client as hc
+
+    acc = add_account(client, auth)
+    give_credential(acc["id"])
+    hc.next_result = {
+        "ok": False,
+        "rate_limited": True,
+        "error": hc.RATE_LIMIT_MESSAGE,
+        "articles": [],
+        "pages": 1,
+    }
+    try:
+        resp = client.post(
+            "/api/history/fetch", params=auth, json={"account_id": acc["id"], "days": 7}
+        )
+        task = wait_task(resp.json()["task_id"])
+    finally:
+        hc.next_result = None
+
+    # 契约：单账号拉取返回的是**扁平**结果，rate_limited 在顶层
+    # （前端 articles.ts 读的就是这些顶层字段；它缺失时用户只会看到一条普通红报错）
+    assert task.result.get("rate_limited") is True, f"rate_limited 没透出：{task.result}"
+    # 文案由 core 给出、路由**原样透出**（内容本身在 test_history_range 里钉）
+    assert task.result["error"] == hc.RATE_LIMIT_MESSAGE
+
+
+def test_batch_results_keep_rate_limited(client, auth):
+    """批量拉取的每个子结果也要带 rate_limited（前端据此提示「换个号也没用」）。"""
+    from mp_harvest.core import history_client as hc
+
+    acc = add_account(client, auth, name="批量号")
+    give_credential(acc["id"])
+    hc.next_result = {
+        "ok": False,
+        "rate_limited": True,
+        "error": hc.RATE_LIMIT_MESSAGE,
+        "articles": [],
+        "pages": 1,
+    }
+    try:
+        resp = client.post(
+            "/api/history/fetch-batch",
+            params=auth,
+            json={"account_ids": [acc["id"]], "days": 7},
+        )
+        task = wait_task(resp.json()["task_id"])
+    finally:
+        hc.next_result = None
+
+    assert task.result["results"][0]["rate_limited"] is True

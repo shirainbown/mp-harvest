@@ -199,9 +199,18 @@ export const useArticlesStore = defineStore('articles', {
             notice?: string
             added?: number
             total?: number
+            /** 被微信限流（后端 `rate_limited`）—— 提示语要劝阻重试，见下 */
+            rate_limited?: boolean
+          }
+          // 被限流的应对与「凭证过期」**完全相反**：不是重试，是停手等着。
+          // 所以这里不能只丢一句红色报错 —— 那会诱导用户马上再点一次，而
+          // 每点一次封锁就更久（社区实测）。标题直接写「先别急着重试」，
+          // 正文用后端那句能指导行动的话（等 24 小时 / 换号）。
+          if (res.rate_limited) {
+            ui.error(`被微信限流了 —— 请先别重复拉取。\n${res.error || ''}`.trim())
           }
           // 后端契约：拉取失败时 result 为 {ok:false, error, warning?}
-          if (res.ok === false) {
+          else if (res.ok === false) {
             ui.error(`拉取历史失败：${res.error || '未知错误'}${res.warning ? `\n${res.warning}` : ''}`)
           } else {
             ui.toast(
@@ -239,8 +248,22 @@ export const useArticlesStore = defineStore('articles', {
       useTasksStore().track(r.task_id, 'history', {
         onDone: async (t) => {
           this.batchTaskId = ''
-          const res = (t.result || {}) as { ok?: number; failed?: number; total?: number }
+          const res = (t.result || {}) as {
+            ok?: number
+            failed?: number
+            total?: number
+            results?: { name?: string; rate_limited?: boolean; error?: string }[]
+          }
           ui.toast(`批量拉取完成：成功 ${res.ok ?? 0} / 失败 ${res.failed ?? 0}（共 ${res.total ?? accountIds.length} 个公众号）`)
+          // 批量里被限流时，只说「失败 3」等于没说：用户会以为是个别账号的问题，
+          // 换个账号再点一次 —— 而限流是**微信号级**的，换哪个都一样失败。
+          const limited = (res.results || []).filter((x) => x.rate_limited)
+          if (limited.length) {
+            ui.error(
+              `有 ${limited.length} 个公众号被微信限流了 —— 请先别重复拉取。\n` +
+                `${limited[0].error || ''}`.trim(),
+            )
+          }
           await useAccountsStore().load() // 名称可能被官方昵称覆盖
           await this.load()
         },

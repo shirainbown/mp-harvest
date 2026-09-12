@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+from html import unescape
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -292,30 +293,55 @@ def _parse_getmsg_articles(body: str, biz: str = "") -> list[dict]:
     return out
 
 
-def _enrich_sighting_from_html(html: str, base: dict) -> dict:
+def _extract_title(html: str) -> str:
+    """文章标题。两个来源，都要**反转义**。
+
+    实测（2026-09，真文章页）：``og:title`` 在文档 0.5% 处，``id="activity-name"``
+    在 23% 处 —— 两处都取，取不到就算了（目击行没有标题不是错误）。
+
+    ⚠️ 必须 ``html.unescape``：``og:title`` 里带引号/& 的标题是转义过的
+    （实测取到 `刺破&quot;默认配置&quot;：…`），不反转义就会原样显示在列表里。
+    """
+    text = html or ""
     title = ""
-    m = re.search(
-        r'id="activity-name"[^>]*>(.*?)</',
-        html or "",
-        re.I | re.S,
-    )
+    m = re.search(r'id="activity-name"[^>]*>(.*?)</', text, re.I | re.S)
     if m:
         title = re.sub(r"<[^>]+>", "", m.group(1)).strip()
     if not title:
-        m = re.search(
-            r'property="og:title"\s+content="([^"]+)"',
-            html or "",
-            re.I,
-        )
+        m = re.search(r'property="og:title"\s+content="([^"]+)"', text, re.I)
         if m:
             title = m.group(1).strip()
-    ts = 0
-    m = re.search(r'var\s+ct\s*=\s*"(\d+)"', html or "")
-    if m:
-        try:
-            ts = int(m.group(1))
-        except Exception:
-            ts = 0
+    return unescape(title)
+
+
+def _extract_publish_ts(html: str) -> int:
+    """文章发布时间（unix 秒）；取不到返回 0。
+
+    文章页上有**三处**独立记录了同一个值（实测都在同一份 HTML 里）：
+
+        var ct = "1785141617"            （文档 88.6% 处）
+        var create_time = "1785141617"    （88.6%）
+        var oriCreateTime = '1785141617'  （45.6%）
+
+    原先只认第一处。单条正则一旦不匹配就静默拿不到时间，而「拿不到」在界面上
+    表现为那篇文章**永远没有发布时间**（用户看不出是抓取失败，只当数据坏了）——
+    2026-09 用户报的正是这个。多几处兜底不花什么代价，任何一种页面变体都能兜住。
+    """
+    text = html or ""
+    for pat in (
+        r'var\s+ct\s*=\s*"(\d{9,11})"',
+        r'var\s+create_time\s*=\s*"(\d{9,11})"',
+        r"var\s+oriCreateTime\s*=\s*['\"](\d{9,11})['\"]",
+    ):
+        m = re.search(pat, text)
+        if m:
+            return int(m.group(1))
+    return 0
+
+
+def _enrich_sighting_from_html(html: str, base: dict) -> dict:
+    title = _extract_title(html)
+    ts = _extract_publish_ts(html)
     out = dict(base)
     if title:
         out["title"] = title

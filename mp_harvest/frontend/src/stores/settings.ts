@@ -16,6 +16,17 @@ import { MOCK } from '../config'
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let suppressModelAutosave = false
 
+/** 读一个数值设置项，缺失/非法才用默认值。
+ *
+ * ⚠️ **不能写成 `Number(v) || 默认值`** —— 拉取节奏那几个键里 0 是有意义的
+ * （不等待、不冷却），`||` 会把用户特意关掉的冷却又打开，而且不留痕迹。
+ */
+function num(v: unknown, fallback: number): number {
+  if (v === '' || v === null || v === undefined) return fallback
+  const n = Number(v)
+  return Number.isFinite(n) ? n : fallback
+}
+
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
     models: [] as AiModel[],
@@ -47,6 +58,14 @@ export const useSettingsStore = defineStore('settings', {
       // 周报打分：每批几篇 / 并发请求数（与 aiBatchSize 是两码事，见后端键表注释）
       weeklyScoreBatchSize: 8,
       weeklyWorkers: 4,
+      // 拉取历史的节奏与容错（2026-09）。默认值 = 后端 SETTING_DEFAULTS，
+      // 两处必须一致，否则「重置为默认」按下的会是另一套值。
+      fetchDelayMin: 3,
+      fetchDelayMax: 8,
+      fetchCooldownPages: 20,
+      fetchCooldownSeconds: 60,
+      fetchRetries: 2,
+      fetchMaxPages: 100,
     },
     prefsLoaded: false,
     prefsError: '',
@@ -113,6 +132,14 @@ export const useSettingsStore = defineStore('settings', {
       this.prefs.aiWorkers = Number(s['ai.workers']) || 4
       this.prefs.weeklyScoreBatchSize = Number(s['weekly.score_batch_size']) || 8
       this.prefs.weeklyWorkers = Number(s['weekly.workers']) || 4
+      // 拉取节奏：0 是**合法值**（= 不等待 / 不冷却），不能用 `|| 默认值`
+      // 兜底 —— 那会把用户特意关掉的冷却又打开。
+      this.prefs.fetchDelayMin = num(s['fetch.delay_min'], 3)
+      this.prefs.fetchDelayMax = num(s['fetch.delay_max'], 8)
+      this.prefs.fetchCooldownPages = num(s['fetch.cooldown_pages'], 20)
+      this.prefs.fetchCooldownSeconds = num(s['fetch.cooldown_seconds'], 60)
+      this.prefs.fetchRetries = num(s['fetch.retries'], 2)
+      this.prefs.fetchMaxPages = num(s['fetch.max_pages'], 100)
       this.prefs.aiContinueContentFilter = s['ai.continue_content_filter'] !== false
       this.prefsLoaded = true
     },
@@ -139,6 +166,12 @@ export const useSettingsStore = defineStore('settings', {
         'ai.continue_content_filter': this.prefs.aiContinueContentFilter,
         'weekly.score_batch_size': this.prefs.weeklyScoreBatchSize,
         'weekly.workers': this.prefs.weeklyWorkers,
+        'fetch.delay_min': this.prefs.fetchDelayMin,
+        'fetch.delay_max': this.prefs.fetchDelayMax,
+        'fetch.cooldown_pages': this.prefs.fetchCooldownPages,
+        'fetch.cooldown_seconds': this.prefs.fetchCooldownSeconds,
+        'fetch.retries': this.prefs.fetchRetries,
+        'fetch.max_pages': this.prefs.fetchMaxPages,
       }
     },
     async saveModels(silent = false) {

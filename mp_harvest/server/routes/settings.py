@@ -38,6 +38,16 @@ SETTING_DEFAULTS: dict[str, Any] = {
     # 共用一个键等于把筛选页的调优变成周报页的故障。
     "weekly.score_batch_size": 8,
     "weekly.workers": 4,
+    # 拉取历史的节奏与容错（2026-09）。微信没有公开的限流文档，默认值按社区实测
+    # 的「别被封」建议给：页间随机 3–8 秒（固定间隔本身就是可识别特征）、
+    # 每 20 页多歇 60 秒、网络类错误重试 2 次。
+    # ⚠️ 被限流**不重试**，见 core/history_client 的说明。
+    "fetch.delay_min": 3,
+    "fetch.delay_max": 8,
+    "fetch.cooldown_pages": 20,
+    "fetch.cooldown_seconds": 60,
+    "fetch.retries": 2,
+    "fetch.max_pages": 100,
 }
 
 # 已知设置项的声明类型（PUT 校验用；bool 判定须先于 int，因 bool 是 int 子类）
@@ -56,6 +66,12 @@ _SETTING_TYPES: dict[str, type] = {
     "weekly.archive_url": str,
     "weekly.score_batch_size": int,
     "weekly.workers": int,
+    "fetch.delay_min": int,
+    "fetch.delay_max": int,
+    "fetch.cooldown_pages": int,
+    "fetch.cooldown_seconds": int,
+    "fetch.retries": int,
+    "fetch.max_pages": int,
 }
 
 # 需要做 ~ 展开 + 绝对化 的路径型设置项。原先只对 export.default_dir 生效，

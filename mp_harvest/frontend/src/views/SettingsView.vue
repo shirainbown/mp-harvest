@@ -106,6 +106,40 @@ function onWorkers() {
   settings.prefs.aiWorkers = Math.max(1, Math.min(16, Math.round(Number(settings.prefs.aiWorkers) || 4)))
   save()
 }
+
+// ---- 拉取历史（2026-09）----
+//
+// 每个输入框失焦/回车时夹到合法区间再存：空框会得到 NaN，直接 PUT 上去就是
+// 后端 400（整页设置都存不进去），所以这里必须兜住。
+function clampInt(v: unknown, lo: number, hi: number, fallback: number): number {
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(lo, Math.min(hi, n))
+}
+function onDelayMin() {
+  settings.prefs.fetchDelayMin = clampInt(settings.prefs.fetchDelayMin, 0, 300, 3)
+  save()
+}
+function onDelayMax() {
+  settings.prefs.fetchDelayMax = clampInt(settings.prefs.fetchDelayMax, 0, 300, 8)
+  save()
+}
+function onCooldownPages() {
+  settings.prefs.fetchCooldownPages = clampInt(settings.prefs.fetchCooldownPages, 0, 1000, 20)
+  save()
+}
+function onCooldownSeconds() {
+  settings.prefs.fetchCooldownSeconds = clampInt(settings.prefs.fetchCooldownSeconds, 0, 3600, 60)
+  save()
+}
+function onRetries() {
+  settings.prefs.fetchRetries = clampInt(settings.prefs.fetchRetries, 0, 10, 2)
+  save()
+}
+function onMaxPages() {
+  settings.prefs.fetchMaxPages = clampInt(settings.prefs.fetchMaxPages, 1, 1000, 100)
+  save()
+}
 </script>
 
 <template>
@@ -167,6 +201,62 @@ function onWorkers() {
         <div class="mitm-row" style="margin-top:var(--sp-2)">
           <SSwitch v-model="settings.prefs.aiContinueContentFilter" @click="save" />
           <span>标题筛选完成后自动继续内容筛选</span>
+        </div>
+      </div>
+
+      <!-- 拉取历史的节奏与容错（2026-09）。微信没有公开的限流文档，这些默认值
+           是按社区实测的「别被封」建议给的；放开给用户是因为不同账号的历史
+           长度差很多，而**被限流的代价（约 24 小时）远大于慢一点**。 -->
+      <div class="panel">
+        <div class="panel-title">拉取历史</div>
+        <!-- 数字与它的单位/连字符各自包成一个不折行的整体：窗口一窄，flex 会从
+             任意空隙处换行，把「8」和「秒」拆到两行 —— 那时用户根本认不出哪个
+             数字配哪个单位（实测在窄窗口下就是这样）。 -->
+        <div class="mitm-row">
+          <span class="form-label">每页间隔</span>
+          <span class="fetch-unit">
+            <input v-model.number="settings.prefs.fetchDelayMin" type="number" min="0" max="300"
+                   class="input" style="width:64px" @change="onDelayMin" />
+            <span class="tertiary">~</span>
+            <input v-model.number="settings.prefs.fetchDelayMax" type="number" min="0" max="300"
+                   class="input" style="width:64px" @change="onDelayMax" />
+            <span>秒</span>
+          </span>
+          <span class="tertiary" style="font-size:var(--fs-xs)">取随机值；固定间隔本身就是个可识别特征</span>
+        </div>
+        <div class="mitm-row" style="margin-top:var(--sp-2)">
+          <span class="form-label">每翻</span>
+          <span class="fetch-unit">
+            <input v-model.number="settings.prefs.fetchCooldownPages" type="number" min="0" max="1000"
+                   class="input" style="width:64px" @change="onCooldownPages" />
+            <span>页歇</span>
+            <input v-model.number="settings.prefs.fetchCooldownSeconds" type="number" min="0" max="3600"
+                   class="input" style="width:72px" @change="onCooldownSeconds" />
+            <span>秒</span>
+          </span>
+          <span class="tertiary" style="font-size:var(--fs-xs)">0 = 不额外歇</span>
+        </div>
+        <div class="mitm-row" style="margin-top:var(--sp-2)">
+          <span class="form-label">单次最多翻</span>
+          <span class="fetch-unit">
+            <input v-model.number="settings.prefs.fetchMaxPages" type="number" min="1" max="1000"
+                   class="input" style="width:72px" @change="onMaxPages" />
+            <span>页</span>
+          </span>
+        </div>
+        <div class="mitm-row" style="margin-top:var(--sp-2)">
+          <span class="form-label">网络出错重试</span>
+          <span class="fetch-unit">
+            <input v-model.number="settings.prefs.fetchRetries" type="number" min="0" max="10"
+                   class="input" style="width:64px" @change="onRetries" />
+            <span>次</span>
+          </span>
+          <span class="tertiary" style="font-size:var(--fs-xs)">只对超时/连接中断重试，首次等 2 秒、之后翻倍</span>
+        </div>
+        <div class="tertiary" style="font-size:var(--fs-xs);line-height:1.7;margin-top:var(--sp-2)">
+          微信没有公开的限流规则，调快有被限流的风险：<b>被限流后该微信号约 24 小时
+          抓不了任何公众号</b>。被限流时应用<b>不会自动重试</b>（那样只会让封锁更久）。
+          网络类错误（超时、连接中断）才重试，第一次等 2 秒、第二次 4 秒。
         </div>
       </div>
 
@@ -285,6 +375,15 @@ function onWorkers() {
 </template>
 
 <style scoped>
+/* 「数字 + 单位」不拆行：窄窗口下 flex 会从任意空隙换行，把单位和它的数字
+   分到两行，读的人得猜哪个配哪个（实测窄窗口下就是这样） */
+.fetch-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
 /* 存储占用清单：一行一项，大小右对齐便于扫读 */
 .st-row {
   display: flex;

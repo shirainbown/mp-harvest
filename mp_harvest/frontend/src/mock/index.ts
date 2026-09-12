@@ -111,6 +111,14 @@ const settings: Record<string, unknown> = {
   'ai.continue_content_filter': true,
   'weekly.score_batch_size': 8,
   'weekly.workers': 4,
+  // 拉取历史的节奏与容错 —— 取值与后端 SETTING_DEFAULTS 保持一致，
+  // 否则演示模式下看到的默认值和真机不一样
+  'fetch.delay_min': 3,
+  'fetch.delay_max': 8,
+  'fetch.cooldown_pages': 20,
+  'fetch.cooldown_seconds': 60,
+  'fetch.retries': 2,
+  'fetch.max_pages': 100,
 }
 const platform: PlatformInfo = {
   os: 'mac',
@@ -312,7 +320,10 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
       account_id: String(b.account_id || 'a1'),
       title: `补录文章 ${new URL(String(b.url || 'https://mp.weixin.qq.com/s/x')).pathname.slice(-4)}`,
       url: String(b.url || ''),
+      // 补录只有链接，拿不到发布时间 —— 时间列会显示「未知」（与后端契约一致）
       date: new Date().toISOString(),
+      has_publish_time: false,
+      seen_at: new Date().toISOString(),
       source: '补',
       verdict: null,
       reason: '',
