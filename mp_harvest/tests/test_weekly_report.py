@@ -1519,3 +1519,57 @@ def test_output_schema_ties_promotion_to_the_semiconductor_flag():
     # 实测过的漏洞：模型会在理由里写「…但整体仍偏展台与产品线报道」，然后照样给 true。
     # 必须把这句话堵死，否则规则只在「单篇送审」时管用、一批八篇就手软。
     assert "就必须给 false" in s and "不许" in s
+
+
+# ── 候选要不要尊重 AI 筛选结果（2026-09）──────────────────────────
+#
+# 用户实际遇到的问题：窗口内 37 篇候选里有 **33 篇是他早就筛掉的**，
+# 周报把它们重新打分（花钱）还放进了报告 —— 那次筛选等于白做。
+
+
+def _cand_with_verdict(key: str, ts: int, verdict):
+    """造一条**文章缓存行**（带 AI 最终判定）。
+
+    字段名是 ``keep``（``state.merge_article_verdicts`` 写的那个），
+    不是候选里的 ``verdict`` —— 后者是 normalize 之后才有的。
+    """
+    c = _cand(key, f"文章{key}", ts=ts)
+    c["keep"] = verdict
+    return c
+
+
+def test_only_kept_skips_filtered_but_keeps_unjudged():
+    """只排除**明确判过「过滤掉」**的；未判定（None）照收。
+
+    「未判定」≠「被否掉」—— 刚拉来还没来得及筛的文章不该被静默丢掉。
+    """
+    rows = [
+        (_cand_with_verdict("done_ok", 2000, True), "号A", "a1"),
+        (_cand_with_verdict("dropped", 1900, False), "号A", "a1"),
+        (_cand_with_verdict("never", 1800, None), "号A", "a1"),
+    ]
+    loose = wr.collect_candidates(wechat_rows=rows, start_ts=1000, end_ts=3000)
+    assert len(loose) == 3, "不筛选时三篇都该在"
+
+    kept = wr.collect_candidates(wechat_rows=rows, start_ts=1000, end_ts=3000, only_kept=True)
+    assert {c["key"] for c in kept} == {"wechat:mid:done_ok", "wechat:mid:never"}, \
+        "只该去掉被明确否掉的那篇"
+
+
+def test_only_kept_applies_to_external_items_too():
+    """外部条目的判定是读缓存合并进来的，同样要生效（否则只有公众号侧被尊重）。"""
+    items = [
+        {**_erow("arxiv:1", "过的", 2000), "keep": True},
+        {**_erow("arxiv:2", "否的", 1900), "keep": False},
+        {**_erow("arxiv:3", "没判过", 1800)},
+    ]
+    assert len(wr.collect_candidates(external_items=items, start_ts=1000, end_ts=3000)) == 3
+    kept = wr.collect_candidates(external_items=items, start_ts=1000, end_ts=3000, only_kept=True)
+    assert {c["key"] for c in kept} == {"ext:arxiv:1", "ext:arxiv:3"}
+
+
+def test_candidate_carries_its_verdict():
+    """判定要跟着候选走到 collect_candidates 里 —— 否则上面那条规则无从执行。"""
+    got = wr.collect_candidates(
+        wechat_rows=[(_cand("a1", "甲"), "号A", "acct-A")], start_ts=0, end_ts=0)
+    assert "verdict" in got[0]

@@ -178,6 +178,8 @@ BUTTON_BINDINGS: list[tuple[str, str, str, int]] = [
     # 设置页「存储占用」（2026-09）：勾选框 + 清理按钮
     ("views/SettingsView.vue", "存储项勾选", "togglePick", 1),
     ("views/SettingsView.vue", "清理选中（二次确认后执行）", "doClean", 1),
+    # 候选范围勾选框：切换后要**立刻重算**（否则「共 N 篇」还停在旧口径）
+    ("views/WeeklyView.vue", "候选范围（只考虑筛选通过的）", "onOnlyKept", 1),
     # 打分速度两个输入框（每批篇数 / 并发请求数，2026-09）
     ("views/WeeklyView.vue", "打分批大小", "setScoreBatch", 1),
     ("views/WeeklyView.vue", "打分并发请求数", "setScoreWorkers", 1),
@@ -209,7 +211,32 @@ HANDLER_BODIES: list[tuple[str, str, str]] = [
     ("views/LogsView.vue", "doClear", "logs.clear("),
     # 清理必须真的打到后端（只在前端清列表等于骗人）
     ("views/SettingsView.vue", "doClean", "storage.clean("),
+    ("views/WeeklyView.vue", "onOnlyKept", "loadPreview("),
 ]
+
+
+# ── store 参数接线（扫 .ts）────────────────────────────────────────
+#
+# 上面扫的是 .vue，但有些参数只在 store 里拼进请求体。典型失败：界面加了勾选框、
+# store 却没把这个字段发给后端 —— 后端有默认值兜底，于是**勾选框看着能点、
+# 实际毫无作用**（正是本项目反复出现的「点了没反应」）。
+
+STORE_PARAMS: list[tuple[str, str, str]] = [
+    # (store 文件, 说明, 必须出现的片段)
+    ("stores/weekly.ts", "生成时把「只考虑筛选通过的」发给后端",
+     "only_kept: this.onlyKept"),
+    ("stores/weekly.ts", "预览也走同一口径（否则数字与生成对不上）",
+     "only_kept: String(this.onlyKept)"),
+    ("stores/weekly.ts", "生成时把「补全正文」发给后端",
+     "fetch_bodies: this.fetchBodies"),
+]
+
+
+@pytest.mark.parametrize("rel,label,snippet", STORE_PARAMS)
+def test_store_sends_the_param(rel: str, label: str, snippet: str):
+    """store 里必须真的把这个参数拼进请求 —— 否则勾选框是摆设。"""
+    text = (SRC / rel).read_text(encoding="utf-8")
+    assert snippet in text, f"{rel} 没有把「{label}」发出去（找不到 `{snippet}`）"
 
 
 def _body_of(script: str, fn: str) -> str:

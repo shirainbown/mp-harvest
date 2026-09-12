@@ -400,3 +400,74 @@ def test_per_row_counts_survive_same_item_in_two_sources(client, auth, tmp_path)
         f"逐行之和 {b['source_counts']} 与总数 {b['total']} 对不上"
     )
     assert len(b["source_counts"]) == 1, "只有真正贡献了候选的那个目录才该有计数"
+
+
+# ── 候选尊重 AI 筛选结果（2026-09）──────────────────────────────────
+
+
+def _seed_with_verdict(account_id: str, kept: int, dropped: int, tag: str) -> None:
+    """塞两批文章：一批 keep=True，一批 keep=False。"""
+    from mp_harvest.server import state
+
+    base = _ts(2026, 9, 5)
+    rows = []
+    for i in range(kept + dropped):
+        rows.append({
+            "title": f"文章{tag}{i}", "link": f"https://mp.weixin.qq.com/s/{tag}{i}",
+            "publish_ts": base + i * 3600, "publish_at": "2026-09-05 10:00",
+            "identity": f"mid:{tag}{i}", "keep": i < kept,
+            "body_text": "正文内容足够长以便当作真实候选处理。", "body_html": "<p>x</p>",
+        })
+    state.set_articles(account_id, rows)
+
+
+def test_preview_respects_ai_verdict_by_default(client, auth):
+    """周报候选**默认**跳过被 AI 筛掉的文章。
+
+    用户报的原话：窗口内 37 篇候选里 33 篇是他早就筛掉的 —— 那次筛选等于白做。
+    """
+    acc = add_account(client, auth)
+    _seed_with_verdict(acc["id"], kept=2, dropped=5, tag="k")
+
+    on = client.get("/api/weekly/preview", params={
+        **auth, "from_date": "2026-09-05", "to_date": "2026-09-05"}).json()
+    assert on["total"] == 2 and on["only_kept"] is True
+
+    off = client.get("/api/weekly/preview", params={
+        **auth, "from_date": "2026-09-05", "to_date": "2026-09-05",
+        "only_kept": "false"}).json()
+    assert off["total"] == 7 and off["only_kept"] is False, "关掉开关要能看全部"
+
+
+def test_preview_keeps_unjudged_articles(client, auth):
+    """未判定（keep 缺省）**照收** —— 刚拉来还没筛的不该被静默丢掉。"""
+    acc = add_account(client, auth)
+    _seed_with_verdict(acc["id"], kept=1, dropped=0, tag="u")
+    # 再塞一篇完全没判定的
+    from mp_harvest.server import state
+    state.set_articles(acc["id"], [
+        {"title": "没筛过的", "link": "https://mp.weixin.qq.com/s/new",
+         "publish_ts": _ts(2026, 9, 5) + 99, "publish_at": "2026-09-05 10:00",
+         "identity": "mid:new", "body_text": "正文。", "body_html": "<p>x</p>"},
+    ] + state.get_articles(acc["id"]))
+
+    b = client.get("/api/weekly/preview", params={
+        **auth, "from_date": "2026-09-05", "to_date": "2026-09-05"}).json()
+    assert b["total"] == 2, "被筛过的 + 没筛过的，两篇都该在"
+
+
+def test_generate_uses_only_kept_flag(client, auth, tmp_path, monkeypatch):
+    """生成也要走同一个口径 —— 否则预览显示 2 篇、实际却给模型 7 篇。"""
+    calls: list[dict] = []
+    _stub_model(monkeypatch, calls=calls)
+    acc = add_account(client, auth)
+    _seed_with_verdict(acc["id"], kept=1, dropped=3, tag="g")
+
+    r = client.post("/api/weekly/generate", params=auth, json={
+        "issue_num": 1, "from_date": "2026-09-05", "to_date": "2026-09-05",
+        "selected_count": 5, "out_dir": str(tmp_path / "out")})
+    assert r.status_code == 202, r.text
+    assert r.json()["total"] == 1, "被筛掉的 3 篇不该进来"
+    task = wait_task(r.json()["task_id"])
+    assert task.status == "done", task.error
+    assert task.result["total"] == 1

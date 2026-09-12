@@ -114,13 +114,50 @@ def _parse_range(from_date: str, to_date: str) -> tuple[int, int, str, str]:
     return start, end, from_date.strip(), to_date.strip()
 
 
+def _external_verdicts() -> dict[str, bool]:
+    """外部条目的**最终**判定：``{<ext:item_key>: keep}``。
+
+    外部条目不把判定存在自己的库里（避免两处真相），而是复用 ai_filter 的两阶段
+    缓存，读取时合并 —— 这里按与 ``state.merge_article_verdicts`` **同一条优先级**
+    取：内容筛选优先，没有则标题筛选；都没判过就不进这个字典。
+    """
+    from mp_harvest.core import ai_filter as ai_mod
+
+    data = paths.data_dir()
+    out: dict[str, bool] = {}
+    title: dict = {}
+    content: dict = {}
+    for path, prefix, bucket in (
+        (data / "ai_filter_cache.json", "", title),
+        (data / "ai_content_filter_cache.json", "content_", content),
+    ):
+        try:
+            bucket.update(ai_mod.load_verdicts(path, prefix=prefix) or {})
+        except Exception:  # noqa: BLE001
+            continue
+    for key in set(title) | set(content):
+        ck = (content.get(key) or {}).get("content_keep")
+        tk = (title.get(key) or {}).get("title_keep")
+        keep = ck if ck is not None else tk
+        if keep is not None:
+            out[key] = bool(keep)
+    return out
+
+
 def _gather(
-    account_ids: list[str], source_ids: list[str], start_ts: int, end_ts: int
+    account_ids: list[str],
+    source_ids: list[str],
+    start_ts: int,
+    end_ts: int,
+    *,
+    only_kept: bool = False,
 ) -> list[dict[str, Any]]:
     """把公众号缓存与外部来源条目汇成候选。
 
     ``account_ids``/``source_ids`` 都为空 = 全部（公众号取所有已添加账号，
     外部来源取所有已启用目录）—— 与「全部公众号」的既有语义一致。
+
+    ``only_kept``：跳过被 AI 筛选判定为「过滤掉」的文章（未判定照收）。
     """
     accounts = state.get_store().list_accounts()
     wanted = {str(a) for a in account_ids} if account_ids else None
@@ -137,15 +174,19 @@ def _gather(
     store = ext_mod.get_external_store()
     src_wanted = {str(s) for s in source_ids} if source_ids else None
     external_items: list[dict[str, Any]] = []
+    verdicts = _external_verdicts()
     for src in store.list_sources():
         sid = str(src.get("id") or "")
         if not sid or (src_wanted is not None and sid not in src_wanted):
             continue
-        external_items.extend(store.list_items(sid))
+        for it in store.list_items(sid):
+            # 判定不进外部库（避免两处真相），读的时候合并进来
+            k = f"ext:{it.get('item_key') or ''}"
+            external_items.append({**it, "keep": verdicts.get(k)} if k in verdicts else it)
 
     return wr.collect_candidates(
         wechat_rows=wechat_rows, external_items=external_items,
-        start_ts=start_ts, end_ts=end_ts,
+        start_ts=start_ts, end_ts=end_ts, only_kept=only_kept,
     )
 
 
@@ -158,6 +199,7 @@ def preview(
     to_date: str = "",
     account_ids: str = "",
     source_ids: str = "",
+    only_kept: bool = True,
 ) -> dict:
     """候选统计 + 建议期号 + 当前模板信息（生成前先让用户看清会用到什么）。"""
     from datetime import date, timedelta
@@ -170,7 +212,7 @@ def preview(
 
     accs = [x for x in str(account_ids or "").split(",") if x.strip()]
     srcs = [x for x in str(source_ids or "").split(",") if x.strip()]
-    cands = _gather(accs, srcs, start_ts, end_ts)
+    cands = _gather(accs, srcs, start_ts, end_ts, only_kept=only_kept)
 
     # 按账号 / 按来源的**本区间**候选数。必须在**去重之后**数 —— 同一篇论文可能
     # 同时登记在两个目录下，各自先数再加会大于总数，前端看到的就对不上了。
@@ -198,6 +240,7 @@ def preview(
         "arxiv": sum(1 for c in cands if c["kind"] == "arXiv"),
         "external_other": sum(1 for c in cands if c["kind"] not in ("公众号", "arXiv")),
         # 逐行的区间内候选数（前端每行显示「N 篇」，与 total 是同一套口径）
+        "only_kept": bool(only_kept),
         "account_counts": account_counts,
         "source_counts": source_counts,
         "template_path": str(tpl_path),
@@ -215,7 +258,8 @@ def generate(body: WeeklyGenerateIn) -> dict:
     from mp_harvest.core import ai_filter as ai_mod
 
     start_ts, end_ts, fd, td = _parse_range(body.from_date, body.to_date)
-    candidates = _gather(body.account_ids, body.source_ids, start_ts, end_ts)
+    candidates = _gather(body.account_ids, body.source_ids, start_ts, end_ts,
+                         only_kept=body.only_kept)
     if not candidates:
         raise HTTPException(
             status_code=400,

@@ -770,6 +770,9 @@ def normalize_wechat(
         "source_id": str(source_id or ""),
         # 补抓到正文后要按 identity 写回文章缓存（见 fetch_missing_bodies）
         "identity": str(row.get("identity") or ""),
+        # AI 筛选的**最终判定**（内容筛选优先，没有则标题筛选；都没判过是 None）。
+        # 只有明确的 False 才该被排除 —— 未判定 ≠ 被否掉（2026-09）
+        "verdict": row.get("keep"),
         "title": title or "(无标题)",
         "source": source_name or str(row.get("account") or ""),
         "date": _date_of(ts, str(row.get("publish_at") or "")),
@@ -797,6 +800,8 @@ def normalize_external(item: dict[str, Any]) -> dict[str, Any] | None:
         "kind": "arXiv" if item.get("arxiv_id") else "外部",
         # 只用于统计（前端按来源目录显示「本区间 N 篇」）
         "source_id": str(item.get("source_id") or ""),
+        # 外部条目的判定由调用方从 ai_filter 缓存合并进来（它们不在库里另存判定）
+        "verdict": item.get("keep"),
         "arxiv_id": str(item.get("arxiv_id") or ""),
         "title": title or "(无标题)",
         "title_cn": str(item.get("title_cn") or ""),
@@ -832,6 +837,7 @@ def collect_candidates(
     external_items: Iterable[dict[str, Any]] = (),
     start_ts: int = 0,
     end_ts: int = 0,
+    only_kept: bool = False,
 ) -> list[dict[str, Any]]:
     """按日期窗口收集候选并去重（同 key 只留一条）。
 
@@ -840,15 +846,26 @@ def collect_candidates(
     带上 id 是为了让前端能按账号/按来源显示「本区间 N 篇」——
     **统计必须在去重之后做**（同一篇论文可能同时登记在两个目录下），
     所以 id 得跟着候选走到最后，不能各自数各自的。
+
+    ``only_kept``：跳过**已被 AI 筛选判定为「过滤掉」**的文章（``verdict is False``）。
+    **未判定（``None``）照收** —— 刚拉来还没筛的文章不该被静默丢掉。
+    2026-09 用户实际遇到的问题：窗口内 37 篇候选里有 33 篇是他明确筛掉的，
+    周报把它们重新打分（花钱）还放进了报告 —— 花过钱的那次筛选等于白做。
     """
     out: dict[str, dict[str, Any]] = {}
+
+    def _keep(c: dict[str, Any] | None) -> bool:
+        if c is None or not _in_window(c["publish_ts"], start_ts, end_ts):
+            return False
+        return not (only_kept and c.get("verdict") is False)
+
     for row, name, account_id in wechat_rows:
         c = normalize_wechat(row, source_name=name, source_id=account_id)
-        if c and _in_window(c["publish_ts"], start_ts, end_ts):
+        if _keep(c):
             out.setdefault(c["key"], c)
     for item in external_items:
         c = normalize_external(item)
-        if c and _in_window(c["publish_ts"], start_ts, end_ts):
+        if _keep(c):
             out.setdefault(c["key"], c)
     return sorted(out.values(), key=lambda c: c["publish_ts"], reverse=True)
 

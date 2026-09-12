@@ -26,6 +26,10 @@ export const useWeeklyStore = defineStore('weekly', {
      *  没有正文时打分与解读都是瞎猜 —— 有实测数据的文章会被判成「无量化数据」，
      *  厂商宣传稿也认不出来。抓到的正文会写回缓存，下次免费。 */
     fetchBodies: true,
+    /** 只用 AI 筛选未否掉的文章当候选（未判定照收）。默认开（2026-09）：
+     *  用户实际遇到的是「窗口内 37 篇候选里有 33 篇是我早就筛掉的」—— 周报把
+     *  筛掉的重打一遍分（花钱）还放进了报告，那次筛选等于白做。 */
+    onlyKept: true,
     // ---- 来源勾选（**勾了才算**，默认全选）----
     //
     // 2026-09 改：原先是「空 = 全部」，默认一个都不勾 —— 「全部」链接在默认
@@ -98,6 +102,7 @@ export const useWeeklyStore = defineStore('weekly', {
           to_date: this.toDate,
           account_ids: [...this.accountIds].join(','),
           source_ids: [...this.sourceIds].join(','),
+          only_kept: String(this.onlyKept),
         })
         const r = await call(rest.get<WeeklyPreview>(`/api/weekly/preview?${q}`))
         if (r) {
@@ -186,6 +191,7 @@ export const useWeeklyStore = defineStore('weekly', {
             report_title: this.reportTitle,
             download_images: this.downloadImages,
             fetch_bodies: this.fetchBodies,
+            only_kept: this.onlyKept,
           },
           { timeout: LONG_TIMEOUT },
         ),

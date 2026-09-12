@@ -47,6 +47,12 @@ function _clampInt(v: string, lo: number, hi: number, fallback: number): number 
   if (!Number.isFinite(n)) return fallback
   return Math.max(lo, Math.min(hi, n))
 }
+/** 切换候选范围要**立刻重算** —— 否则「共 N 篇候选」还停在旧口径，对不上 */
+function onOnlyKept(on: boolean) {
+  weekly.onlyKept = on
+  void weekly.loadPreview()
+}
+
 function setScoreBatch(v: string) {
   void settings.savePrefs({ weeklyScoreBatchSize: _clampInt(v, 1, 20, 8) })
 }
@@ -213,6 +219,18 @@ async function openPath(p: string) {
             <span class="form-label">报告标题</span>
             <SInput v-model="weekly.reportTitle" placeholder="留空用设置里的默认标题"
                     style="flex:1;min-width:240px" />
+          </div>
+          <div class="mitm-row" style="margin-top:var(--sp-2)">
+            <span class="form-label">候选范围</span>
+            <label class="ck-row" style="padding:0">
+              <input type="checkbox" class="cb" :checked="weekly.onlyKept"
+                     @change="onOnlyKept(($event.target as HTMLInputElement).checked)" />
+              <span style="font-size:var(--fs-sm)">只考虑 AI 筛选没被过滤掉的文章</span>
+            </label>
+            <span class="tertiary" style="font-size:var(--fs-xs)">
+              你在「历史文章」里筛掉的不再进候选（<b>没筛过的照收</b>）。取消勾选 = 让周报
+              从区间内全部文章里自己挑。
+            </span>
           </div>
           <div class="mitm-row" style="margin-top:var(--sp-2)">
             <span class="form-label">补全正文</span>

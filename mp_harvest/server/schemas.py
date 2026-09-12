@@ -182,6 +182,8 @@ class WeeklyGenerateIn(BaseModel):
     download_images: bool = False
     # 给只有标题/摘要的候选补抓正文（2026-09）：没有正文时打分与解读都是瞎猜
     fetch_bodies: bool = True
+    # 只考虑 AI 筛选未否掉的文章（未判定照收）。默认开：用户筛过的不该被重新捞回来
+    only_kept: bool = True
 
 
 class WeeklyRenderIn(BaseModel):
