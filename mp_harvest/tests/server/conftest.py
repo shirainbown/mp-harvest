@@ -68,6 +68,12 @@ def _fake_store() -> types.ModuleType:
                     r["status"] = "awaiting"
                     break
 
+        def fresh_credentials(self, account_id: str):
+            # 与真实 store 同接口；fake 不做时效判定（无 is_active 时
+            # 既有约定就是「有凭证即可」，见 export._credential_active）
+            row = self.get(account_id) or {}
+            return dict(row.get("credentials") or {})
+
     mod.AccountStore = AccountStore
     return mod
 

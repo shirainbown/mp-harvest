@@ -260,8 +260,8 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
     for a in kept:
         aid = str(a.get("_account_id") or "")
         if aid and aid not in cred_by_account:
-            acct = state.get_store().get(aid) or {}
-            cred_by_account[aid] = acct.get("credentials") or {}
+            # 只带未过期凭证：过期的 pass_ticket 更易触发环境校验页
+            cred_by_account[aid] = state.get_store().fresh_credentials(aid)
 
     def work(task: Task) -> dict:
         models = ai_mod.load_models(_models_path())

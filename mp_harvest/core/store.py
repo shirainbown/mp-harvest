@@ -178,6 +178,18 @@ class AccountStore:
         row = self.get(account_id)
         return bool(row and row.get("status") == "active" and self.remaining_seconds(account_id) > 0)
 
+    def fresh_credentials(self, account_id: str) -> dict[str, str]:
+        """仍在有效期内的凭证；已过期返回空 dict（2026-09-13）。
+
+        过期的 ``pass_ticket``/``wxuin`` 对微信来说是「带着作废票据的请求」，
+        比干干净净不带**更容易**触发环境校验页。抓正文（周报补正文 / AI 内容
+        筛选 / 导出正文）因此只在凭证新鲜时才带；过期就走无凭证直连。
+        """
+        if not self.is_active(account_id):
+            return {}
+        row = self.get(account_id) or {}
+        return dict(row.get("credentials") or {})
+
     def list_active_accounts(self) -> list[dict[str, Any]]:
         self.mark_expired_if_needed()
         with self._lock:

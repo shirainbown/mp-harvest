@@ -109,8 +109,8 @@ def _cred_by_account(articles: list[dict]) -> dict[str, dict]:
     for art in articles:
         aid = str(art.get("_account_id") or "")
         if aid and aid not in out:
-            acct = state.get_store().get(aid) or {}
-            out[aid] = acct.get("credentials") or {}
+            # 只带未过期凭证：过期的 pass_ticket 更易触发环境校验页
+            out[aid] = state.get_store().fresh_credentials(aid)
     return out
 
 

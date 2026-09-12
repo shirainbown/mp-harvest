@@ -370,12 +370,13 @@ def generate(body: WeeklyGenerateIn) -> dict:
     batch_size, workers = _score_settings()
     org = _org()
 
-    # 补正文要用账号凭证（与 AI 内容筛选同一套取法）
+    # 补正文要用账号凭证（与 AI 内容筛选同一套取法）——只取**未过期**的：
+    # 过期的 pass_ticket 比不带更容易触发微信环境校验页（store.fresh_credentials）
     cred_by_account: dict[str, dict] = {}
     for acct in state.get_store().list_accounts():
         aid = str(acct.get("id") or "")
         if aid:
-            cred_by_account[aid] = acct.get("credentials") or {}
+            cred_by_account[aid] = state.get_store().fresh_credentials(aid)
 
     def _cred_for(aid: str) -> dict:
         return cred_by_account.get(str(aid or ""), {})
