@@ -296,6 +296,15 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
     return { task_id } as T
   }
   if (p === '/api/articles' && method === 'GET') return articles as T
+  if (p === '/api/articles/delete' && method === 'POST') {
+    // 真的从 mock 列表里摘掉，好让「删完列表变短」这件事在 mock 模式下也看得见
+    const ids = new Set((b.ids as string[]) || [])
+    const before = articles.length
+    for (let i = articles.length - 1; i >= 0; i--) {
+      if (ids.has(articles[i].id)) articles.splice(i, 1)
+    }
+    return { ok: true, removed: before - articles.length } as T
+  }
   if (p === '/api/articles/supplement' && method === 'POST') {
     const art: Article = {
       id: `art${Date.now()}`,
@@ -444,17 +453,23 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   // ---------- 周报 ----------
   if (p === '/api/storage' && method === 'GET') {
     return {
+      // 三档各来一个：代价低 / 代价高但可清 / 不可再生
       items: [
         { key: 'update', label: '更新包（已下载的安装包，装完就没用）',
-          path: '~/data/update', size: 845414400, count: 16, safe: true,
+          path: '~/data/update', size: 845414400, count: 16, safe: true, costly: false,
           note: '每次「立即更新」都会下一个 ~50MB 的包' },
-        { key: 'weekly_cache', label: '周报打分 / 解读缓存', path: '~/data/weekly/cache.json',
-          size: 49152, count: 1, safe: true, note: '删掉后下次生成要重新打分（会调用模型）' },
+        { key: 'articles_cache', label: '文章缓存（含已抓正文与 AI 判定）',
+          path: '~/data/articles_cache', size: 5302763, count: 29, safe: true, costly: true,
+          note: '删了要重新联网拉历史；AI 判定结果也在这些行里，一并消失' },
         { key: 'accounts', label: '公众号与凭证', path: '~/data/accounts.json',
-          size: 32768, count: 1, safe: false, note: '删了要重新添加公众号并重新抓包' },
+          size: 32768, count: 1, safe: true, costly: true,
+          note: '删了要重新添加公众号并**重新抓包**' },
+        { key: 'prompts', label: '周报自定义提示词', path: '~/data/weekly/prompts.json',
+          size: 2048, count: 1, safe: false, costly: false,
+          note: '是你写的判定标准，删了会回退内置默认，改不回来' },
       ],
       clearable_bytes: 845463552,
-      total_bytes: 845496320,
+      total_bytes: 845497368,
     } as T
   }
   if (p === '/api/storage/clean' && method === 'POST') {

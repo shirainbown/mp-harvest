@@ -41,6 +41,12 @@ const pickedSize = computed(() =>
   storage.items.filter((i) => picked.value.has(i.key)).reduce((n, i) => n + i.size, 0),
 )
 
+/** 选中的项里哪些是「代价高」的。确认框要把**每一项的代价**逐条列出来 ——
+ *  只说一句「不可撤销」等于没说，用户根本不知道自己要重新抓包。 */
+const pickedCostly = computed(() =>
+  storage.items.filter((i) => i.costly && picked.value.has(i.key)),
+)
+
 function togglePick(key: string, on: boolean) {
   const s = new Set(picked.value)
   if (on) s.add(key)
@@ -226,27 +232,42 @@ function onWorkers() {
           <div v-for="it in storage.items" :key="it.key" class="st-row">
             <input v-if="it.safe" type="checkbox" class="cb" :checked="picked.has(it.key)"
                    @change="togglePick(it.key, ($event.target as HTMLInputElement).checked)" />
-            <span v-else class="st-keep" title="清掉会丢数据，不提供清理">保留</span>
+            <span v-else class="st-keep" title="清掉就真没了，不提供清理">保留</span>
             <span class="st-label" :title="it.note">{{ it.label }}</span>
+            <!-- 「代价高」要一眼看得出来，不然用户勾完才知道要重新抓包 -->
+            <span v-if="it.costly" class="st-costly" title="可清理，但清掉后要重新采集">代价高</span>
             <span class="muted mono" style="font-size:var(--fs-xs);white-space:nowrap">
               {{ fmtSize(it.size) }}
             </span>
           </div>
+
+          <!-- 确认区**独立成块**：代价高的项要逐条把代价写出来，塞在工具栏里挤不下 -->
+          <div v-if="confirmClean" class="st-confirm">
+            <div>确定清理这 {{ picked.size }} 项？<b>不可撤销</b>。</div>
+            <template v-if="pickedCostly.length">
+              <div style="margin-top:6px">
+                其中 <b>{{ pickedCostly.length }}</b> 项<b>代价高</b>，清掉后要你自己重新采集：
+              </div>
+              <div v-for="it in pickedCostly" :key="it.key" class="st-costly-row">
+                · <b>{{ it.label }}</b>：{{ it.note }}
+              </div>
+            </template>
+            <div class="toolbar" style="margin-top:var(--sp-2)">
+              <SButton size="sm" variant="danger" @click="doClean">确定清理</SButton>
+              <SButton size="sm" variant="ghost" @click="confirmClean = false">取消</SButton>
+            </div>
+          </div>
+
           <div class="toolbar" style="margin-top:var(--sp-3)">
             <span class="tertiary" style="font-size:var(--fs-sm)">
-              勾选的都是<b>可重建</b>的；标「保留」的（账号、凭证、模型配置、CA、自定义提示词、
-              设置、文章缓存）删了就没了，不提供清理。
+              勾选的都是<b>可清理</b>的；标「保留」的（AI 模型配置、应用设置、自定义提示词、
+              手工补录的链接）删了就真没了 —— 它们是你自己填/写的，没有别处能重新得到。
             </span>
             <span class="spacer"></span>
             <SButton v-if="!confirmClean" size="sm" variant="danger" :disabled="!picked.size"
                      @click="confirmClean = true">
               清理选中（{{ fmtSize(pickedSize) }}）
             </SButton>
-            <template v-else>
-              <span class="tertiary" style="font-size:var(--fs-sm)">确定清理？不可撤销</span>
-              <SButton size="sm" variant="danger" @click="doClean">确定清理</SButton>
-              <SButton size="sm" variant="ghost" @click="confirmClean = false">取消</SButton>
-            </template>
           </div>
         </template>
       </div>
@@ -288,5 +309,30 @@ function onWorkers() {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
   white-space: nowrap;
+}
+/* 「代价高」标记：勾之前就要看得见，别等确认框才知道要重新抓包 */
+.st-costly {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: rgba(201, 138, 44, 0.14);
+  color: var(--warning);
+  white-space: nowrap;
+}
+/* 确认区：整块铺开，代价逐条列出 */
+.st-confirm {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.st-costly-row {
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  color: var(--text-tertiary);
+  padding-left: 6px;
 }
 </style>

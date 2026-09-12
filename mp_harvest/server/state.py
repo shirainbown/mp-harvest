@@ -442,3 +442,43 @@ def reset() -> None:
         _articles.clear()
         _last_days.clear()
         _last_fetch_ts.clear()
+
+
+# ── 定向复位（「设置 → 存储占用」清理本地数据后调用）──────────────────
+#
+# 与 reset() 的区别：reset() 是测试用的**全清**，这里按项清。
+#
+# 为什么非清不可：删磁盘文件**不影响进程里的内存副本**，而各模块会在下一次保存
+# 时把内存里的东西写回文件 —— 于是「清了又长回来」，而且只长回被碰到的那部分，
+# 看起来像没清干净。实测：删光 29 个文章缓存文件后做一次普通操作，文件就回来了。
+#
+# 名字要与 core.storage._MEMORY_RESET 里登记的字符串对上（有测试钉住）。
+
+
+def forget_articles() -> None:
+    """丢掉全部文章内存缓存（磁盘文件由存储清理负责删）。"""
+    with _lock:
+        _articles.clear()
+        _last_days.clear()
+        _last_fetch_ts.clear()
+
+
+def forget_store() -> None:
+    """丢掉账号 store 单例。下次 get_store() 重新从磁盘读 —— 文件没了就是空的。"""
+    global _store
+    with _lock:
+        _store = None
+
+
+def forget_mitm() -> None:
+    """丢掉抓包服务单例。CA 被删后要重新构造，不能继续用内存里那份旧证书。"""
+    global _mitm
+    with _lock:
+        _mitm = None
+
+
+def forget_external() -> None:
+    """丢掉外部来源库单例（真身在 core，这里只是给路由一个统一入口）。"""
+    from mp_harvest.core import external_sources as ext_mod
+
+    ext_mod.reset_external_store()

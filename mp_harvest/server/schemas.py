@@ -58,6 +58,13 @@ class SupplementIn(BaseModel):
     title: str = ""
 
 
+class DeleteArticlesIn(BaseModel):
+    """按篇删掉历史文章（前端可见的 ``Article.id``）；``account_id`` 空 = 全部公众号。"""
+
+    account_id: str | None = None
+    ids: list[str] = Field(default_factory=list)
+
+
 class ExportHtmlIn(BaseModel):
     account_id: str | None = None
     ids: list[str] | None = None  # 文章 identity；空 = 该账号全部

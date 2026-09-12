@@ -423,6 +423,30 @@ export const useArticlesStore = defineStore('articles', {
     },
     /** 正文 HTML 导出（§6）：ids 为空 = 当前视图全部（调用方已确认）；
      *  outDir 指定目标目录，后端会在其中生成 index.html 说明页（2026-08-09） */
+    /**
+     * 从**本地列表**删掉这几篇（2026-09，用户要求「有些文章我认为可以删掉」）。
+     *
+     * 语义是用户选定的：**只动本地缓存** —— 文章还在微信那边，下次「拉取历史」
+     * 会重新抓到。所以提示语里必须把这句话带上，否则用户下次看到它回来会当成 bug。
+     */
+    async remove(ids: string[]) {
+      if (!ids.length) return 0
+      const r = await call(
+        rest.post<{ ok: boolean; removed: number }>('/api/articles/delete', {
+          account_id: this.accountId,
+          ids,
+        }),
+      )
+      if (!r) return 0
+      const gone = new Set(ids)
+      this.list = this.list.filter((a) => !gone.has(a.id))
+      // 选中集合也要清 —— 不清的话「已选 N」会指着已经不在列表里的 id
+      for (const id of gone) this.selected.delete(id)
+      useUiStore().toast(
+        `已从本地列表删除 ${r.removed} 篇（下次「拉取历史」会重新抓到）`,
+      )
+      return r.removed
+    },
     async exportHtml(ids: string[], outDir?: string) {
       // 必须带 account_id，否则后端拿不到文章列表（2026-08-09 修复）
       const body: Record<string, unknown> = {

@@ -247,6 +247,26 @@ function exportSingle(a: Article) {
   articles.exportHtml([a.id])
 }
 
+// ---- 从本地列表删除（2026-09）----
+//
+// 用户要求：「有些文章我认为认定可以删掉」。语义是他选定的 —— **只动本地缓存**，
+// 文章还在微信那边，下次「拉取历史」会重新抓到。确认框里必须写出这一句，
+// 否则下次看到它回来会当成 bug 报。
+const deleteOpen = ref(false)
+const deleteIds = ref<string[]>([])
+
+function askDelete(ids: string[]) {
+  if (!ids.length) return
+  deleteIds.value = ids
+  deleteOpen.value = true
+}
+async function doDelete() {
+  const ids = deleteIds.value
+  deleteOpen.value = false
+  deleteIds.value = []
+  await articles.remove(ids)
+}
+
 // ---- 导出全部正文到指定目录（2026-08-09）；默认目录取「设置」页配置的 export.default_dir ----
 const exportDirOpen = ref(false)
 const exportDir = ref('~/Downloads/mp-harvest-export')
@@ -503,6 +523,12 @@ function toggleAiIncludeContent() {
         />
         <span style="width:8px"></span>
         <SButton size="sm" :disabled="!accounts.list.length || !!articles.aiTaskId" @click="aiFilterOpen = true"><SIcon name="sparkles" :size="12" /> AI 筛选</SButton>
+        <!-- 只删「选中的」：没选就不给点，免得手一滑把整个视图清了 -->
+        <span style="width:8px"></span>
+        <SButton size="sm" variant="ghost" :disabled="!selectedCount"
+                 @click="askDelete(articles.selectedInView.map((a) => a.id))">
+          删除选中{{ selectedCount ? `（${selectedCount}）` : '' }}
+        </SButton>
         </template>
         <SButton
           v-else-if="sourceScope === 'external'"
@@ -559,6 +585,7 @@ function toggleAiIncludeContent() {
               <SButton size="sm" variant="ghost" @click="openArticle(rows[vr.index])">打开</SButton>
               <SButton size="sm" variant="ghost" @click="copyLink(rows[vr.index])">复制</SButton>
               <SButton size="sm" variant="ghost" @click="exportSingle(rows[vr.index])">导出</SButton>
+              <SButton size="sm" variant="ghost" @click="askDelete([rows[vr.index].id])">删除</SButton>
             </span>
           </div>
         </div>
@@ -586,6 +613,7 @@ function toggleAiIncludeContent() {
               <SButton size="sm" variant="ghost" @click="openArticle(a)">打开</SButton>
               <SButton size="sm" variant="ghost" @click="copyLink(a)">复制</SButton>
               <SButton size="sm" variant="ghost" @click="exportSingle(a)">导出</SButton>
+              <SButton size="sm" variant="ghost" @click="askDelete([a.id])">删除</SButton>
             </span>
           </div>
         </template>
@@ -594,6 +622,23 @@ function toggleAiIncludeContent() {
   </div>
 
   <!-- 补录链接 Modal -->
+  <!-- 删除确认：必须写明「只删本地」——这是用户选定的语义，不说清下次看到它
+       被重新抓回来会当成 bug -->
+  <SModal :open="deleteOpen" @close="deleteOpen = false">
+    <template #head>从本地列表删除</template>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <span>确定删除这 <b>{{ deleteIds.length }}</b> 篇？</span>
+      <span class="tertiary" style="font-size:var(--fs-sm)">
+        只删本地这一份清单。<b>文章还在微信那边，下次「拉取历史」会重新抓到它</b> ——
+        想让它不再出现，得用「筛选」把它标成过滤掉。
+      </span>
+      <div class="toolbar" style="justify-content:flex-end;margin-top:var(--sp-2)">
+        <SButton size="sm" variant="ghost" @click="deleteOpen = false">取消</SButton>
+        <SButton size="sm" variant="danger" @click="doDelete">确定删除</SButton>
+      </div>
+    </div>
+  </SModal>
+
   <SModal :open="suppOpen" @close="suppOpen = false">
     <template #head>补录链接</template>
     <div style="display:flex;flex-direction:column;gap:8px">

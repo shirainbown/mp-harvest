@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .conftest import wait_task  # noqa: F401  （保持与其它 server 测试一致的导入风格）
+from .conftest import add_account, wait_task  # noqa: F401  （与其它 server 测试同一导入风格）
 
 
 def _rows(client, auth, **params) -> list[dict]:
@@ -64,15 +64,68 @@ def test_storage_clean_only_touches_the_named_safe_items(client, auth, isolated_
     assert (isolated_data_dir / "accounts.json").is_file(), "账号文件被误清"
 
 
-def test_storage_clean_refuses_user_data(client, auth, isolated_data_dir):
-    """越权清理必须被**挡下并说明**，不能静默忽略 —— 静默会让人以为清干净了。"""
-    (isolated_data_dir / "accounts.json").write_text('{"keep":1}', encoding="utf-8")
+def test_storage_clean_refuses_irreproducible_data(client, auth, isolated_data_dir):
+    """**不可再生**的项越权清理必须被挡下并说明，不能静默忽略 —— 静默会让人以为清干净了。
+
+    注意与「代价高」那档的区别（2026-09）：账号、文章缓存改成了可清（用户要求），
+    但模型配置、设置、提示词、手工补录仍然挡住 —— 它们删了没有别处能重新得到。
+    """
+    (isolated_data_dir / "ai_models.json").write_text('{"keep":1}', encoding="utf-8")
     body = client.post("/api/storage/clean", params=auth,
-                       json={"keys": ["accounts", "ai_models"]}).json()
+                       json={"keys": ["ai_models", "settings", "prompts", "sightings"]}).json()
     assert body["ok"] is False and body["removed"] == []
-    assert len(body["errors"]) == 2
+    assert len(body["errors"]) == 4
     assert all("不在可清理范围内" in e for e in body["errors"])
-    assert (isolated_data_dir / "accounts.json").read_text(encoding="utf-8") == '{"keep":1}'
+    assert (isolated_data_dir / "ai_models.json").read_text(encoding="utf-8") == '{"keep":1}'
+
+
+def test_storage_clean_resets_memory_so_it_does_not_grow_back(client, auth, isolated_data_dir):
+    """清理文章缓存后，**内存里也必须没有了** —— 否则下一次保存会把它写回来。
+
+    这是「代价高」那档能不能放开的**前提**：只删文件的话，进程里的副本还在，
+    随便一次合并/拉取就把文件重新写出来，看着像没清干净（2026-09 实测：
+    删光 29 个缓存文件后做一次普通操作，文件就回来了）。
+    """
+    from mp_harvest.server import state
+
+    acc = add_account(client, auth)
+    state.set_articles(acc["id"], [{
+        "title": "会被清掉的文章", "link": "https://mp.weixin.qq.com/s/m1",
+        "publish_ts": 1757000000, "identity": "art-mem-1",
+        "body_text": "正文", "body_html": "<p>x</p>",
+    }])
+    cache_file = isolated_data_dir / "articles_cache"
+    assert list(cache_file.glob("*.json")), "前提：确实落盘了"
+
+    body = client.post("/api/storage/clean", params=auth,
+                       json={"keys": ["articles_cache"]}).json()
+    assert body["errors"] == [], body["errors"]
+    assert list(cache_file.glob("*.json")) == [], "磁盘没清掉"
+
+    # 关键：内存里也得没了。再做一次普通操作（写回正文），文件**不该**回来。
+    state.merge_article_bodies(acc["id"], [
+        {"identity": "art-mem-1", "body_text": "y" * 300},
+    ])
+    assert list(cache_file.glob("*.json")) == [], "内存里的旧数据把文件写回来了"
+    assert state.get_articles(acc["id"]) == [], "内存里还留着已清掉的文章"
+
+
+def test_storage_clean_refuses_ca_while_capturing(client, auth, isolated_data_dir, monkeypatch):
+    """抓包运行中不许清 CA。
+
+    删了文件，进程里那份证书还在用；而下次启动会生成一个**新的** CA ——
+    系统钥匙串里信任的仍是旧的，抓包从此静默失败。这比不让清更糟。
+    """
+    from mp_harvest.server.routes import storage as storage_route
+
+    ca = isolated_data_dir / "mitm_conf"
+    ca.mkdir(parents=True, exist_ok=True)
+    (ca / "mitmproxy-ca.pem").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(storage_route, "_mitm_running", lambda: True)
+
+    r = client.post("/api/storage/clean", params=auth, json={"keys": ["mitm_conf"]})
+    assert r.status_code == 409 and "抓包" in r.json()["detail"]
+    assert (ca / "mitmproxy-ca.pem").is_file(), "运行中还是把 CA 清了"
 
 
 # ── 启动体检：静默回退要出声 ──────────────────────────────────────

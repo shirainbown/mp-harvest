@@ -16,8 +16,11 @@ export interface StorageItem {
   path: string
   size: number
   count: number
-  /** true 才可清理（可重建）；false 的项只是展示 */
+  /** true 才可清理；false 的项是**不可再生**的，只展示 */
   safe: boolean
+  /** 可清但**代价高**：删了要重新抓包 / 重新联网拉。确认框里要把代价写清楚，
+   *  而不是替用户决定「不许清」。 */
+  costly: boolean
   note: string
 }
 

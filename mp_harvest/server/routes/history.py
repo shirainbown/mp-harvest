@@ -12,7 +12,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from mp_harvest.server import mappers, state
-from mp_harvest.server.schemas import HistoryFetchBatchIn, HistoryFetchIn, SupplementIn
+from mp_harvest.server.schemas import (
+    DeleteArticlesIn,
+    HistoryFetchBatchIn,
+    HistoryFetchIn,
+    SupplementIn,
+)
 from mp_harvest.server.tasks import Task, TaskCancelled, registry
 from mp_harvest.server.ws import broadcast_event
 
@@ -339,6 +344,47 @@ def list_articles(
         )
         for aid, name, a in tagged
     ]
+
+
+@router.post("/api/articles/delete")
+def delete_articles(body: DeleteArticlesIn) -> dict:
+    """从**本地列表**删掉指定文章（2026-09，用户要求「有些文章我认为可以删掉」）。
+
+    ⚠️ **只动本地缓存**：文章还在微信那边，下次「拉取历史」会重新抓到。
+    这是用户选定的语义（另两个选项是「删掉并永不收录」和「两个动作分开」），
+    界面上必须把这句话写出来 —— 否则用户删完以为再也不会出现，下次拉取时
+    会当成 bug 报。
+
+    ``ids`` 是前端可见的 ``Article.id``（``{__biz}:{identity}``）。**按同一函数
+    现算现比**，不去解析字符串 —— identity 本身带冒号（``mid:1|idx:1|sn:x``），
+    手工拆前缀迟早拆错。
+
+    用 POST 而不是 DELETE：DELETE 带 body 在不少代理/客户端上会被静默丢掉，
+    而这里必须带一串 id。项目里同类动作（``/api/storage/clean``）也是 POST。
+    """
+    wanted = {str(i) for i in body.ids if str(i).strip()}
+    if not wanted:
+        return {"ok": True, "removed": 0}
+
+    store = state.get_store()
+    if body.account_id:
+        _get_account_or_404(body.account_id)
+        account_ids = [body.account_id]
+    else:
+        account_ids = [str(a.get("id") or "") for a in store.list_accounts()]
+
+    removed = 0
+    for aid in account_ids:
+        if not aid:
+            continue
+        rows = state.get_articles(aid)
+        if not rows:
+            continue
+        keep = [r for r in rows if mappers.article_public_id(r) not in wanted]
+        if len(keep) != len(rows):
+            removed += len(rows) - len(keep)
+            state.set_articles(aid, keep)   # 落盘由它负责
+    return {"ok": True, "removed": removed}
 
 
 @router.post("/api/articles/supplement", status_code=201)
