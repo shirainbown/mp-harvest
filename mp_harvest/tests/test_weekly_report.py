@@ -32,6 +32,8 @@ def _cand(key: str, title: str, *, ts: int = 1754400000, kind: str = "公众号"
           text: str = "正文内容足够长以便被当作真实候选处理，包含技术细节。") -> dict:
     return {
         "key": key, "kind": kind, "title": title, "title_cn": "", "arxiv_id": "",
+        # 真实候选都带 identity（补抓到正文后靠它写回文章缓存）
+        "identity": f"mid:{key}", "source_id": "acct-1",
         "source": "测试号" if kind == "公众号" else "arXiv · A",
         "date": "2026-09-07", "publish_ts": ts, "publish_at": "2026-09-07 10:00",
         "url": f"https://example.com/{key}", "text": text,
@@ -305,16 +307,31 @@ def _erow(item_key: str, title: str, ts: int) -> dict:
 
 
 def test_collect_candidates_window_and_dedupe():
-    w = [(_wrow("mid:1", "窗口内", 2000), "号A"), (_wrow("mid:2", "窗口外", 100), "号A")]
+    w = [(_wrow("mid:1", "窗口内", 2000), "号A", "acct-A"),
+         (_wrow("mid:2", "窗口外", 100), "号A", "acct-A")]
     e = [_erow("arxiv:9", "外部", 1500)]
     got = wr.collect_candidates(wechat_rows=w, external_items=e, start_ts=1000, end_ts=3000)
     assert {c["key"] for c in got} == {"wechat:mid:1", "ext:arxiv:9"}
     # 按发布时间倒序
     assert [c["key"] for c in got] == ["wechat:mid:1", "ext:arxiv:9"]
     # 同一篇重复出现只留一条
-    dup = wr.collect_candidates(wechat_rows=[(_wrow("mid:1", "A", 10), "x"),
-                                             (_wrow("mid:1", "B", 10), "y")])
+    dup = wr.collect_candidates(wechat_rows=[(_wrow("mid:1", "A", 10), "x", "acct-X"),
+                                             (_wrow("mid:1", "B", 10), "y", "acct-Y")])
     assert len(dup) == 1
+
+
+def test_candidates_carry_their_source_id():
+    """候选要带着**来源 id** —— 前端按账号/按来源显示「本区间 N 篇」全靠它。
+
+    公众号的缓存行里只有账号名，id 必须由调用方传进来；外部条目的 id 在行里。
+    """
+    got = wr.collect_candidates(
+        wechat_rows=[(_wrow("mid:1", "甲", 2000), "号A", "acct-A")],
+        external_items=[{**_erow("arxiv:9", "乙", 1500), "source_id": "src-1"}],
+        start_ts=1000, end_ts=3000,
+    )
+    by_kind = {c["kind"]: c["source_id"] for c in got}
+    assert by_kind == {"公众号": "acct-A", "外部": "src-1"}   # 无 arxiv_id → 归「外部」
 
 
 def test_candidate_key_never_collides_without_identity_or_link():
@@ -626,13 +643,21 @@ def test_builtin_template_escapes_article_text():
     assert "&lt;script&gt;" in h
 
 
-def test_builtin_template_links_to_local_archive():
-    """归档过正文时，概览表与深度解读卡片都要给出「本地存档」入口。"""
-    h = wr.render_report(_full_ctx())["html"]
-    assert h.count('href="articles/a1.html"') == 2     # 精选：概览表 + 深度解读卡片
-    assert h.count('href="articles/a3.html"') == 1     # 其他入选只有板块三表格
-    # 没有归档文件的文章不应出现空链接
-    assert 'href=""' not in h
+def test_builtin_template_has_no_local_archive_links():
+    """内置模板**不渲染任何本地存档链接**（2026-09 用户要求改掉）。
+
+    原话：「周报中不应该出现本地存档的标签，因为这个周报是会公开发布的，
+    因此别人查看时看不到本地存档」。`articles/xxx.html` 是相对本机的路径，
+    读者点开必是死链。
+
+    变量本身仍留在上下文里（自定义模板想用可以用），只是内置模板不用它。
+    """
+    ctx = _full_ctx()
+    h = wr.render_report(ctx)["html"]
+    assert "本地存档" not in h
+    assert 'href="articles/' not in h, "本地存档链接漏进了内置模板"
+    # 但归档文件本身照旧产出（本机看得到），相对路径也仍然在上下文里
+    assert ctx["selected"][0]["local_file"] == "articles/a1.html"
 
 
 # ── 业务领域归属：标准要喂给模型，漏答要关键词兜底 ──────────────────
@@ -1355,3 +1380,142 @@ def test_intro_prompt_never_mentions_json():
     恰好满足了它，于是模型被迫包装。根因虽已关掉，但这行字留着就是下一颗雷。
     """
     assert "json" not in wr.build_prompt("intro").lower()
+
+
+# ── 补正文（2026-09 实跑暴露：九成文章没有正文）──────────────────────
+#
+# 用户的库实测：379 篇里只有 38 篇（10%）带 body_text —— 那份缓存只有跑过
+# 「AI 内容筛选」或「导出正文」才会有。于是打分与解读阶段模型只看得到标题，
+# 明明有实测数据的文章被判成「文中未给出量化数据」。
+
+
+def test_needs_body_only_for_wechat_without_body():
+    """只给「公众号 + 有链接 + 正文过短」的候选补正文。
+
+    外部条目的摘要本身就是可判定内容（arXiv 摘要信息量足够），不该联网抓。
+    """
+    short = _cand("a1", "标题", text="几十字的摘要")
+    long = _cand("a2", "标题", text="正文。" * 200)
+    ext = _cand("a3", "论文", kind="arXiv", text="摘要")
+    nolink = _cand("a4", "标题", text="摘要")
+    nolink["url"] = ""
+    assert wr.needs_body(short) is True
+    assert wr.needs_body(long) is False
+    assert wr.needs_body(ext) is False
+    assert wr.needs_body(nolink) is False
+    assert wr.BODY_MIN_CHARS == 200
+
+
+def test_fetch_missing_bodies_fills_and_isolates_failures(monkeypatch):
+    """抓到正文；单篇失败只记一笔，不影响其余篇目。"""
+    from mp_harvest.core import article_reader
+
+    def fake_fetch(url, *, cred=None, timeout=25.0):
+        if "bad" in url:
+            raise RuntimeError("网络不通")
+        if "empty" in url:
+            return {"content_found": False}
+        return {"content_found": True, "body_text": f"{url} 的正文" * 20,
+                "body_html": "<p>x</p>"}
+
+    monkeypatch.setattr(article_reader, "fetch_and_parse_article", fake_fetch)
+    cands = [
+        _cand("a1", "甲", text="短摘要"),
+        _cand("a2", "乙", text="短摘要"),
+        _cand("a3", "丙", text="短摘要"),
+    ]
+    cands[1]["url"] = "https://mp.weixin.qq.com/s/bad"
+    cands[2]["url"] = "https://mp.weixin.qq.com/s/empty"
+
+    got, errors = wr.fetch_missing_bodies(cands, cred_for=lambda _aid: {}, workers=1)
+    assert set(got) == {"a1"}
+    assert got["a1"][0].startswith("https://example.com/a1")
+    assert len(errors) == 2 and any("网络不通" in e for e in errors)
+    assert any("环境校验" in e for e in errors)
+
+
+def test_generate_issue_fetches_body_before_scoring(monkeypatch, tmp_path):
+    """**先补正文再打分** —— 顺序错了整个改动就白做（模型还是只看标题）。"""
+    from mp_harvest.core import article_reader
+
+    monkeypatch.setattr(article_reader, "fetch_and_parse_article",
+                        lambda url, **kw: {"content_found": True,
+                                           "body_text": "实测数据：能效提升 66%。" * 20,
+                                           "body_html": "<p>x</p>"})
+    seen: list[str] = []
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        seen.append(user)
+        return _fake_scoring_reply(user)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    saved: list[list[dict]] = []
+    tpl = _tpl(tmp_path, "{{ issue.num }}")
+    wr.generate_issue(
+        candidates=[_cand("a1", "有数据的文章", text="55 字的摘要")],
+        models=[_cfg()], prompts=wr.load_prompts(tmp_path / "none.json"),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), out_dir=tmp_path / "out",
+        issue_num=1, from_date="a", to_date="b", selected_count=1,
+        template_path=tpl, workers=1,
+        cred_for=lambda _aid: {}, save_bodies=saved.append,
+    )
+
+    assert seen, "打分阶段没有调用模型"
+    assert "实测数据：能效提升 66%" in seen[0], "打分时还没有正文（补正文顺序错了）"
+    assert saved and saved[0][0]["body_text"].startswith("实测数据"), "正文没有写回缓存"
+    assert saved[0][0]["identity"], "写回要靠 identity，缺了就对不上号"
+
+
+def test_generate_issue_can_skip_body_fetch(monkeypatch, tmp_path):
+    """关掉补正文时**一次网络请求都不发** —— 勾选框得真的管用。"""
+    from mp_harvest.core import article_reader
+
+    monkeypatch.setattr(article_reader, "fetch_and_parse_article",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不该发请求")))
+    seen: list[str] = []
+    monkeypatch.setattr(af, "_call_model", lambda cfg, s, u, **k: (seen.append(u),
+                                                                   _fake_scoring_reply(u))[1])
+    tpl = _tpl(tmp_path, "{{ issue.num }}")
+    res = wr.generate_issue(
+        candidates=[_cand("a1", "只有标题", text="短摘要")],
+        models=[_cfg()], prompts=wr.load_prompts(tmp_path / "none.json"),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), out_dir=tmp_path / "out",
+        issue_num=1, from_date="a", to_date="b", selected_count=1,
+        template_path=tpl, workers=1, fetch_bodies=False,
+        cred_for=lambda _aid: {},
+    )
+    assert res["ok"] is True
+    assert "短摘要" in seen[0], "关掉之后应当仍用摘要"
+
+
+def test_scoring_prompt_separates_tech_disclosure_from_promotion():
+    """打分标准必须分清「技术披露」与「厂商宣传」（2026-09 用户要求）。
+
+    起因：报告里混进了 PCIM 展会报道《从电网到算力：东芝的功率半导体新版图》——
+    通篇讲技术参数，但内容是「某公司展示了/布局了」。只靠「纯市场新闻不相关」
+    那句挡不住，模型会觉得它讲的就是技术。
+
+    ⚠️ 尺度很关键（用户中途纠正过一次）：**厂商自己发布的论文/技术说明算技术内容，
+    不因来源是厂商而扣分** —— 半导体行业的一手信息本来就多来自厂商。要挡的只是
+    「罗列产品线、展台、发布会」那种宣传稿。
+    """
+    s = wr.build_prompt("scoring")
+    assert "厂商宣传" in s and "展会报道" in s and "企业软文" in s
+    assert "不因来源是厂商而扣分" in s, "把厂商自证也一并否掉了（用户明确说不可接受）"
+    assert "技术披露" in s
+    # 判据落在「有没有可复现的方法/实验设计」，而不是「题材是不是技术」
+    assert "读不到可复现的方法或实验设计" in s
+
+
+def test_output_schema_ties_promotion_to_the_semiconductor_flag():
+    """「判成市场内容」必须落到 `semiconductor=false` 上。
+
+    实测过：只让模型给低分是不够的 —— 它会给出 `semiconductor: true` + 3.0 分，
+    而**入选与否看的是那个字段**，低分照样进报告，只是排在最后。
+    """
+    s = wr.build_prompt("scoring")
+    assert "厂商宣传稿" in s and "一律 false" in s
+    assert "只给低分不够" in s
+    # 实测过的漏洞：模型会在理由里写「…但整体仍偏展台与产品线报道」，然后照样给 true。
+    # 必须把这句话堵死，否则规则只在「单篇送审」时管用、一批八篇就手软。
+    assert "就必须给 false" in s and "不许" in s

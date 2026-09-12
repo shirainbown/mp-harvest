@@ -47,6 +47,9 @@
     a.brief           一句话摘要（仅 others 用）
     a.score           评分
     a.local_file      归档正文的相对路径（相对本报告，如 articles/xxx.html）
+                      ⚠️ 内置模板**刻意不渲染它**：报告是要公开发布的，
+                      而「本地存档」只在这台机器上打得开 —— 读者点了是死链。
+                      自定义模板需要的话仍可用（归档文件确实在 articles/ 里）。
 
   tags                 业务标签配色表，如 tags["数通"] → "#e74c3c"
   org_name / org_email / archive_url    署名与往期归档链接（在「设置」页配）
@@ -167,7 +170,6 @@ a:hover { text-decoration: underline; }
 <span class="serial-no">{{ '%02d' % a.no }}</span><a href="{{ a.url }}" target="_blank" style="color:#2d3748;">{{ a.title_cn }}</a>
 {%- if a.title_en %}<br><span style="color:#a0aec0;font-size:12px;">{{ a.title_en }}</span>{% endif %}
 <br><span style="color:#718096;font-size:12px;">{{ a.source }}</span>&nbsp;{{ a.business_tags | tag_spans | safe }}
-{%- if a.local_file %}<br><a href="{{ a.local_file }}" style="color:#a0aec0;font-size:12px;">本地存档</a>{% endif %}
 </td>
 <td style="padding:10px 16px; font-size:13px; word-break:break-word; color:#2d3748; border-bottom:1px solid #e2e8f0;">{{ a.reason }}</td>
 </tr>
@@ -189,7 +191,7 @@ a:hover { text-decoration: underline; }
 <h3><a href="{{ a.url }}" target="_blank" style="color:#1a237e;">{{ a.title_cn }}</a>{% if a.title_en %}<br><span class="subtitle">{{ a.title_en }}</span>{% endif %} <span class="domain-tag">{{ a.domain }}</span></h3>
 <p class="article-sub">来源：{{ a.source }} &nbsp;|&nbsp; 日期：{{ a.date }}</p>
 <p class="article-tags" style="margin:4px 0 0 0; line-height:1.6;">{{ a.business_tags | tag_spans | safe }}</p>
-<p class="article-link"><a href="{{ a.url }}" target="_blank">阅读原文 →</a>{% if a.local_file %} &nbsp;|&nbsp; <a href="{{ a.local_file }}">本地存档</a>{% endif %}</p>
+<p class="article-link"><a href="{{ a.url }}" target="_blank">阅读原文 →</a></p>
 </div>
 </div>
 <div class="article-body">
@@ -221,7 +223,7 @@ a:hover { text-decoration: underline; }
 <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;">{{ a.no }}</td>
 <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;">{{ a.domain }}</td>
 <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;">{{ a.business_tags | tag_spans | safe }}</td>
-<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;word-break:break-word;"><a href="{{ a.url }}" target="_blank" style="color:#1a56db;font-weight:600;">{{ a.title_cn }}</a>{% if a.title_en %}<br><span style="color:#a0aec0;font-size:12px;">{{ a.title_en }}</span>{% endif %}{% if a.local_file %}<br><a href="{{ a.local_file }}" style="color:#a0aec0;font-size:12px;">本地存档</a>{% endif %}</td>
+<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;word-break:break-word;"><a href="{{ a.url }}" target="_blank" style="color:#1a56db;font-weight:600;">{{ a.title_cn }}</a>{% if a.title_en %}<br><span style="color:#a0aec0;font-size:12px;">{{ a.title_en }}</span>{% endif %}</td>
 <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;word-break:break-word;">{{ a.brief }}</td>
 </tr>
 {% endfor %}

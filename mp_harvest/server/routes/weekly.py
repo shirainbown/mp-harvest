@@ -124,14 +124,15 @@ def _gather(
     """
     accounts = state.get_store().list_accounts()
     wanted = {str(a) for a in account_ids} if account_ids else None
-    wechat_rows: list[tuple[dict[str, Any], str]] = []
+    # 带上账号 id：前端要按账号显示「本区间 N 篇」（文章缓存行里只有账号名）
+    wechat_rows: list[tuple[dict[str, Any], str, str]] = []
     for acct in accounts:
         aid = str(acct.get("id") or "")
         if not aid or (wanted is not None and aid not in wanted):
             continue
         name = str(acct.get("name") or "")
         for row in state.get_articles(aid):
-            wechat_rows.append((row, name))
+            wechat_rows.append((row, name, aid))
 
     store = ext_mod.get_external_store()
     src_wanted = {str(s) for s in source_ids} if source_ids else None
@@ -171,6 +172,17 @@ def preview(
     srcs = [x for x in str(source_ids or "").split(",") if x.strip()]
     cands = _gather(accs, srcs, start_ts, end_ts)
 
+    # 按账号 / 按来源的**本区间**候选数。必须在**去重之后**数 —— 同一篇论文可能
+    # 同时登记在两个目录下，各自先数再加会大于总数，前端看到的就对不上了。
+    account_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+    for c in cands:
+        sid = str(c.get("source_id") or "")
+        if not sid:
+            continue
+        bucket = account_counts if c["kind"] == "公众号" else source_counts
+        bucket[sid] = bucket.get(sid, 0) + 1
+
     out_dir = _resolve_out_dir("")
     tpl = _resolve_template("")
     tpl_path = Path(tpl) if tpl else wr.resolve_template_dir() / wr.BUILTIN_TEMPLATE_NAME
@@ -185,6 +197,9 @@ def preview(
         "wechat": sum(1 for c in cands if c["kind"] == "公众号"),
         "arxiv": sum(1 for c in cands if c["kind"] == "arXiv"),
         "external_other": sum(1 for c in cands if c["kind"] not in ("公众号", "arXiv")),
+        # 逐行的区间内候选数（前端每行显示「N 篇」，与 total 是同一套口径）
+        "account_counts": account_counts,
+        "source_counts": source_counts,
         "template_path": str(tpl_path),
         "template_is_custom": bool(tpl),
         "template_exists": Path(tpl_path).is_file(),
@@ -222,6 +237,16 @@ def generate(body: WeeklyGenerateIn) -> dict:
     batch_size, workers = _score_settings()
     org = _org()
 
+    # 补正文要用账号凭证（与 AI 内容筛选同一套取法）
+    cred_by_account: dict[str, dict] = {}
+    for acct in state.get_store().list_accounts():
+        aid = str(acct.get("id") or "")
+        if aid:
+            cred_by_account[aid] = acct.get("credentials") or {}
+
+    def _cred_for(aid: str) -> dict:
+        return cred_by_account.get(str(aid or ""), {})
+
     def work(task: Task) -> dict:
         result = wr.generate_issue(
             candidates=candidates,
@@ -239,6 +264,9 @@ def generate(body: WeeklyGenerateIn) -> dict:
             download_images=body.download_images,
             workers=workers,
             batch_size=batch_size,
+            fetch_bodies=body.fetch_bodies,
+            cred_for=_cred_for,
+            save_bodies=state.merge_article_bodies_by_account,
             on_stage=lambda msg: task.update(message=str(msg)),
             on_progress=lambda done, total: task.update(
                 percent=(done / total * 90.0) if total else 0.0,

@@ -16,16 +16,23 @@ def _ts(y: int, m: int, d: int, h: int = 10) -> int:
     return int(datetime(y, m, d, h).timestamp())
 
 
-def _seed_articles(account_id: str, n: int = 3, *, y: int = 2026, m: int = 9, d: int = 5) -> None:
+def _seed_articles(account_id: str, n: int = 3, *, y: int = 2026, m: int = 9, d: int = 5,
+                   tag: str = "") -> None:
+    """给某账号塞 n 篇文章。
+
+    ``tag`` 用来区分账号：候选去重是按 ``identity`` 做的，两个账号用同一批
+    ``mid:0/1/2`` 会被正确地合并成一份 —— 想造「两个账号各有一批」就得给不同的
+    identity（真实数据里 mid 本来就是每篇唯一的）。
+    """
     from mp_harvest.server import state
 
     base = _ts(y, m, d)
     state.set_articles(
         account_id,
         [
-            {"title": f"文章{i}", "link": f"https://mp.weixin.qq.com/s/a{i}",
+            {"title": f"文章{tag}{i}", "link": f"https://mp.weixin.qq.com/s/{tag}a{i}",
              "publish_ts": base + i * 3600, "publish_at": f"{y}-{m:02d}-{d:02d} 10:00",
-             "identity": f"mid:{i}", "body_text": "正文内容足够长以便当作真实候选处理。",
+             "identity": f"mid:{tag}{i}", "body_text": "正文内容足够长以便当作真实候选处理。",
              "body_html": f"<p>正文{i}</p>"}
             for i in range(n)
         ],
@@ -317,3 +324,79 @@ def test_generate_uses_weekly_score_settings(client, auth, tmp_path, monkeypatch
     scoring = [c for c in calls if '"score"' in c["system"]]
     batches = [len(re.findall(r"【第 \d+ 篇】", c["user"])) for c in scoring]
     assert batches == [2, 1], f"打分批次不对：{batches}（说明没用 weekly.score_batch_size）"
+
+
+def test_preview_returns_per_row_candidate_counts(client, auth, tmp_path):
+    """逐行的「本区间 N 篇」—— 口径必须与表头的 total **一致**（都在去重之后数）。
+
+    用户看到「其他来源目录 1 / arxiv_paper 59」和「论文 0」并排，以为坏了：
+    59 是**全库条目数**（不分日期），0 是**本区间候选数**，两种数字挨着放又都没标。
+    现在每行都显示区间内候选数，表头是各行之和。
+    """
+    a1 = add_account(client, auth, name="号一", url="https://mp.weixin.qq.com/s/one")
+    a2 = add_account(client, auth, name="号二", url="https://mp.weixin.qq.com/s/two")
+    _seed_articles(a1["id"], n=2, tag="x")   # 2026-09-05
+    _seed_articles(a2["id"], n=3, tag="y")
+
+    r = client.get("/api/weekly/preview", params={
+        **auth, "from_date": "2026-09-05", "to_date": "2026-09-05"})
+    b = r.json()
+    assert b["total"] == 5
+    assert b["account_counts"] == {a1["id"]: 2, a2["id"]: 3}
+    # 不变量：各行之和 == 表头总数（前端两个数字并排显示，对不上就是 bug）
+    assert sum(b["account_counts"].values()) == b["wechat"] == 5
+    assert b["source_counts"] == {}
+
+
+def test_preview_source_counts_only_inside_window(client, auth, tmp_path):
+    """区间外的条目**不进**计数 —— 这正是「目录里 59 条、本区间 0 篇」的成因。"""
+    d = tmp_path / "papers"
+    day = d / "2026-09-07"
+    day.mkdir(parents=True)
+    (day / "papers_data.json").write_text(json.dumps([
+        {"title": "区间内", "abstract": "a", "url": "http://arxiv.org/abs/1",
+         "arxiv_id": "1v1", "date": "2026-09-07"},
+        {"title": "区间外", "abstract": "b", "url": "http://arxiv.org/abs/2",
+         "arxiv_id": "2v1", "date": "2026-08-01"},      # 自身日期在区间外
+    ], ensure_ascii=False), encoding="utf-8")
+    src = client.post("/api/external/sources", params=auth,
+                      json={"name": "论文", "path": str(d)}).json()
+    wait_task(client.post(f"/api/external/sources/{src['id']}/scan", params=auth)
+              .json()["task_id"])
+
+    # 全库 2 条
+    assert client.get("/api/external/sources", params=auth).json()[0]["item_count"] == 2
+
+    b = client.get("/api/weekly/preview", params={
+        **auth, "from_date": "2026-09-07", "to_date": "2026-09-07"}).json()
+    assert b["total"] == 1, "只有自身日期在区间内的那条算候选"
+    assert b["source_counts"] == {src["id"]: 1}, "计数按**自身日期**筛，不是目录名"
+
+
+def test_per_row_counts_survive_same_item_in_two_sources(client, auth, tmp_path):
+    """同一篇论文同时登记在两个目录下时，**各行之和不能大于总数**。
+
+    候选是按 item_key 去重的（后者不再计入），所以逐行计数必须在**去重之后**做。
+    各自先数再加会得到 2，而表头是 1 —— 前端两个数字并排显示，对不上就是 bug。
+    """
+    for name in ("dx", "dy"):
+        d = tmp_path / name / "2026-09-07"
+        d.mkdir(parents=True)
+        (d / "papers_data.json").write_text(json.dumps([
+            {"title": "同一篇", "abstract": "a", "url": "http://arxiv.org/abs/9",
+             "arxiv_id": "9v1", "date": "2026-09-07"},
+        ], ensure_ascii=False), encoding="utf-8")
+
+    for name in ("dx", "dy"):
+        src = client.post("/api/external/sources", params=auth,
+                          json={"name": name, "path": str(tmp_path / name)}).json()
+        wait_task(client.post(f"/api/external/sources/{src['id']}/scan", params=auth)
+                  .json()["task_id"])
+
+    b = client.get("/api/weekly/preview", params={
+        **auth, "from_date": "2026-09-07", "to_date": "2026-09-07"}).json()
+    assert b["total"] == 1, "同一篇论文只算一条候选"
+    assert sum(b["source_counts"].values()) == b["total"], (
+        f"逐行之和 {b['source_counts']} 与总数 {b['total']} 对不上"
+    )
+    assert len(b["source_counts"]) == 1, "只有真正贡献了候选的那个目录才该有计数"

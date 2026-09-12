@@ -13,6 +13,7 @@ import SkeletonRows from '../components/SkeletonRows.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ProgressInline from '../components/ProgressInline.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
+import type { ExternalSource } from '../types'
 import { useWeeklyStore } from '../stores/weekly'
 import { useAccountsStore } from '../stores/accounts'
 import { useExternalStore } from '../stores/external'
@@ -64,6 +65,39 @@ const allAccounts = computed(
 const allSources = computed(
   () => ext.sources.length > 0 && weekly.sourceIds.size === ext.sources.length,
 )
+// ---- 逐行的「本区间 N 篇」----
+//
+// 2026-09：原先只有外部来源行显示一个数字，而且那是**全库条目数**（不分日期），
+// 与表头的「共 N 篇候选」（区间内）是两回事 —— 用户看到「arxiv_paper 59」和
+// 「论文 0」并排，以为坏了。现在每行都显示同一口径：**当前区间内的候选数**。
+function accountCount(id: string): number {
+  return weekly.preview?.account_counts?.[id] ?? 0
+}
+function sourceCount(id: string): number {
+  return weekly.preview?.source_counts?.[id] ?? 0
+}
+/** 该目录一共收了多少条（不分日期）—— 用来解释「为什么本区间是 0 篇」 */
+function sourceTotal(s: ExternalSource): number {
+  return Number(s.item_count || 0)
+}
+function sourceTip(s: ExternalSource): string {
+  return (
+    `${s.name || s.path}\n本区间 ${sourceCount(s.id)} 篇\n该目录共 ${sourceTotal(s)} 条（不分日期）`
+  )
+}
+
+/** 有外部目录、但本区间一条都没进来 —— 说清楚缘由，免得看着像坏了 */
+const sourceHint = computed(() => {
+  const p = weekly.preview
+  if (!p || p.arxiv + p.external_other > 0) return ''
+  const total = ext.sources.reduce((n, s) => n + sourceTotal(s), 0)
+  if (!total) return ''
+  return (
+    `其他来源目录里共有 ${total} 条，但日期都不在所选区间内 —— 日期区间筛的是内容自身的` +
+    `日期，不是它所在的目录名（目录名是流水线把它收进来的那天）。`
+  )
+})
+
 /** 一个来源都没勾 —— 生成不了，界面要明确说出来而不是让后端当「全部」处理 */
 const noneSelected = computed(
   () => accounts.list.length + ext.sources.length > 0
@@ -181,6 +215,18 @@ async function openPath(p: string) {
                     style="flex:1;min-width:240px" />
           </div>
           <div class="mitm-row" style="margin-top:var(--sp-2)">
+            <span class="form-label">补全正文</span>
+            <label class="ck-row" style="padding:0">
+              <input type="checkbox" class="cb" :checked="weekly.fetchBodies"
+                     @change="weekly.fetchBodies = ($event.target as HTMLInputElement).checked" />
+              <span style="font-size:var(--fs-sm)">生成前给只有标题/摘要的候选抓正文</span>
+            </label>
+            <span class="tertiary" style="font-size:var(--fs-xs)">
+              没有正文时打分与解读只能看标题 —— 有实测数据的文章会被判成「未给出量化数据」，
+              厂商宣传稿也认不出来。抓到的正文会写回缓存，下次不再重抓。
+            </span>
+          </div>
+          <div class="mitm-row" style="margin-top:var(--sp-2)">
             <span class="form-label">打分速度</span>
             <span class="tertiary" style="font-size:var(--fs-xs)">每批</span>
             <input :value="settings.prefs.weeklyScoreBatchSize" type="number" min="1" max="20"
@@ -203,11 +249,10 @@ async function openPath(p: string) {
             候选来源
             <span v-if="noneSelected" class="badge bu" style="margin-left:8px">未选择任何来源</span>
             <template v-else>
+              <!-- 口径写在标题里：这个数字是**日期区间内**的候选数，
+                   与每行末尾的数字同源（下面的分组标题也各有一份） -->
               <span class="badge" style="margin-left:8px">
-                共 {{ weekly.preview?.total ?? 0 }} 篇候选
-              </span>
-              <span class="tertiary" style="font-weight:400;margin-left:8px">
-                公众号 {{ weekly.preview?.wechat ?? 0 }} · 论文 {{ weekly.preview?.arxiv ?? 0 }}
+                本区间共 {{ weekly.preview?.total ?? 0 }} 篇候选
               </span>
             </template>
           </div>
@@ -215,7 +260,10 @@ async function openPath(p: string) {
             <!-- 公众号条目多，给更宽的一列（约 2:1）；两块各自多列 + 各自滚动 -->
             <div class="src-col" style="flex:2">
               <div class="muted src-head">
-                <span>公众号 <span class="tertiary">{{ accounts.list.length }}</span></span>
+                <span>
+                  公众号 <span class="tertiary">{{ accounts.list.length }} 个</span>
+                  <span class="tertiary">· 本区间 {{ weekly.preview?.wechat ?? 0 }} 篇</span>
+                </span>
                 <a href="#" @click.prevent="selectAllAccounts">
                   {{ allAccounts ? '全不选' : '全选' }}
                 </a>
@@ -226,12 +274,18 @@ async function openPath(p: string) {
                   <input type="checkbox" class="cb" :checked="weekly.accountIds.has(a.id)"
                          @change="toggleAccount(a.id, ($event.target as HTMLInputElement).checked)" />
                   <span class="acct-name" :title="a.name">{{ a.name }}</span>
+                  <span class="muted mono cnt">{{ accountCount(a.id) }}</span>
                 </label>
               </div>
             </div>
             <div class="src-col" style="flex:1">
               <div class="muted src-head">
-                <span>其他来源目录 <span class="tertiary">{{ ext.sources.length }}</span></span>
+                <span>
+                  其他来源目录 <span class="tertiary">{{ ext.sources.length }} 个</span>
+                  <span class="tertiary">
+                    · 本区间 {{ (weekly.preview?.arxiv ?? 0) + (weekly.preview?.external_other ?? 0) }} 篇
+                  </span>
+                </span>
                 <a href="#" @click.prevent="selectAllSources">
                   {{ allSources ? '全不选' : '全选' }}
                 </a>
@@ -241,11 +295,14 @@ async function openPath(p: string) {
                 <label v-for="s in ext.sources" :key="s.id" class="ck-row">
                   <input type="checkbox" class="cb" :checked="weekly.sourceIds.has(s.id)"
                          @change="toggleSource(s.id, ($event.target as HTMLInputElement).checked)" />
-                  <span class="acct-name" :title="s.name || s.path">{{ s.name || s.path }}</span>
-                  <span class="muted mono" style="font-size:var(--fs-xs)">{{ s.item_count }}</span>
+                  <span class="acct-name" :title="sourceTip(s)">{{ s.name || s.path }}</span>
+                  <span class="muted mono cnt">{{ sourceCount(s.id) }}</span>
                 </label>
               </div>
             </div>
+          </div>
+          <div v-if="sourceHint" class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">
+            {{ sourceHint }}
           </div>
           <div v-if="noneSelected" class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">
             一个来源都没勾 —— 上面的勾选决定哪些内容参与选题，至少勾一个才能生成。
@@ -389,6 +446,13 @@ async function openPath(p: string) {
   max-height: 168px;
   overflow-y: auto;
   padding-right: 4px;
+}
+/* 行尾的「本区间 N 篇」：等宽 + 右对齐，数字竖着能对齐才扫得快 */
+.ck-row .cnt {
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: var(--fs-xs);
+  flex-shrink: 0;
 }
 .ck-row {
   display: flex;

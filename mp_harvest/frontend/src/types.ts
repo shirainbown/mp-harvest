@@ -87,6 +87,9 @@ export interface WeeklyPreview {
   wechat: number
   arxiv: number
   external_other: number
+  /** 各账号/各来源目录在**当前区间**内的候选数（口径与 total 一致，去重后统计） */
+  account_counts: Record<string, number>
+  source_counts: Record<string, number>
   template_path: string
   template_is_custom: boolean
   template_exists: boolean

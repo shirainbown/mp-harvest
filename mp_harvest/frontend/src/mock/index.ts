@@ -442,6 +442,9 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
       from_date: '2026-08-31', to_date: '2026-09-06', suggested_issue: 17,
       out_dir: '~/Downloads/mp-harvest-weekly', selected_count: 15,
       total: 42, wechat: 12, arxiv: 30, external_other: 0,
+      // 逐行的「本区间 N 篇」：mock 里给几个账号填上，其余按 0 显示
+      account_counts: { a1: 7, a2: 5 } as Record<string, number>,
+      source_counts: { 'mock-src-1': 30 } as Record<string, number>,
       template_path: '(内置) mp_harvest/core/templates/weekly.html',
       template_is_custom: false, template_exists: true,
     } as T

@@ -22,6 +22,10 @@ export const useWeeklyStore = defineStore('weekly', {
     outDir: '',
     reportTitle: '',
     downloadImages: false,
+    /** 生成前给只有标题/摘要的候选补抓正文（2026-09）。默认开：
+     *  没有正文时打分与解读都是瞎猜 —— 有实测数据的文章会被判成「无量化数据」，
+     *  厂商宣传稿也认不出来。抓到的正文会写回缓存，下次免费。 */
+    fetchBodies: true,
     // ---- 来源勾选（**勾了才算**，默认全选）----
     //
     // 2026-09 改：原先是「空 = 全部」，默认一个都不勾 —— 「全部」链接在默认
@@ -181,6 +185,7 @@ export const useWeeklyStore = defineStore('weekly', {
             template_path: this.templatePath,
             report_title: this.reportTitle,
             download_images: this.downloadImages,
+            fetch_bodies: this.fetchBodies,
           },
           { timeout: LONG_TIMEOUT },
         ),

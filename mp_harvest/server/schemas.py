@@ -180,6 +180,8 @@ class WeeklyGenerateIn(BaseModel):
     template_path: str = ""  # 留空用内置模板
     report_title: str = ""
     download_images: bool = False
+    # 给只有标题/摘要的候选补抓正文（2026-09）：没有正文时打分与解读都是瞎猜
+    fetch_bodies: bool = True
 
 
 class WeeklyRenderIn(BaseModel):

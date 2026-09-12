@@ -215,7 +215,15 @@ DEFAULT_SCORING = (
 评分维度参考：
 - 硬件/架构/工艺层面的实质创新性（这是主要权重）
 - 是否有可验证的量化结果或工程实现
-- 与半导体/芯片硬件技术的相关性（纯软件、纯市场新闻不相关）
+- 与半导体/芯片硬件技术的相关性（纯软件不相关）
+- **分清「技术披露」与「厂商宣传」**：
+  · 技术披露 —— 给出了方法、架构或数据，读得懂「怎么做的、为什么这样设计」。
+    **厂商自己发布的论文 / 技术说明也算**（例：某代 GPU 把 HBM 从 12-Hi 降到 8-Hi，
+    说明瓶颈在每带宽成本而非每容量），**不因来源是厂商而扣分** ——
+    半导体行业的多数一手技术信息本来就来自厂商。
+  · 厂商宣传 —— 展会报道、产品发布稿、企业软文：只是罗列产品线、展台、发布会、
+    合作与布局，读不到可复现的方法或实验设计。**即使通篇讲的是技术话题，也属
+    市场内容，不选。**
 - 业务领域归属（公共 / 数通 / 传送 / 接入 / 芯片硬件），判定标准见下
 
 【业务领域判定标准】
@@ -274,7 +282,11 @@ FIXED_OUTPUT: dict[str, str] = {
 - 输入可能是多篇：必须**逐篇**输出对应记录，不允许把两篇合并成一条、
   也不允许只答其中一部分；
 - score 为 1-10 浮点，可一位小数；
-- semiconductor 为 true/false，纯软件/纯市场新闻为 false；
+- semiconductor 为 true/false。**纯软件、纯市场新闻、厂商宣传稿（展会报道、产品发布、
+  企业软文）一律 false** —— 这是「能不能进本期」的总开关，只给低分不够
+  （分数低但 true 的仍会入选）。⚠️ **理由里一旦出现「偏展台 / 偏产品线 / 偏发布会
+  报道 / 属市场内容 / 属产业资讯」这类判断，就必须给 false**，不许「虽然……但还是
+  算相关」；拿不准时问一句：这篇有没有可复现的方法或实验设计？没有就是 false；
 - domain 必须严格取自这五个之一：AI芯片架构与推理优化 / FPGA/可编程计算与架构 / 芯片互联与存储架构 / 处理器安全与可信架构 / 半导体制造与先进封装；
 - business_tags 严格取自 ["公共","数通","传送","接入","芯片硬件"] 这五个字面量（不要自造新词），
   按上面「业务领域判定标准」的场景定义判断，1-3 个；判不准就给 1 个最贴近的；
@@ -737,8 +749,14 @@ def _map_parallel(
 # ── 候选收集 ──────────────────────────────────────────────────────
 
 
-def normalize_wechat(row: dict[str, Any], *, source_name: str = "") -> dict[str, Any] | None:
-    """公众号缓存行 → 候选。缺标题的丢掉。"""
+def normalize_wechat(
+    row: dict[str, Any], *, source_name: str = "", source_id: str = ""
+) -> dict[str, Any] | None:
+    """公众号缓存行 → 候选。缺标题的丢掉。
+
+    ``source_id`` 是账号 id，**只用于统计**（前端要按账号显示「本区间 N 篇」）——
+    缓存行里只有账号名，拿到 id 得靠调用方传进来。
+    """
     title = str(row.get("title") or "").strip()
     link = str(row.get("link") or "").strip()
     if not title and not link:
@@ -749,6 +767,9 @@ def normalize_wechat(row: dict[str, Any], *, source_name: str = "") -> dict[str,
         # "wechat:" 这种空键，多篇候选会撞成同一条（2026-09 修复）
         "key": f"wechat:{row.get('identity') or link or _title_fingerprint(title)}",
         "kind": "公众号",
+        "source_id": str(source_id or ""),
+        # 补抓到正文后要按 identity 写回文章缓存（见 fetch_missing_bodies）
+        "identity": str(row.get("identity") or ""),
         "title": title or "(无标题)",
         "source": source_name or str(row.get("account") or ""),
         "date": _date_of(ts, str(row.get("publish_at") or "")),
@@ -774,6 +795,8 @@ def normalize_external(item: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "key": f"ext:{item.get('item_key') or url or _title_fingerprint(title)}",
         "kind": "arXiv" if item.get("arxiv_id") else "外部",
+        # 只用于统计（前端按来源目录显示「本区间 N 篇」）
+        "source_id": str(item.get("source_id") or ""),
         "arxiv_id": str(item.get("arxiv_id") or ""),
         "title": title or "(无标题)",
         "title_cn": str(item.get("title_cn") or ""),
@@ -805,19 +828,22 @@ def _date_of(ts: int, fallback: str) -> str:
 
 def collect_candidates(
     *,
-    wechat_rows: Iterable[tuple[dict[str, Any], str]] = (),
+    wechat_rows: Iterable[tuple[dict[str, Any], str, str]] = (),
     external_items: Iterable[dict[str, Any]] = (),
     start_ts: int = 0,
     end_ts: int = 0,
 ) -> list[dict[str, Any]]:
     """按日期窗口收集候选并去重（同 key 只留一条）。
 
-    ``wechat_rows`` 是 ``(文章行, 公众号名)`` 的序列 —— 由调用方从
+    ``wechat_rows`` 是 ``(文章行, 公众号名, 公众号 id)`` 的序列 —— 由调用方从
     ``server.state`` 取（core 不能 import server）；外部条目同理。
+    带上 id 是为了让前端能按账号/按来源显示「本区间 N 篇」——
+    **统计必须在去重之后做**（同一篇论文可能同时登记在两个目录下），
+    所以 id 得跟着候选走到最后，不能各自数各自的。
     """
     out: dict[str, dict[str, Any]] = {}
-    for row, name in wechat_rows:
-        c = normalize_wechat(row, source_name=name)
+    for row, name, account_id in wechat_rows:
+        c = normalize_wechat(row, source_name=name, source_id=account_id)
         if c and _in_window(c["publish_ts"], start_ts, end_ts):
             out.setdefault(c["key"], c)
     for item in external_items:
@@ -825,6 +851,80 @@ def collect_candidates(
         if c and _in_window(c["publish_ts"], start_ts, end_ts):
             out.setdefault(c["key"], c)
     return sorted(out.values(), key=lambda c: c["publish_ts"], reverse=True)
+
+
+# 正文短于这个长度就认为「只有标题和摘要」，周报要据此补抓。
+# 微信文章的 digest 通常 30–120 字，正文动辄上千，200 是个安全的界。
+BODY_MIN_CHARS = 200
+
+
+def needs_body(it: dict[str, Any]) -> bool:
+    """这篇候选是不是只有标题/摘要（没有正文）。"""
+    if it.get("kind") != "公众号":
+        return False          # 外部条目的摘要本身就是可判定内容，不必联网抓
+    if not str(it.get("url") or "").strip():
+        return False
+    return len(str(it.get("text") or "").strip()) < BODY_MIN_CHARS
+
+
+def fetch_missing_bodies(
+    candidates: list[dict[str, Any]],
+    *,
+    cred_for: Callable[[str], dict[str, Any]],
+    workers: int = 4,
+    on_progress: Callable[[int, int], None] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """给正文缺失的候选补抓正文 → ``({文章键: (body_text, body_html)}, [错误])``。
+
+    **为什么必须有这一步**（2026-09 实跑暴露）：周报原先直接用文章缓存里的
+    ``body_text``，而那份缓存只有跑过「AI 内容筛选」或「导出正文」才会有 ——
+    实测用户的库里 379 篇只有 38 篇（10%）带正文。于是打分与解读阶段，
+    **九成文章模型只看得到标题和几十字的摘要**：明明有实测数据的文章被判成
+    「文中未给出量化数据」，厂商宣传稿也认不出来（两者都是用户实际报的问题）。
+
+    抓回来的正文由调用方写回缓存，下次就免费了（与「减少重复请求」的既有约定一致）。
+    单篇失败只记一笔，不阻断整期。
+    """
+    todo = [it for it in candidates if needs_body(it)]
+    if not todo:
+        return {}, []
+
+    from mp_harvest.core import article_reader
+
+    def _fetch(it: dict[str, Any]) -> tuple[str, str]:
+        if check_cancelled:
+            check_cancelled()
+        parsed = article_reader.fetch_and_parse_article(
+            str(it["url"]), cred=cred_for(str(it.get("source_id") or ""))
+        )
+        if not parsed.get("content_found", True):
+            # 页面没有 #js_content：多半是微信的环境校验页，拿它判定毫无意义
+            raise RuntimeError("页面没有正文（可能触发了微信的环境校验）")
+        text = str(parsed.get("body_text") or "").strip()
+        if len(text) < 20:
+            raise RuntimeError("正文过短或无实质内容")
+        return text, str(parsed.get("body_html") or "")
+
+    results: dict[str, Any] = {}
+    errors: list[str] = []
+    done = 0
+    total = len(todo)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
+        futures = {ex.submit(_fetch, it): it for it in todo}
+        for fut in concurrent.futures.as_completed(futures):
+            it = futures[fut]
+            try:
+                results[it["key"]] = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                # 取消要原样抛出，其余按单篇失败处理
+                if exc.__class__.__name__ == "TaskCancelled":
+                    raise
+                errors.append(f"{str(it.get('title') or '')[:40]}：{exc}")
+            done += 1
+            if on_progress:
+                on_progress(done, total)
+    return results, errors
 
 
 def _in_window(ts: int, start_ts: int, end_ts: int) -> bool:
@@ -1719,16 +1819,47 @@ def generate_issue(
     download_images: bool = False,
     workers: int = 4,
     batch_size: int = SCORING_BATCH_DEFAULT,
+    fetch_bodies: bool = True,
+    cred_for: Callable[[str], dict[str, Any]] | None = None,
+    save_bodies: Callable[[list[dict[str, Any]]], None] | None = None,
     on_stage: Callable[[str], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """跑完整一期：打分 → 选题 → 归档 → 解读 → 渲染 → 落盘。
+    """跑完整一期：补正文 → 打分 → 选题 → 归档 → 解读 → 渲染 → 落盘。
 
     **先归档后渲染**：周报里要带指向本地全文的链接，文件名得先落地才知道。
+
+    ``fetch_bodies``：给只有标题/摘要的候选补抓正文（见 :func:`fetch_missing_bodies`）。
+    没有正文时打分与解读都是瞎猜 —— 有实测数据的文章会被判成「无量化数据」，
+    厂商宣传稿也认不出来。``save_bodies`` 把抓到的正文交回调用方写回缓存。
     """
     stage = on_stage or (lambda _m: None)
     n = max(1, int(selected_count))
+
+    body_errors: list[str] = []
+    if fetch_bodies and cred_for is not None:
+        missing = sum(1 for c in candidates if needs_body(c))
+        if missing:
+            stage(f"补全正文 {missing}/{len(candidates)} 篇…")
+            bodies, body_errors = fetch_missing_bodies(
+                candidates, cred_for=cred_for, workers=workers,
+                on_progress=on_progress, check_cancelled=check_cancelled,
+            )
+            for c in candidates:
+                got = bodies.get(c["key"])
+                if got:
+                    c["text"] = c["body_text"] = got[0]
+                    c["body_html"] = got[1]
+            if save_bodies and bodies:
+                try:
+                    save_bodies([
+                        {"identity": c.get("identity") or "", "_account_id": c.get("source_id") or "",
+                         "body_text": bodies[c["key"]][0], "body_html": bodies[c["key"]][1]}
+                        for c in candidates if c["key"] in bodies
+                    ])
+                except Exception:  # noqa: BLE001 —— 写回失败不影响本期
+                    pass
 
     # 阶段文案由 score_candidates 自己报（它知道会切成几批、并发多少）
     scores, score_errors = score_candidates(
@@ -1797,7 +1928,8 @@ def generate_issue(
         index_rows=art["index_rows"], issue_num=issue_num, report_title=report_title,
     )
 
-    errors = [*score_errors, *detail_errors, *brief_errors, *art["errors"], *out["errors"]]
+    errors = [*body_errors, *score_errors, *detail_errors, *brief_errors,
+              *art["errors"], *out["errors"]]
     return {
         "ok": bool(out["ok"]),
         "issue_dir": str(root),
@@ -1819,8 +1951,11 @@ __all__ = [
     "BUSINESS_TAGS",
     "BUSINESS_TAG_KEYWORDS",
     "BUSINESS_TAG_STANDARD",
+    "BODY_MIN_CHARS",
     "SCORING_BATCH_DEFAULT",
     "SCORING_BATCH_MAX",
+    "fetch_missing_bodies",
+    "needs_body",
     "infer_business_tags",
     "archive_articles",
     "archive_article",
