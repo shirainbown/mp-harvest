@@ -6,6 +6,7 @@ import ToastHost from './components/ToastHost.vue'
 import CredentialView from './views/CredentialView.vue'
 import HistoryView from './views/HistoryView.vue'
 import ExternalView from './views/ExternalView.vue'
+import WeeklyView from './views/WeeklyView.vue'
 import AiModelsView from './views/AiModelsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { useUiStore } from './stores/ui'
@@ -29,6 +30,7 @@ onMounted(() => {
       <CredentialView v-show="ui.view === 'credentials'" />
       <HistoryView v-show="ui.view === 'history'" />
       <ExternalView v-show="ui.view === 'external'" />
+      <WeeklyView v-show="ui.view === 'weekly'" />
       <AiModelsView v-show="ui.view === 'ai'" />
       <SettingsView v-show="ui.view === 'settings'" />
     </div>

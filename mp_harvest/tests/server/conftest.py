@@ -283,6 +283,60 @@ def _fake_article_reader() -> types.ModuleType:
         }
 
     mod.fetch_and_parse_article = fetch_and_parse_article
+
+    # 周报归档复用 article_reader 的这几个入口（2026-09）。这里给语义等价的
+    # 轻量实现 —— 真实的排版细节由 tests/test_weekly_report.py 用真模块覆盖，
+    # 本文件只保证 server 层拿到符合契约的返回值。
+    # 相对定位，绝不写绝对路径 —— 测试文件会进公开仓库，写死 /Users/<用户名>/…
+    # 会把本机目录结构泄露出去（2026-09 自查发现）
+    mod._resolve_template_dir = lambda: (
+        Path(__file__).resolve().parents[2] / "core" / "templates"
+    )
+    mod._article_content_hash = (
+        lambda *, link="", body_html="", body_text="": __import__("hashlib")
+        .sha256((body_html or body_text or link or "").encode("utf-8", "ignore"))
+        .hexdigest()[:8]
+    )
+
+    def safe_export_filename(title, *, ext, index=0, date="", account="", content_hash=""):
+        import re as _re
+
+        parts = []
+        d = _re.sub(r"[^0-9-]+", "", str(date or ""))[:10]
+        if d:
+            parts.append(d)
+        acct = _re.sub(r'[\\/:*?"<>|]+', "_", str(account or "").strip()).strip("_")
+        if acct:
+            parts.append(acct)
+        parts.append(_re.sub(r'[\\/:*?"<>|]+', "_", (title or "article").strip())[:48] or "article")
+        h = _re.sub(r"[^0-9a-fA-F]", "", str(content_hash))[:8]
+        if h:
+            parts.append(h)
+        return "_".join(parts) + f".{ext}"
+
+    mod.safe_export_filename = safe_export_filename
+
+    def write_article_export(path, art, **kw):
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            f"<html><body><h1>{art.get('title', '')}</h1>"
+            f"<div>{art.get('body_html') or art.get('body_text') or ''}</div></body></html>",
+            encoding="utf-8",
+        )
+        return p
+
+    mod.write_article_export = write_article_export
+    mod.render_article_html = lambda art, **kw: f"<html><body>{art.get('title', '')}</body></html>"
+
+    def _render_index_page(rows, *, account_name=""):
+        links = "".join(
+            f'<a href="{r.get("file", "")}">{r.get("title", "")}</a>' for r in rows
+        )
+        return f"<html><body><h1>{account_name} · 文章目录</h1>{links}</body></html>"
+
+    mod._render_index_page = _render_index_page
+    mod._html_to_text = lambda fragment: __import__("re").sub(r"<[^>]+>", " ", str(fragment or "")).strip()
     return mod
 
 
@@ -392,6 +446,15 @@ def _fake_ai_filter() -> types.ModuleType:
         }
 
     mod.judge_articles = judge_articles
+
+    # 周报复用真实传输层（core/weekly_report.llm_json → ai_filter._call_model），
+    # 假模块必须提供同名入口，否则测试连打桩都打不上（2026-09）。
+    def _call_model(cfg, system_prompt, user_content, max_retries=3, **kw):
+        raise NotImplementedError("测试里请自行 monkeypatch _call_model")
+
+    mod._call_model = _call_model
+    # 真实模块用 build_prompt 拼「原则 + 固定输出要求」，周报侧同形，这里给个占位
+    mod.FIXED_OUTPUT_REQUIREMENTS = "【输出格式（必须严格遵守，软件固定，不可更改）】"
 
     # 「其他来源」路由用只读的 load_verdicts 把判定合并进列表行（2026-09）。
     # 与真实实现同契约：读不到 / 坏文件一律空字典，且**不写盘**。

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-export type ViewId = 'credentials' | 'history' | 'external' | 'ai' | 'settings'
+export type ViewId = 'credentials' | 'history' | 'external' | 'weekly' | 'ai' | 'settings'
 
 export interface ToastItem {
   id: number

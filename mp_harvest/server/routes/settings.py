@@ -23,6 +23,15 @@ SETTING_DEFAULTS: dict[str, Any] = {
     "ai.batch_size": 50,
     "ai.workers": 4,
     "ai.continue_content_filter": True,
+    # 周报（2026-09）：机构名/邮箱/往期链接留空则报告里整块不显示，
+    # 内置模板刻意不带任何真实机构信息（模板要进公开仓库）
+    "weekly.dir": str(Path.home() / "Downloads" / "mp-harvest-weekly"),
+    "weekly.template_path": "",
+    "weekly.selected_count": 15,
+    "weekly.report_title": "逻辑芯片行业洞察快报",
+    "weekly.org_name": "",
+    "weekly.org_email": "",
+    "weekly.archive_url": "",
 }
 
 # 已知设置项的声明类型（PUT 校验用；bool 判定须先于 int，因 bool 是 int 子类）
@@ -32,7 +41,18 @@ _SETTING_TYPES: dict[str, type] = {
     "ai.batch_size": int,
     "ai.workers": int,
     "ai.continue_content_filter": bool,
+    "weekly.dir": str,
+    "weekly.template_path": str,
+    "weekly.selected_count": int,
+    "weekly.report_title": str,
+    "weekly.org_name": str,
+    "weekly.org_email": str,
+    "weekly.archive_url": str,
 }
+
+# 需要做 ~ 展开 + 绝对化 的路径型设置项。原先只对 export.default_dir 生效，
+# 周报的目录/模板路径也是路径，漏了会把「~」原样存进去（2026-09 扩展）。
+_PATH_KEYS = ("export.default_dir", "weekly.dir", "weekly.template_path")
 
 
 def _validate_settings(body: dict[str, Any]) -> None:
@@ -94,7 +114,8 @@ def put_settings(body: dict[str, Any]) -> dict:
         raise HTTPException(status_code=400, detail="settings 必须是 JSON 对象")
     _validate_settings(body)
     merged = {**settings_mod.load_settings(), **body}
-    merged["export.default_dir"] = _normalize(merged.get("export.default_dir"))
+    for key in _PATH_KEYS:
+        merged[key] = _normalize(merged.get(key))
     settings_mod.save_settings(None, merged)
     return {"ok": True, "settings": {**SETTING_DEFAULTS, **merged}}
 

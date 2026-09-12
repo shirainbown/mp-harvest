@@ -14,6 +14,7 @@
 interface PywebviewApi {
   open_external?: (url: string) => unknown
   choose_directory?: () => Promise<string>
+  choose_file?: (kind?: string) => Promise<string>
 }
 
 function shellApi(): PywebviewApi | undefined {
@@ -76,6 +77,28 @@ export async function chooseDirectory(): Promise<{ path: string | null; reason?:
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e)
     return { path: null, reason: `目录选择失败：${why}（可手动输入路径）` }
+  }
+}
+
+/**
+ * 选单个文件（周报模板用）；返回绝对路径。
+ *
+ * 与 ``chooseDirectory`` 同形：``null`` + ``reason`` 表示要提示，
+ * ``null`` 无 reason 表示用户取消。
+ */
+export async function chooseFile(
+  kind: 'html' | 'any' = 'html',
+): Promise<{ path: string | null; reason?: string }> {
+  const bridge = shellApi()
+  if (!bridge?.choose_file) {
+    return { path: null, reason: '当前环境不支持原生文件选择，请手动输入路径' }
+  }
+  try {
+    const picked = await bridge.choose_file(kind)
+    return { path: picked ? String(picked) : null }
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e)
+    return { path: null, reason: `文件选择失败：${why}（可手动输入路径）` }
   }
 }
 

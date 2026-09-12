@@ -214,6 +214,30 @@ def main(argv: list[str] | None = None) -> int:
                 return str(picked[0]) if picked else ""
             return str(picked)
 
+        def choose_file(self, kind: str = "html") -> str:
+            """弹系统文件选择框；返回选中的绝对路径，取消/失败返回空串。
+
+            ``kind`` 决定过滤的扩展名：``html``（周报模板）/ ``any``。
+            """
+            if self._window is None:
+                return ""
+            filters = (
+                ["HTML 模板 (*.html;*.htm)", "所有文件 (*.*)"]
+                if kind == "html"
+                else ["所有文件 (*.*)"]
+            )
+            try:
+                picked = self._window.create_file_dialog(
+                    webview.FileDialog.OPEN, allow_multiple=False, file_types=filters
+                )
+            except Exception:  # noqa: BLE001
+                return ""
+            if not picked:
+                return ""
+            if isinstance(picked, (list, tuple)):
+                return str(picked[0]) if picked else ""
+            return str(picked)
+
         def open_external(self, url: str) -> bool:
             """在系统默认浏览器里打开链接；成功返回 True。
 

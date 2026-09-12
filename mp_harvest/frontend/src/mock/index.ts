@@ -430,6 +430,52 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
     return { task_id, type: 'external.export', total: mockExtItems.length } as T
   }
 
+  // ---------- 周报 ----------
+  if (p === '/api/weekly/preview' && method === 'GET') {
+    return {
+      from_date: '2026-08-31', to_date: '2026-09-06', suggested_issue: 17,
+      out_dir: '~/Downloads/mp-harvest-weekly', selected_count: 15,
+      total: 42, wechat: 12, arxiv: 30, external_other: 0,
+      template_path: '(内置) mp_harvest/core/templates/weekly.html',
+      template_is_custom: false, template_exists: true,
+    } as T
+  }
+  if (p === '/api/weekly/issues' && method === 'GET') {
+    return [
+      { issue_num: 17, date: '2026-09-07', dir: '~/周报/第17期_2026-09-07',
+        name: '第17期_2026-09-07', report: '', has_snapshot: true },
+      { issue_num: 16, date: '2026-08-31', dir: '~/周报/第16期_2026-08-31',
+        name: '第16期_2026-08-31', report: '', has_snapshot: true },
+    ] as T
+  }
+  if (p === '/api/weekly/prompts' && method === 'GET') {
+    const mk = (label: string, text: string) => ({ text, default: text, label })
+    return {
+      prompts: {
+        scoring: mk('选题打分', '（mock）你是芯片与半导体产业技术分析师，请逐篇评估……'),
+        detail: mk('深度解读', '（mock）请深度解读以下文章：关键技术创新 / 数据与实验结果 / 详细摘要'),
+        intro: mk('核心洞察', '（mock）撰写一段 200-300 字的核心洞察，用 ① ② ③ 列看点'),
+        brief: mk('其他入选摘要', '（mock）为每篇写一句 50-100 字摘要'),
+      },
+    } as T
+  }
+  if (p === '/api/weekly/prompts' && method === 'PUT') return { ok: true, pruned: 0 } as T
+  if (p === '/api/weekly/generate' && method === 'POST') {
+    const task_id = simulateTask(
+      'weekly.generate',
+      ['打分 42 篇…', '归档原文 20 篇…', '深度解读 Top15…', '生成核心洞察…', '渲染周报…', '写入归档…'],
+      500,
+      { ok: true, issue_dir: '~/周报/第17期_2026-09-07', selected: 15, others: 5,
+        total: 20, dropped: 22, archived: 20, failed: 0, missing_vars: [] },
+    )
+    return { task_id, type: 'weekly.generate', total: 42 } as T
+  }
+  if (p === '/api/weekly/render' && method === 'POST') {
+    const task_id = simulateTask('weekly.render', ['渲染中…', '写入…'], 400,
+      { ok: true, report_path: '~/周报/第17期_2026-09-07/report.html', missing_vars: [] })
+    return { task_id, type: 'weekly.render' } as T
+  }
+
   if (p.startsWith('/api/tasks/') && p.endsWith('/cancel') && method === 'POST') return { ok: true } as T
 
   throw new Error(`mock: 未实现的端点 ${method} ${p}`)

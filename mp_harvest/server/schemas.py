@@ -164,6 +164,36 @@ class ExternalExportIn(BaseModel):
     date_dir: str = ""
 
 
+# ── weekly（周报，2026-09）────────────────────────────────────────
+
+
+class WeeklyGenerateIn(BaseModel):
+    """生成一期周报。``account_ids``/``source_ids`` 至少要有一个有内容。"""
+
+    issue_num: int = Field(ge=1)
+    from_date: str = Field(min_length=1)  # YYYY-MM-DD
+    to_date: str = Field(min_length=1)
+    selected_count: int = Field(default=15, ge=1, le=100)
+    account_ids: list[str] = Field(default_factory=list)  # 公众号
+    source_ids: list[str] = Field(default_factory=list)  # 「其他来源」目录
+    out_dir: str = ""  # 留空用设置 weekly.dir
+    template_path: str = ""  # 留空用内置模板
+    report_title: str = ""
+    download_images: bool = False
+
+
+class WeeklyRenderIn(BaseModel):
+    """用某期归档的 report.json 重渲染（调模板专用，不调 AI）。"""
+
+    issue_dir: str = Field(min_length=1)
+    template_path: str = ""
+
+
+class WeeklyPromptIn(BaseModel):
+    key: str = Field(min_length=1)
+    text: str = ""
+
+
 # ── settings ──────────────────────────────────────────────────────
 
 

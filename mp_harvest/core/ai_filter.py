@@ -288,24 +288,31 @@ def _build_openai_payload(
 
 
 def _build_anthropic_payload(
-    cfg: ModelConfig, system_prompt: str, user_content: str
+    cfg: ModelConfig, system_prompt: str, user_content: str, max_tokens: int = 4096
 ) -> dict[str, Any]:
     return {
         "model": cfg.model,
-        "max_tokens": 4096,
+        "max_tokens": int(max_tokens),
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_content}],
         "temperature": 0.1,
     }
 
 
-def _build_payload(cfg: ModelConfig, system_prompt: str, user_content: str) -> dict[str, Any]:
+def _build_payload(
+    cfg: ModelConfig,
+    system_prompt: str,
+    user_content: str,
+    *,
+    max_tokens: int = 4096,
+) -> dict[str, Any]:
     if cfg.format == "anthropic":
-        return _build_anthropic_payload(cfg, system_prompt, user_content)
+        return _build_anthropic_payload(cfg, system_prompt, user_content, max_tokens)
+    # OpenAI 兼容格式没有 max_tokens 上限字段（由模型侧决定），该参数只对 anthropic 生效
     return _build_openai_payload(cfg, system_prompt, user_content)
 
 
-def _post_chat(cfg: ModelConfig, payload: dict[str, Any]) -> str:
+def _post_chat(cfg: ModelConfig, payload: dict[str, Any], *, timeout: float = 180) -> str:
     url = _endpoint(cfg)
     headers = {"Content-Type": "application/json"}
     if cfg.format == "anthropic":
@@ -319,7 +326,7 @@ def _post_chat(cfg: ModelConfig, payload: dict[str, Any]) -> str:
         headers=headers,
         method="POST",
     )
-    with _urlopen(req, timeout=180) as resp:
+    with _urlopen(req, timeout=float(timeout)) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return _parse_content(cfg, data)
 
@@ -344,13 +351,22 @@ def _call_model(
     system_prompt: str,
     user_content: str,
     max_retries: int = 3,
+    *,
+    max_tokens: int = 4096,
+    timeout: float = 180,
 ) -> str:
-    payload = _build_payload(cfg, system_prompt, user_content)
+    """调用模型并返回纯文本回复。
+
+    ``max_tokens`` / ``timeout`` 可选（2026-09 加，默认值与旧行为一致）：周报的
+    深度解读/核心洞察输出比逐篇判定长得多，Anthropic 路径写死 4096 会截断。
+    OpenAI 兼容格式没有该字段，``max_tokens`` 对它无效（由模型侧决定）。
+    """
+    payload = _build_payload(cfg, system_prompt, user_content, max_tokens=max_tokens)
     is_openai = cfg.format != "anthropic"
     last_err: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            return _post_chat(cfg, payload)
+            return _post_chat(cfg, payload, timeout=timeout)
         except urllib.error.HTTPError as e:
             last_err = e
             body = ""

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ issue.title }} - 第{{ issue.num }}期</title>
+{#
+====================================================================
+周报模板（Jinja2）使用说明
+====================================================================
+
+■ 这个模板是**唯一真相**：下面写的循环、条件和字段，就是最终输出的样子。
+  改 DOM、加字段、调顺序都会直接生效，不需要改任何 Python 代码。
+  改完点界面上的「预览」即可看效果 —— **预览不调用 AI，不花钱**。
+
+■ 数据模型（模板里可直接用的变量）：
+
+  issue.num            期号（整数）
+  issue.from_date      起始日期 2026-08-31
+  issue.to_date        结束日期 2026-09-06
+  issue.generated_at   生成时间 2026-09-07 01:20
+  issue.title          报告主标题
+
+  stats.wechat / stats.arxiv / stats.total        候选来源计数
+  stats.selected_count / stats.other_count         精选 / 其他入选篇数
+
+  intro                核心洞察正文（已清洗，含 <br>，用 | safe 输出）
+
+  selected             精选文章数组（默认前 15 篇）
+  others               其他入选文章数组（序号从 selected_count+1 继续）
+
+  每篇文章（a）的字段：
+    a.no              序号（1 开始；others 承接 selected 继续递增）
+    a.title           原始标题（英文论文即英文原名）
+    a.title_cn        中文标题（英文论文为译名）
+    a.title_en        仅英文论文非空 —— 中文文章用 {% if a.title_en %} 跳过副标题
+    a.source          来源（公众号名 / arXiv · 一作）
+    a.kind            "公众号" | "arXiv"
+    a.date            发布日期
+    a.url             原文链接
+    a.domain          领域（五选一）
+    a.business_tags   业务标签数组，如 ["公共","数通"]
+    a.reason          入选理由
+    a.key_innovation  关键技术创新
+    a.data_results    数据与实验结果
+    a.summary         详细摘要
+    a.brief           一句话摘要（仅 others 用）
+    a.score           评分
+    a.local_file      归档正文的相对路径（相对本报告，如 articles/xxx.html）
+
+  tags                 业务标签配色表，如 tags["数通"] → "#e74c3c"
+  org_name / org_email / archive_url    署名与往期归档链接（在「设置」页配）
+
+■ 可用的过滤器：
+    {{ a.business_tags | tag_spans | safe }}   业务标签 → 彩色 span（颜色按规范）
+    {{ a.summary | nl2br }}                    多行文本 → 换行
+  注意：正文类字段请用 | safe 输出（intro 已由代码清洗成安全 HTML），
+  其余字段（标题/理由等）**不要**加 | safe —— 自动转义会挡住内容里的尖括号。
+
+■ 写错变量名不会静默变空白：渲染完会列出「模板引用了但没提供的变量」，
+  在生成结果里以警告形式告诉你。语法错误也会给出具体行号。
+
+■ 两条排版规范（与往期一致）：
+  1) 英文论文必须同时给中文译名与英文原名（英文原名用 subtitle 样式换行跟在后面）；
+     中文文章不加副标题 —— 用 {% if a.title_en %} 自动区分。
+  2) 每篇文章必须带 1~3 个业务标签，出现在「概览表来源行」与「深度解读卡片来源行下方」。
+====================================================================
+#}
+<style>
+body, table, td, div, span, p, h1, h2, h3, h4 {
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+  margin: 0; padding: 0;
+}
+body { background-color: #e8ecf1; -webkit-font-smoothing: antialiased; }
+a { color: #1a56db; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.domain-section h2 { color: #1a237e; border-bottom: 2px solid #e0e0e0; padding-bottom: 8px; margin-top: 32px; font-size: 20px; }
+.article-card { border: 1px solid #e0e0e0; border-radius: 12px; padding: 24px; margin-top: 20px; background: #fafafa; }
+.article-header { display: flex; gap: 16px; margin-bottom: 16px; }
+.article-no { width: 40px; height: 40px; background: #1a237e; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
+.serial-no { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; background: #1a237e; color: #fff; border-radius: 50%; font-weight: bold; font-size: 12px; margin-right: 8px; vertical-align: middle; }
+.article-meta h3 { margin: 0 0 8px 0; color: #1a237e; font-size: 17px; }
+.article-meta h3 .subtitle { color: #555; font-size: 15px; font-weight: normal; }
+.domain-tag {
+  display: inline-block;
+  background: #e3f2fd;
+  color: #1565c0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+  border: 1px solid #bbdefb;
+}
+.article-sub { color: #666; font-size: 14px; margin: 0 0 4px 0; }
+.article-link { font-size: 14px; margin: 0; }
+.score { color: #d84315; font-weight: bold; }
+.article-body h4 { color: #1a237e; margin: 16px 0 8px 0; font-size: 15px; }
+.article-body p { margin: 0 0 12px 0; text-align: justify; color: #333; line-height: 1.7; }
+.other-table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 16px; font-size: 14px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; }
+.other-table th { background: #1a237e; color: #fff; padding: 12px; text-align: left; }
+.other-table td { padding: 10px 12px; border-bottom: 1px solid #e0e0e0; vertical-align: top; word-break: break-word; }
+</style>
+</head>
+<body style="background-color:#e8ecf1; padding:30px 0; margin:0;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#e8ecf1;">
+<tr><td align="center" style="padding:0;">
+<table role="presentation" width="1100" cellspacing="0" cellpadding="0" border="0" style="max-width:1100px; width:100%; background-color:#ffffff; border-radius:12px; box-shadow:0 8px 32px rgba(13,33,55,0.08); overflow:hidden;">
+
+<!-- ===== 刊头 ===== -->
+<tr>
+<td align="center" style="background-color:#0d2137; padding:40px 40px 30px 40px; text-align:center;" bgcolor="#0d2137">
+<h2 style="color:#e2e8f0; font-size:11px; letter-spacing:3px; text-transform:uppercase; font-weight:500; margin:0 0 8px 0;">行业洞察快报 · 学术与技术分析</h2>
+<h1 style="color:#ffffff; font-size:32px; font-weight:700; letter-spacing:1px; margin:0 0 12px 0;">{{ issue.title }}</h1>
+<p style="color:#b8d4ff; font-size:14px; margin:0 0 10px 0;">第 <strong style="color:#ffffff; font-size:18px;">{{ issue.num }}</strong> 期 · {{ issue.to_date }}</p>
+<div style="height:1px; line-height:1px; font-size:1px; background-color:#8bb8e8; margin:16px 0;">&nbsp;</div>
+<p style="color:#d1d5db; font-size:13px; line-height:1.6; margin:0;">{{ issue.from_date }} ~ {{ issue.to_date }} · 公众号 {{ stats.wechat }} 篇 · 论文 {{ stats.arxiv }} 篇 · 共 <strong style="color:#ffffff;">{{ stats.total }}</strong> 篇入选（其中 <strong style="color:#ffffff;">{{ stats.selected_count }}</strong> 篇精选含详细摘要）</p>
+</td>
+</tr>
+
+{% if archive_url %}
+<!-- ===== 往期归档入口（archive_url 留空则整块不显示）===== -->
+<tr>
+<td align="center" style="background-color:#eef4ff; padding:20px 40px; text-align:center; border-bottom:2px solid #c7d8fa;" bgcolor="#eef4ff">
+<span style="color:#1a237e; font-size:18px; font-weight:700;">💡 想回顾往期？</span><a href="{{ archive_url }}" target="_blank" style="display:inline-block; color:#ffffff; background-color:#1a56db; font-size:16px; font-weight:700; text-decoration:none; padding:8px 22px; border-radius:20px; margin-left:8px; vertical-align:middle; box-shadow:0 2px 6px rgba(26,86,219,0.35);">点击查阅历史快报 →</a>
+</td>
+</tr>
+{% endif %}
+
+<!-- ===== 核心洞察与摘要 ===== -->
+<tr>
+<td style="padding:32px 40px 24px 40px; background-color:#f7fafc; border-bottom:1px solid #edf2f7;" bgcolor="#f7fafc">
+<div style="border-left:3px solid #1a56db; padding-left:16px;">
+<h3 style="color:#1a56db; font-size:14px; font-weight:600; margin:0 0 10px 0;">📌 核心洞察与摘要</h3>
+<p style="color:#2d3748; font-size:14px; line-height:1.8; margin:0;">{{ intro | safe }}</p>
+</div>
+</td>
+</tr>
+
+<!-- ===== 板块一 · 精选文章概览 ===== -->
+<tr>
+<td style="padding:28px 40px 16px 40px;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:16px;">
+<tr>
+<td style="border-bottom:2px solid #1a56db; padding-bottom:10px;">
+<h2 style="color:#1a202c; font-size:18px; font-weight:700; margin:0; display:inline;">📰 板块一 · 精选文章概览</h2>
+<span style="color:#718096; font-size:13px; margin-left:12px;">共 {{ stats.selected_count }} 篇</span>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+
+<tr>
+<td style="padding:0 40px 24px 40px;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="table-layout:fixed; width:100%; border:1px solid #e2e8f0; border-radius:6px; overflow:hidden; border-collapse:collapse;">
+<tr style="background-color:#f7fafc;" bgcolor="#f7fafc">
+<td width="12%" style="padding:10px 16px; font-size:13px; font-weight:bold; color:#2d3748; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; white-space:nowrap;">领域</td>
+<td width="43%" style="padding:10px 16px; font-size:13px; font-weight:bold; color:#2d3748; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0;">序号 / 文章标题 / 来源</td>
+<td width="45%" style="padding:10px 16px; font-size:13px; font-weight:bold; color:#2d3748; border-bottom:1px solid #e2e8f0;">入选理由</td>
+</tr>
+{% for a in selected %}
+<tr>
+<td style="padding:10px 16px; font-size:13px; word-break:break-word; color:#2d3748; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0;">{{ a.domain }}</td>
+<td style="padding:10px 16px; font-size:13px; word-break:break-word; color:#2d3748; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0;">
+<span class="serial-no">{{ '%02d' % a.no }}</span><a href="{{ a.url }}" target="_blank" style="color:#2d3748;">{{ a.title_cn }}</a>
+{%- if a.title_en %}<br><span style="color:#a0aec0;font-size:12px;">{{ a.title_en }}</span>{% endif %}
+<br><span style="color:#718096;font-size:12px;">{{ a.source }}</span>&nbsp;{{ a.business_tags | tag_spans | safe }}
+{%- if a.local_file %}<br><a href="{{ a.local_file }}" style="color:#a0aec0;font-size:12px;">本地存档</a>{% endif %}
+</td>
+<td style="padding:10px 16px; font-size:13px; word-break:break-word; color:#2d3748; border-bottom:1px solid #e2e8f0;">{{ a.reason }}</td>
+</tr>
+{% endfor %}
+</table>
+</td>
+</tr>
+
+<!-- ===== 板块二 · 深度解读 ===== -->
+<tr>
+<td style="padding:8px 40px 24px 40px;">
+<div class="domain-section">
+<h2 style="color:#1a237e; border-bottom:2px solid #e0e0e0; padding-bottom:8px; margin-top:0; font-size:20px;">📖 板块二 · 入选文章深度解读</h2>
+{% for a in selected %}
+<div class="article-card">
+<div class="article-header">
+<span class="article-no">{{ '%02d' % a.no }}</span>
+<div class="article-meta">
+<h3><a href="{{ a.url }}" target="_blank" style="color:#1a237e;">{{ a.title_cn }}</a>{% if a.title_en %}<br><span class="subtitle">{{ a.title_en }}</span>{% endif %} <span class="domain-tag">{{ a.domain }}</span></h3>
+<p class="article-sub">来源：{{ a.source }} &nbsp;|&nbsp; 日期：{{ a.date }}</p>
+<p class="article-tags" style="margin:4px 0 0 0; line-height:1.6;">{{ a.business_tags | tag_spans | safe }}</p>
+<p class="article-link"><a href="{{ a.url }}" target="_blank">阅读原文 →</a>{% if a.local_file %} &nbsp;|&nbsp; <a href="{{ a.local_file }}">本地存档</a>{% endif %}</p>
+</div>
+</div>
+<div class="article-body">
+<h4>🔬 关键技术创新</h4>
+<p>{{ a.key_innovation | nl2br }}</p>
+<h4>📊 数据与实验结果</h4>
+<p>{{ a.data_results | nl2br }}</p>
+<h4>📝 详细摘要</h4>
+<p>{{ a.summary | nl2br }}</p>
+</div>
+</div>
+{% endfor %}
+</div>
+</td>
+</tr>
+
+{% if others %}
+<!-- ===== 板块三 · 其他入选文章（无内容时整块不显示）===== -->
+<tr>
+<td style="padding:0 40px 32px 40px;">
+<h2 style="color:#1a237e; border-bottom:2px solid #e0e0e0; padding-bottom:8px; margin-top:0; font-size:20px;">📚 板块三 · 其他入选文章</h2>
+<table class="other-table">
+<thead>
+<tr><th width="6%">#</th><th width="12%">领域</th><th width="12%">标签</th><th width="30%">标题</th><th width="40%">摘要</th></tr>
+</thead>
+<tbody>
+{% for a in others %}
+<tr>
+<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;">{{ a.no }}</td>
+<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;">{{ a.domain }}</td>
+<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;">{{ a.business_tags | tag_spans | safe }}</td>
+<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;word-break:break-word;"><a href="{{ a.url }}" target="_blank" style="color:#1a56db;font-weight:600;">{{ a.title_cn }}</a>{% if a.title_en %}<br><span style="color:#a0aec0;font-size:12px;">{{ a.title_en }}</span>{% endif %}{% if a.local_file %}<br><a href="{{ a.local_file }}" style="color:#a0aec0;font-size:12px;">本地存档</a>{% endif %}</td>
+<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;vertical-align:top;word-break:break-word;">{{ a.brief }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</td>
+</tr>
+{% endif %}
+
+<!-- ===== 页脚 ===== -->
+<tr>
+<td align="center" style="background-color:#f7fafc; padding:30px 40px; text-align:center; border-top:1px solid #e2e8f0;" bgcolor="#f7fafc">
+<div style="height:1px; line-height:1px; font-size:1px; background-color:#cbd5e1; margin:0 0 20px 0;">&nbsp;</div>
+{% if org_name %}<p style="color:#4a5568; font-size:12px; line-height:1.8; margin:0 0 8px 0;"><strong style="color:#1a202c;">{{ org_name }}</strong></p>{% endif %}
+{% if org_email %}<p style="color:#4a5568; font-size:12px; margin:0 0 16px 0;">📧 联系邮箱：{{ org_email }}</p>{% endif %}
+<p style="color:#718096; font-size:11px; margin:0;">本报告基于公开信息整理，仅供内部学术与技术参考，不构成投资建议。</p>
+<p style="color:#a0aec0; font-size:11px; margin:12px 0 0 0;">生成时间：{{ issue.generated_at }}</p>
+</td>
+</tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

@@ -11,6 +11,7 @@ from mp_harvest.server.routes import (
     settings,
     tasks,
     update,
+    weekly,
 )
 
 ALL_ROUTERS = [
@@ -20,6 +21,7 @@ ALL_ROUTERS = [
     history.router,
     export.router,
     external.router,
+    weekly.router,
     ai.router,
     settings.router,
     update.router,

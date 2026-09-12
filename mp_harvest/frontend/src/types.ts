@@ -75,6 +75,56 @@ export interface ExternalItem extends Article {
   item_key: string
 }
 
+// ---- 周报（2026-09）----
+
+export interface WeeklyPreview {
+  from_date: string
+  to_date: string
+  suggested_issue: number
+  out_dir: string
+  selected_count: number
+  total: number
+  wechat: number
+  arxiv: number
+  external_other: number
+  template_path: string
+  template_is_custom: boolean
+  template_exists: boolean
+}
+
+export interface WeeklyIssue {
+  issue_num: number
+  date: string
+  dir: string
+  name: string
+  report: string
+  has_snapshot: boolean
+}
+
+/** 一段可编辑提示词：当前文本 + 内置默认（供「恢复默认」） */
+export interface WeeklyPrompt {
+  text: string
+  default: string
+  label: string
+}
+
+/** 生成/重渲染任务的结果 */
+export interface WeeklyResult {
+  ok?: boolean
+  error?: string
+  issue_dir?: string
+  report_path?: string
+  total?: number
+  selected?: number
+  others?: number
+  dropped?: number
+  archived?: number
+  failed?: number
+  errors?: string[]
+  /** 模板引用了但数据模型没提供的变量名（拼写错误在这里暴露） */
+  missing_vars?: string[]
+}
+
 export interface TaskInfo {
   task_id: string
   kind: string
