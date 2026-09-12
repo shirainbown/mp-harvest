@@ -74,6 +74,39 @@ def test_kind_filter_and_search(store):
     assert store.list(q="不存在的东西") == []
 
 
+def test_search_covers_every_visible_column(store):
+    """搜索要覆盖**列表里显示出来的每一列**。
+
+    用户报的：搜 `04` 找不到界面上写着 `16:40:04` 的那条日志，只能怀疑搜索坏了。
+    根因是库里存的是 epoch 整数，而 `q` 只比 message 与 data —— 时间、类型、
+    级别这三列**看得见却搜不到**。
+
+    每一条都拿**界面上真正显示的那串字**去搜，而不是自己另算一个格式：
+    前端 `formatTs()` 与后端 `_fmt_local_time()` 一旦漂移，用户照着屏幕抄下来的
+    时间就搜不到，而这条路径没有别的办法发现。
+    """
+    from mp_harvest.core.event_log import _fmt_local_time
+
+    store.write(level="warn", kind="ai.reply", message="模型返回了东西", data={"raw": "光刻机"})
+    row = store.list()[0]
+    shown = _fmt_local_time(row["ts"])
+    assert len(shown) == 19, shown          # YYYY-MM-DD HH:MM:SS
+
+    # 时间：整串、日期段、时分秒片段都要能搜到
+    assert store.list(q=shown), f"完整时间搜不到：{shown}"
+    assert store.list(q=shown[:10]), "日期部分搜不到"
+    assert store.list(q=shown[-2:]), "秒的片段搜不到（用户报的就是这个）"
+    assert store.list(q=shown[11:16]), "时:分 搜不到"
+    # 类型与级别（这两列也显示在列表里）
+    assert store.list(q="ai.reply"), "类型搜不到"
+    assert store.list(q="warn"), "级别搜不到"
+    # 原有的两列别被改坏
+    assert store.list(q="模型"), "message 搜不到"
+    assert store.list(q="光刻"), "data 上下文搜不到"
+    # 不该命中的仍然不命中
+    assert store.list(q="绝不存在的字符串") == []
+
+
 def test_search_escapes_like_wildcards(store):
     """`%` 与 `_` 是 LIKE 的通配符 —— 不转义的话搜 `100%` 会连 `1000` 一起命中。
 

@@ -124,8 +124,10 @@ async function doClear() {
                 :value="logs.kind" @change="setKind(($event.target as HTMLSelectElement).value)">
           <option v-for="o in logs.kindOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
-        <SInput v-model="logs.q" placeholder="搜索内容 / 上下文…" style="width:220px"
-                @keydown.enter="logs.load()" />
+        <!-- 提示要写明能搜什么：原先只写「内容 / 上下文」，用户搜时间搜不到，
+             只能怀疑搜索坏了（2026-09 报的）。列表里显示的每一列现在都能搜。 -->
+        <SInput v-model="logs.q" placeholder="搜索内容 / 类型 / 时间（如 16:40）…"
+                style="width:260px" @keydown.enter="logs.load()" />
         <SButton size="sm" @click="logs.load()">查询</SButton>
         <span class="spacer"></span>
         <SButton size="sm" variant="ghost" :disabled="!logs.events.length" @click="copyAll">

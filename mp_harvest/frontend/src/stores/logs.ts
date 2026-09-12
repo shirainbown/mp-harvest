@@ -44,6 +44,8 @@ export const useLogsStore = defineStore('logs', {
     /** 空 = 全部；否则是**下限**（警告会连错误一起给，与后端一致） */
     level: '' as '' | 'debug' | 'info' | 'warn' | 'error',
     kind: '',
+    /** 关键字。后端搜**列表里显示的每一列**：内容、上下文(data)、类型、级别、
+     *  以及本地时间串（`16:40:04` 这样，可搜片段）。 */
     q: '',
     loading: false,
     /** 是否**成功拉过一次**。骨架屏只在首次加载时出现 ——

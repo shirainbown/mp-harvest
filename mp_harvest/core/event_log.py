@@ -61,6 +61,19 @@ _REDACTED = "***"
 _MAX_DEPTH = 6
 
 
+def _fmt_local_time(ts: Any) -> str:
+    """epoch 秒 → 本地时区的 ``YYYY-MM-DD HH:MM:SS``。
+
+    **格式必须与前端 ``stores/logs.ts`` 的 ``formatTs()`` 逐字一致** —— 它就是
+    列表里显示的那串字，搜索比的就是它。两处各写一种格式的话，用户照着屏幕上
+    抄下来的时间会搜不到（而这条路径没有别的办法发现）。
+    """
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _redact(value: Any, _depth: int = 0) -> Any:
     """递归清洗敏感字段，返回**可 JSON 序列化**的结构。"""
     if _depth > _MAX_DEPTH:
@@ -100,6 +113,11 @@ class EventLog:
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.executescript(_SCHEMA)
+            # 搜索要能按「界面上显示的那个时间」搜 —— 库里存的是 epoch 整数，
+            # 跟列表里的 16:40:04 完全对不上（用户搜 "04" 搜不到就是这个原因）。
+            # 注册成 SQL 函数而不是取回来在 Python 里过滤：过滤必须留在 SQL 侧，
+            # 否则 LIMIT / 游标分页的语义就变了（先取 200 条再筛，会漏）。
+            conn.create_function("local_time", 1, _fmt_local_time, deterministic=True)
             self._conn = conn
         return self._conn
 
@@ -178,11 +196,19 @@ class EventLog:
             cond.append("kind = ?")
             args.append(str(kind))
         if q:
+            # **列表里能看见的每一列都要能搜到**。原先只搜 message 与 data，
+            # 于是「类型」和「时间」看着在眼前却搜不出来 —— 用户搜 "04" 想找
+            # 16:40:04 那条，得到空结果，只能怀疑搜索坏了。
+            # 时间走 local_time() 转成本地时区的显示串再比（见 _connect）。
             needle = (
                 "%" + str(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
             )
-            cond.append("(message LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\')")
-            args.extend([needle, needle])
+            cond.append(
+                "(message LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\'"
+                " OR kind LIKE ? ESCAPE '\\' OR level LIKE ? ESCAPE '\\'"
+                " OR local_time(ts) LIKE ? ESCAPE '\\')"
+            )
+            args.extend([needle] * 5)
         if before_id:
             cond.append("id < ?")
             args.append(int(before_id))
