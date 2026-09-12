@@ -1688,13 +1688,18 @@ def archive_article(
         safe_export_filename,
         write_article_export,
     )
+    from mp_harvest.core.filenames import safe_stem
 
     title = str(meta.get("title_cn") or candidate["title"])
     link = candidate.get("url") or ""
     arxiv_id = str(candidate.get("arxiv_id") or "")
-    if arxiv_id:
-        # arXiv 条目按编号命名，与「其他来源」目录里 {arxiv_id}.pdf 的习惯一致
-        stem = re.sub(r'[\\/:*?"<>|\s]+', "_", arxiv_id)
+    # arXiv 条目按编号命名，与「其他来源」目录里 {arxiv_id}.pdf 的习惯一致。
+    # 走 core.filenames.safe_stem（而不是就地再写一遍正则）：原先这里少了
+    # external_sources.body_filename 的 80 字截断，同一篇文章经两条路归档会
+    # 得到两个文件名（2026-09 合并）。净化后为空（编号全是非法字符）时按
+    # 普通文章处理 —— 否则会写出一个只剩 ``.html`` 的隐藏文件。
+    stem = safe_stem(arxiv_id) if arxiv_id else ""
+    if stem:
         fname = f"{stem}.html"
     else:
         fname = safe_export_filename(

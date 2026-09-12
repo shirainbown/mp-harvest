@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -79,8 +80,31 @@ DISCLAIMER_TEXT = (
 )
 
 
-def _ask_native() -> bool:
-    """原生确认框（tkinter 标准库）；tkinter 不可用时退回控制台输入。"""
+def _ask_windows() -> bool | None:
+    """Windows 原生确认框（``user32.MessageBoxW``）；失败返回 None。
+
+    **不用 tkinter**（2026-09 Windows 适配）：冻结版是 ``console=False`` 的 GUI 程序，
+    tkinter 要额外带上 ``_tkinter`` 与 tcl/tk 的 DLL + 数据目录，任何一环缺失都会掉进
+    下面的兜底分支 —— 而没有控制台时 ``input()`` 必然抛异常，于是「弹窗没弹出来」
+    被当成「用户点了不同意」永久记进 blocked，应用从此再也起不来。
+    ``MessageBoxW`` 直接来自系统 DLL，零打包成本、零额外体积。
+    """
+    try:
+        import ctypes
+
+        MB_YESNO = 0x04
+        MB_ICONWARNING = 0x30
+        IDYES = 6
+        res = ctypes.windll.user32.MessageBoxW(
+            None, DISCLAIMER_TEXT, "免责声明", MB_YESNO | MB_ICONWARNING
+        )
+        return res == IDYES
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ask_tk() -> bool | None:
+    """tkinter 标准库确认框；不可用返回 None。"""
     try:
         from tkinter import messagebox
 
@@ -100,25 +124,52 @@ def _ask_native() -> bool:
                     root.destroy()
                 except Exception:
                     pass
-    except Exception:
-        try:
-            answer = input("同意免责声明请输 y，否则直接回车：").strip().lower()
-            return answer in ("y", "yes")
-        except Exception:
-            return False
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ask_console() -> bool | None:
+    """最后的兜底：在终端里问一句。没有终端（GUI 程序）时返回 None。"""
+    try:
+        answer = input("同意免责声明请输 y，否则直接回车：").strip().lower()
+        return answer in ("y", "yes")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ask_native() -> bool | None:
+    """原生确认框；返回 ``None`` 表示**没能问成**（与「用户点了不同意」是两回事）。"""
+    if sys.platform == "win32":
+        answer = _ask_windows()
+        if answer is not None:
+            return answer
+    answer = _ask_tk()
+    if answer is not None:
+        return answer
+    return _ask_console()
 
 
 def require_consent(
-    ask: Callable[[], bool] | None = None,
+    ask: Callable[[], bool | None] | None = None,
     data_dir: Path | None = None,
     root: Path | None = None,
 ) -> bool:
-    """启动门禁：已同意→True；已阻止→False；未表态→弹窗确认并记录。"""
+    """启动门禁：已同意→True；已阻止→False；未表态→弹窗确认并记录。
+
+    ⚠️ **「没问成」不等于「用户拒绝」**（2026-09 Windows 适配）：弹窗组件缺失、
+    或者根本没有终端时，``_ask_native()`` 返回 ``None``。这种情况**绝不能**记成
+    ``blocked`` —— 那会写下一个跨版本存活的永久标记（数据目录的 ``consent.json``
+    与安装目录的 ``.consent_blocked`` 任一存在即视为阻止），应用从此静默退出、
+    界面上一个字都不显示，用户无从知道该去删哪个文件。没问成就当次不放行，
+    下次启动再问一遍。
+    """
     if is_blocked(data_dir=data_dir, root=root):
         return False
     if load_consent(data_dir) == "agreed":
         return True
     fn = ask or _ask_native
-    agreed = bool(fn())
+    agreed = fn()
+    if agreed is None:
+        return False
     save_consent("agreed" if agreed else "blocked", data_dir=data_dir, root=root)
-    return agreed
+    return bool(agreed)

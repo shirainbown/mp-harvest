@@ -10,10 +10,21 @@
 产物：<distpath>/MP Harvest.app（未签名；分发需 zip，Gatekeeper 提示时右键打开）。
 """
 
-import re
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+# 与 Windows 版共用的清单（datas / 整包收集 / 隐式依赖），只写一份 —— 见该模块的
+# docstring：v2.0.4/v2.0.5 就是因为 mac spec 漏打 core/templates 导致导出全挂。
+sys.path.insert(0, str(Path(SPEC).resolve().parent))
+from build_common import (  # noqa: E402
+    COLLECT_ALL_PKGS,
+    COMMON_HIDDENIMPORTS,
+    MAC_HIDDENIMPORTS,
+    package_datas,
+    version_from_source,
+)
 
 ROOT = Path(SPEC).resolve().parents[1]  # mp_harvest/ 包目录
 PKG_ROOT = ROOT.parent                  # 仓库根（mp_harvest 的父目录）
@@ -21,38 +32,14 @@ FRONTEND = ROOT / "frontend"
 ICON = str(ROOT / "packaging" / "mp_harvest.icns")
 
 # Info.plist 版本号与 base.py 的 APP_VERSION 保持一致，避免 Finder 显示旧版本
-_base_py = (ROOT / "infra" / "platform" / "base.py").read_text(encoding="utf-8")
-_version_match = re.search(r'APP_VERSION = "([^"]+)"', _base_py)
-BUNDLE_VERSION = _version_match.group(1) if _version_match else "0.0.0"
+BUNDLE_VERSION = version_from_source(ROOT)
 
-datas = [
-    (str(FRONTEND / "dist"), "frontend/dist"),
-    (str(FRONTEND / "public" / "icon.png"), "frontend/public"),
-    # 正文导出模板（2026-08-09 修复：v2.0.4/v2.0.5 漏打包导致导出全部失败）
-    (str(ROOT / "core" / "templates"), "mp_harvest/core/templates"),
-]
+datas = package_datas(ROOT)
 binaries = []
 hiddenimports = collect_submodules("mp_harvest")
 
 # 重型/动态导入包：整包收集（含数据与子模块）
-for pkg in (
-    "mitmproxy",
-    "pywebview",
-    "uvicorn",
-    "fastapi",
-    "starlette",
-    "websockets",
-    "wsproto",
-    "h11",
-    "h2",
-    "jinja2",
-    "multipart",
-    "certifi",
-    # PDF 原文取文（core/external_sources._extract_fulltext 里函数内导入）。
-    # 静态分析本来也能追到函数体，这里整包收集只是为了稳妥：
-    # 真漏了的表现是「原文功能看着实现了但完全没生效」，很难查。
-    "pypdf",
-):
+for pkg in COLLECT_ALL_PKGS:
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -61,26 +48,7 @@ for pkg in (
     except Exception:  # noqa: BLE001
         pass
 
-hiddenimports += [
-    # macOS 系统代理读取（urllib.request.getproxies 依赖它）。
-    # 不打包的话冻结版 getproxies() 会静默返回空 → 直连 GitHub →
-    # 「检查更新：无法连接 github」（2026-09 实测定位）。
-    "_scproxy",
-    "brotli",
-    "certifi",
-    "sortedcontainers",
-    "msgpack",
-    "cryptography",
-    "lxml",
-    "bs4",
-    "requests",
-    "pyasn1",
-    "cffi",
-    "kaitaistruct",
-    "ruamel.yaml",
-    "zstandard",
-    "mitmproxy_rs",
-]
+hiddenimports += list(MAC_HIDDENIMPORTS) + list(COMMON_HIDDENIMPORTS)
 
 a = Analysis(
     [str(ROOT / "__main__.py")],

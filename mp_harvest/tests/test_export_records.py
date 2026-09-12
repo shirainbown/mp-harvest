@@ -91,6 +91,33 @@ def test_exported_article_ids_merges_repeat_exports(tmp_path):
     assert r.exported_article_ids() == {"a1"}
 
 
+def test_list_exports_accepts_windows_separators(tmp_path):
+    """``out_dir`` 过滤不能写死 ``/``（2026-09 Windows 适配）。
+
+    写进来的 ``out_path`` 是 ``str(Path)``/``abspath`` 的结果，Windows 上是反斜杠，
+    而过滤条件原先硬拼 ``"/"`` —— ``LIKE 'C:\\out/%'`` 一条都匹配不上。更糟的是
+    外层 ``except`` 会把 SQL 异常静默吞掉返回 ``[]``，调用方于是退化成
+    「只渲染本批次」，症状是「导出目录页的跨批次汇总悄悄没了」。
+
+    这里用 Windows 风格的路径在 macOS 上验：data/ 目录是鼓励整份备份、拷到另一台
+    机器的，所以在 mac 上读一份从 Windows 拷过来的库是正常用法。
+    """
+    r = _rec(tmp_path / "t.db")
+    r.record_export(article_id="a1", out_path=r"C:\out\2026-08\a.html", exported_at=1)
+    r.record_export(article_id="a2", out_path=r"C:\out\2026-08\b.html", exported_at=2)
+    r.record_export(article_id="a3", out_path=r"C:\other\c.html", exported_at=3)
+    assert len(r.list_exports(out_dir=r"C:\out")) == 2
+    assert len(r.list_exports(out_dir=r"C:\out\2026-08")) == 2
+    assert len(r.list_exports(out_dir=r"C:\other")) == 1
+    assert r.list_exports(out_dir=r"C:\nope") == []
+    # 存进来的前缀带尾分隔符时也要能匹配（UI 上用户可能手输成 C:\out\）
+    assert len(r.list_exports(out_dir="C:\\out\\")) == 2
+    # 正斜杠那一支是 POSIX 平台的正常路径（macOS/Linux 上 str(Path) 就是它）。
+    # 前缀里分隔符混用（记录 C:/out、查询 C:\out）**不支持**，也不必要：
+    # 前缀来自同一台机器的 abspath，两边的分隔符必然一致。
+    assert len(r.list_exports()) == 3
+
+
 def test_fault_tolerance_on_bad_path(tmp_path):
     """DB 路径不可写（这里是把 db_path 指向已存在的目录）：所有方法不抛异常。"""
     r = ExportRecords(tmp_path)  # 目录本身不能当 db 文件用

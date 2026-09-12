@@ -97,6 +97,44 @@ def _export_cer_from_p12(p12_path: Path, cer_path: Path) -> bool:
     return False
 
 
+def _export_cer_from_pem(pem_path: Path, cer_path: Path) -> bool:
+    """从 PEM 里取第一张证书，写出 DER 编码的 ``.cer``（供平台层安装信任）。
+
+    返回是否真的写成功了（不抛）—— 调用方要据此决定「旧的 .cer 要不要删」。
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives.serialization import Encoding
+
+        text = pem_path.read_text(encoding="utf-8")
+        begin = text.find("-----BEGIN CERTIFICATE-----")
+        end = text.find("-----END CERTIFICATE-----")
+        if begin < 0 or end <= begin:
+            return False
+        block = text[begin : end + len("-----END CERTIFICATE-----")]
+        cert = x509.load_pem_x509_certificate(block.encode())
+        cer_path.write_bytes(cert.public_bytes(Encoding.DER))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def sync_public_cert(pem_path: Path) -> bool:
+    """让数据目录里的公钥 ``.cer`` 与 ``pem_path`` 这把 CA 保持一致。
+
+    导出失败时**删掉**可能过期的旧 ``.cer``：装上一把不是代理正在用的 CA 比装不上
+    更糟 —— 握手会全部失败，而且从界面上完全看不出原因（会显示「已信任」）。
+    """
+    cer = data_dir() / CER_NAME
+    if _export_cer_from_pem(pem_path, cer):
+        return True
+    try:
+        cer.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return False
+
+
 def prepare_mitm_confdir(app_root: Path) -> tuple[Path, str]:
     """确保 confdir 有 mitmproxy-ca.pem（证书+私钥），返回 (confdir, 消息)。
 
@@ -108,27 +146,20 @@ def prepare_mitm_confdir(app_root: Path) -> tuple[Path, str]:
     dest_pem = cdir / "mitmproxy-ca.pem"
     pub_dir = data_dir()
 
-    # 1) 已准备好
+    # 1) confdir 里已经有可用的 PEM
     if dest_pem.is_file() and dest_pem.stat().st_size > 100:
+        # ⚠️ 公钥 `.cer` 与这里的 PEM 是**两份**文件，这一步不能省：用户清理过数据
+        # 目录、或上次写 .cer 时静默失败，都会留下「PEM 在、.cer 不在」的状态。原先
+        # 这里直接 return，于是「安装 CA 证书」永远拿不到证书文件、报「CA 证书不存在」，
+        # 而用户明明看到抓包能跑 —— 死循环（2026-09 Windows 版补齐时发现）。
+        sync_public_cert(dest_pem)
         return cdir, f"已使用代理证书目录：{cdir}"
 
     # 2) 捆绑/相邻 PEM（含私钥）
     pem = _find(app_root, PEM_CA)
     if pem is not None:
         shutil.copy2(pem, dest_pem)
-        try:
-            from cryptography import x509
-            from cryptography.hazmat.primitives.serialization import Encoding
-
-            text = dest_pem.read_text(encoding="utf-8")
-            begin = text.find("-----BEGIN CERTIFICATE-----")
-            end = text.find("-----END CERTIFICATE-----")
-            if begin >= 0 and end > begin:
-                block = text[begin : end + len("-----END CERTIFICATE-----")]
-                cert = x509.load_pem_x509_certificate(block.encode())
-                (pub_dir / CER_NAME).write_bytes(cert.public_bytes(Encoding.DER))
-        except Exception:
-            pass
+        sync_public_cert(dest_pem)
         return cdir, f"已从 {pem.name} 准备代理 CA → {cdir}"
 
     # 3) 完整 p12（含私钥）提取 PEM
@@ -184,19 +215,7 @@ def prepare_mitm_confdir(app_root: Path) -> tuple[Path, str]:
             f"请手动将 {PEM_CA} 或 {P12_FULL} 放到：{app_root}"
         )
     # 导出公钥 .cer 供 platform.ca.install() 安装信任
-    try:
-        from cryptography import x509
-        from cryptography.hazmat.primitives.serialization import Encoding
-
-        text = dest_pem.read_text(encoding="utf-8")
-        begin = text.find("-----BEGIN CERTIFICATE-----")
-        end = text.find("-----END CERTIFICATE-----")
-        if begin >= 0 and end > begin:
-            block = text[begin : end + len("-----END CERTIFICATE-----")]
-            cert = x509.load_pem_x509_certificate(block.encode())
-            (pub_dir / CER_NAME).write_bytes(cert.public_bytes(Encoding.DER))
-    except Exception:  # noqa: BLE001
-        pass
+    sync_public_cert(dest_pem)
     return cdir, f"已生成本机全新代理 CA → {cdir}（如需微信抓包请先安装信任）"
 
 

@@ -30,7 +30,10 @@ def test_data_dir_frozen_macos():
         sys.platform = "darwin"
         d = paths.data_dir()
         # 设计稿 §3.4：~/Library/Application Support/MP Harvest/data
-        assert str(d).endswith("Library/Application Support/MP Harvest/data")
+        # ⚠️ 按 Path.parts 断言，不能拼字符串：这段代码在 Windows 的 CI 上也会跑，
+        # 而那时 str(Path) 用的是反斜杠，字符串断言必红（2026-09 Windows 适配）。
+        assert d.parts[-2:] == ("MP Harvest", "data")
+        assert d.parts[-4:-2] == ("Library", "Application Support")
     finally:
         sys.platform = old_platform
         if old_frozen is None:

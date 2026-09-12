@@ -25,6 +25,9 @@ import requests
 from bs4 import BeautifulSoup, Tag
 from jinja2 import Environment, FileSystemLoader
 
+# 叶子模块（只 import re），放模块级不会引入环，也不值得为它做惰性导入
+from mp_harvest.core.filenames import windows_safe_stem
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 "
@@ -491,10 +494,16 @@ def safe_export_filename(
     d = re.sub(r"[^0-9-]+", "", str(date or ""))[:10]
     if d:
         parts.append(d)
-    acct = re.sub(r'[\\/:*?"<>|]+', "_", str(account or "").strip()).strip("_")
+    acct = windows_safe_stem(
+        re.sub(r'[\\/:*?"<>|]+', "_", str(account or "").strip()).strip("_")
+    )
     if acct:
         parts.append(acct)
-    safe = re.sub(r'[\\/:*?"<>|]+', "_", (title or "article").strip())[:48] or "article"
+    # 先截断再净化：截断有可能正好切出一个结尾的点/空格
+    safe = (
+        windows_safe_stem(re.sub(r'[\\/:*?"<>|]+', "_", (title or "article").strip())[:48])
+        or "article"
+    )
     if content_hash:
         # 新规则：日期_公众号_标题_hash8（B6，同标题文章靠 hash 区分）
         h = re.sub(r"[^0-9a-fA-F]", "", str(content_hash))[:8]

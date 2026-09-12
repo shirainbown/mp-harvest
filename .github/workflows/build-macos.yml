@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+# 与 build-windows.yml 同一个 tag 触发、往同一个 release 传附件：
+# 串行化避免同时创建 release 打架（2026-09 加 Windows 版时补）。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-latest
@@ -70,6 +76,8 @@ jobs:
           files: |
             MP-Harvest-mac-*.dmg
             MP-Harvest-mac-*.zip
+          # 追加而不是覆盖：Windows 那个 job 往同一个 release 里写自己的说明
+          append_body: true
           body: |
             ## MP Harvest ${{ github.ref_name }}
 

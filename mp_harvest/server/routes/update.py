@@ -75,11 +75,24 @@ def update_download(body: UpdateDownloadIn) -> dict:
 
 
 def _find_downloaded_package():
-    """data_dir()/update 下最新下载的更新包（两平台 asset_suffix 均为 .zip）。"""
+    """data_dir()/update 下**本平台**最新下载的更新包（两平台 asset_suffix 均为 .zip）。
+
+    2026-09 加平台前缀过滤：Windows 版上线后 ``update/`` 里可能同时躺着两个平台的包
+    （用户手动下载过、或从旧版本升上来时留下的），只按 mtime 取最新的那个，
+    ``/api/update/apply`` 会把对面平台的包解压覆盖过来 —— 静默坏事，见
+    ``base.pick_zip_url`` 的注释。取不到前缀时退回旧行为。
+    """
     update_dir = paths.data_dir() / "update"
     if not update_dir.is_dir():
         return None
+    try:
+        prefix = get_platform().updater.asset_prefix
+    except Exception:  # noqa: BLE001
+        prefix = ""
     candidates = [p for p in update_dir.glob("*.zip") if p.is_file()]
+    if prefix:
+        mine = [p for p in candidates if p.name.startswith(prefix)]
+        candidates = mine
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)

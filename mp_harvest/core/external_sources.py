@@ -32,6 +32,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from mp_harvest.core.filenames import UNSAFE_FILENAME_RE as _UNSAFE_FILENAME_RE
+from mp_harvest.core.filenames import safe_stem
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
     id              TEXT PRIMARY KEY,
@@ -89,8 +92,8 @@ _TRACKING_PARAMS = {
     "ref", "ref_src", "spm", "from", "share_token", "fbclid", "gclid",
 }
 
-# 文件名里不能出现的字符（与 article_reader.safe_export_filename 同一套）
-_UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\s]+')
+# 文件名净化统一在 core/filenames（非法字符两套、Windows 保留设备名等都在那边）。
+# 这里保留 _UNSAFE_FILENAME_RE 这个名字只是为兼容既有引用，规则本身不再就地定义。
 
 # arXiv 版本后缀（v1 / v2 …）：参与 item_key 前剥掉，见 item_key_for
 _ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
@@ -263,10 +266,10 @@ def safe_id(item_key: str) -> str:
     净化后为空则退回键的摘要。
     """
     payload = item_key.split(":", 1)[1] if ":" in item_key else item_key
-    cleaned = _UNSAFE_FILENAME_RE.sub("_", payload).strip("_")
+    cleaned = safe_stem(payload)
     if not cleaned:
         return hashlib.sha1(item_key.encode("utf-8")).hexdigest()[:16]
-    return cleaned[:80]
+    return cleaned
 
 
 def body_filename(rec: dict[str, Any]) -> str:
@@ -281,9 +284,9 @@ def body_filename(rec: dict[str, Any]) -> str:
     """
     arxiv_id = str(rec.get("arxiv_id") or "").strip()
     if arxiv_id:
-        stem = _UNSAFE_FILENAME_RE.sub("_", arxiv_id).strip("_")
+        stem = safe_stem(arxiv_id)
         if stem:
-            return f"{stem[:80]}.html"
+            return f"{stem}.html"
     return f"{safe_id(str(rec.get('item_key') or ''))}.html"
 
 

@@ -27,13 +27,15 @@ from pathlib import Path
 
 import pytest
 
+from mp_harvest.tests._node_util import esbuild_bin
+
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "mp_harvest" / "frontend"
-ESBUILD = FRONTEND / "node_modules" / ".bin" / "esbuild"
+ESBUILD = esbuild_bin()
 NODE = shutil.which("node")
 
 pytestmark = pytest.mark.skipif(
-    NODE is None or not ESBUILD.exists(),
+    NODE is None or ESBUILD is None,
     reason="需要 node + frontend/node_modules（没装前端依赖时跳过）",
 )
 
@@ -85,7 +87,7 @@ def state() -> dict:
     harness.write_text(_HARNESS, encoding="utf-8")
     try:
         subprocess.run(
-            [str(ESBUILD), "--bundle", "--platform=node", "--format=esm",
+            [ESBUILD, "--bundle", "--platform=node", "--format=esm",
              f"--outfile={bundled}", str(harness), "--log-level=error"],
             cwd=str(FRONTEND), check=True, capture_output=True, text=True, timeout=120,
         )

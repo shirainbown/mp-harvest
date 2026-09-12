@@ -120,13 +120,25 @@ const settings: Record<string, unknown> = {
   'fetch.retries': 2,
   'fetch.max_pages': 100,
 }
+/**
+ * 演示用的平台信息 —— **跟着真实运行环境走**，不写死 macOS。
+ *
+ * 原先写死 `os:'mac'` / `WKWebView` / `~/Library/...`，于是 Windows 上开
+ * `?mock=1` 演示时，「设置 → 平台能力」会报出一个假的平台，而凭证页那句
+ * 「输入管理员密码」也跟着变成错的（Windows 装 CA 根本不要密码）。
+ * 只有 mock 需要嗅探 UA，真实代码不读它（平台信息一律来自后端 `/api/platform`）。
+ */
+const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)
+
 const platform: PlatformInfo = {
-  os: 'mac',
-  os_version: 'macOS 15',
-  ca_needs_admin: true,
-  proxy_needs_admin: true,
-  data_dir: '~/Library/Application Support/MP Harvest/data/',
-  engine: 'WKWebView',
+  os: isWindows ? 'win' : 'mac',
+  os_version: isWindows ? 'Windows 11' : 'macOS 15',
+  ca_needs_admin: !isWindows,
+  proxy_needs_admin: !isWindows,
+  data_dir: isWindows
+    ? 'C:\\Users\\<用户名>\\AppData\\Roaming\\MP Harvest\\data\\'
+    : '~/Library/Application Support/MP Harvest/data/',
+  engine: isWindows ? 'EdgeChromium' : 'WKWebView',
   version: 'v2.0.0',
 }
 
@@ -320,7 +332,13 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   }
   if (p === '/api/mitm/status' && method === 'GET') return mitm as T
   if (p === '/api/ca/status' && method === 'GET') return ca as T
-  if (p === '/api/ca/install' && method === 'POST') return { needs_admin: true, ok: true } as T
+  if (p === '/api/ca/install' && method === 'POST') {
+    return { needs_admin: platform.ca_needs_admin, ok: true } as T
+  }
+  // 「打开证书文件」：mock 下只回报成功，不真的开
+  if (p === '/api/ca/open' && method === 'POST') {
+    return { ok: true, path: `${platform.data_dir}mitmproxy-ca-cert.cer` } as T
+  }
 
   // history / articles
   if (p === '/api/history/fetch' && method === 'POST') {
@@ -416,6 +434,11 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
   if (p === '/api/platform' && method === 'GET') return platform as T
   // 用系统默认程序打开本地路径；mock 下只回报成功，不真的开
   if (p === '/api/shell/open' && method === 'POST') {
+    return { ok: true, path: String(b.path || ''), is_dir: false } as T
+  }
+  // 在文件管理器里定位（周报模板路径双击）。原先没实现，落到最后的
+  // 「未实现的端点」直接抛 —— 演示时双击模板路径会弹一个报错
+  if (p === '/api/shell/reveal' && method === 'POST') {
     return { ok: true, path: String(b.path || ''), is_dir: false } as T
   }
   if (p === '/api/update/check' && method === 'GET') {

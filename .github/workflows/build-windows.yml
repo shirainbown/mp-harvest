@@ -1,0 +1,165 @@
+name: build-windows
+
+# 与 build-macos.yml 同一个 tag 触发，两边各出一个产物：
+#   MP-Harvest-mac-<ver>.zip / .dmg   （build-macos.yml）
+#   MP-Harvest-win-<ver>.zip          （本文件）
+#
+# ⚠️ 两边往**同一个 release** 传附件，所以：
+#   · 用同一个 concurrency 组串行化，避免同时创建 release 打架；
+#   · 都用 append_body，谁后跑谁追加，不会把对方写的说明覆盖掉。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 与开发机及 WINDOWS.md 的要求（3.13）对齐：发布产物不该跑在
+          # 与开发环境不同的解释器版本上。
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        shell: pwsh
+        run: |
+          cd mp_harvest/frontend
+          npm ci --no-audit --no-fund
+          npm run build
+          # PyInstaller 对缺失的 datas **只发警告**，照打不误 ——
+          # 前端构建悄悄失败了的话，产物会是一个「开窗全白」的包。这里直接卡死。
+          if (-not (Test-Path dist/index.html)) {
+            Write-Error "frontend/dist/index.html 不存在，前端构建失败"
+            exit 1
+          }
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -U pip
+          pip install -r mp_harvest/requirements.txt
+          pip install pyinstaller
+
+      # ⚠️ 这一步是**诊断**，不是发布门禁，所以 continue-on-error。
+      #
+      # 开发机是 macOS，这一套用例从没在 Windows 上跑过。第一次跑很可能有几条
+      # 断言平台语义的用例（例如断言 POSIX 路径形态）会红 —— 那是有用的信息，
+      # 但不该因此把整个产物卡住。真正决定「产物能不能用」的是下面那个
+      # 对**构建出来的 exe** 跑的 --self-check。失败详情在 job summary 里。
+      - name: Run test suite (diagnostic)
+        id: tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          python -m pytest mp_harvest/tests -q 2>&1 | Tee-Object -FilePath pytest.log
+          if ($LASTEXITCODE -ne 0) { Add-Content $env:GITHUB_STEP_SUMMARY "## ⚠️ 测试套在 Windows 上有失败`n```"; Get-Content pytest.log -Tail 60 | Add-Content $env:GITHUB_STEP_SUMMARY; Add-Content $env:GITHUB_STEP_SUMMARY "```" }
+
+      - name: Build app (PyInstaller)
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean `
+            mp_harvest/packaging/MP_Harvest_win.spec `
+            --distpath dist --workpath build/work
+          if (-not (Test-Path "dist/MP Harvest/MP Harvest.exe")) {
+            Write-Error "未生成 dist/MP Harvest/MP Harvest.exe"
+            exit 1
+          }
+
+      # 对**构建产物**跑自检：这是唯一能自动证明「这个 exe 真能起来」的手段。
+      # 退出码与 JSON 文件都要看 —— GUI 子系统程序的 stdout 在有些环境下拿不到。
+      - name: Self-check on the built exe
+        shell: pwsh
+        run: |
+          & "dist/MP Harvest/MP Harvest.exe" --self-check --out selfcheck.json
+          $code = $LASTEXITCODE
+          if (Test-Path selfcheck.json) {
+            Get-Content selfcheck.json
+            $result = Get-Content selfcheck.json -Raw | ConvertFrom-Json
+            if (-not $result.ok) {
+              Write-Error ("自检未通过：" + ($result.failed -join "; "))
+              exit 1
+            }
+          } else {
+            Write-Error "自检没有产出结果文件（退出码 $code）"
+            exit 1
+          }
+          if ($code -ne 0) { exit $code }
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          # 读者拿到的是一个干净的 MP Harvest\ 文件夹（与 mac 的 --keepParent 对称）。
+          # 应用内更新认得这一层：infra/platform/win._payload_root 会剥掉它。
+          #
+          # 版本号只从 **tag** 取；手动触发（workflow_dispatch）时 ref 是分支名，
+          # 直接拿来用会打出 MP-Harvest-win-main.zip —— 名字里没有版本号，
+          # 而应用内更新的 atom 兜底与 asset_prefix 过滤都按 <前缀><版本>.zip 拼地址。
+          # 那种情况退回 package.json 的版本（三处版本号之一）。
+          $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            (Get-Content mp_harvest/frontend/package.json -Raw | ConvertFrom-Json).version
+          }
+          Write-Host "打包版本：$ver（ref=$env:GITHUB_REF_TYPE/$env:GITHUB_REF_NAME）"
+          Compress-Archive -Path "dist/MP Harvest" -DestinationPath "MP-Harvest-win-$ver.zip" -Force
+
+          # 钉住 zip 的内部布局：解压出来 exe 与 _internal 必须同层，
+          # 否则用户解压后双击不到 exe、在线更新也会覆盖错层级。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path "MP-Harvest-win-$ver.zip"))
+          try {
+            $names = $zip.Entries | ForEach-Object { $_.FullName }
+            $need = @("MP Harvest/MP Harvest.exe", "MP Harvest/_internal/frontend/dist/index.html")
+            foreach ($n in $need) {
+              if ($names -notcontains $n) { Write-Error "zip 里缺少 $n"; exit 1 }
+            }
+          } finally { $zip.Dispose() }
+          Get-ChildItem "MP-Harvest-win-*.zip" | Format-List Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP-Harvest-win
+          path: |
+            MP-Harvest-win-*.zip
+            selfcheck.json
+            pytest.log
+          if-no-files-found: error
+
+      # 只有 tag 才建 release。手动触发（workflow_dispatch）时 ref 是分支，
+      # 不加这个条件会给分支建一个 release —— 那既不是发布，也会把
+      # 「最新 release」指到一份没验证过的构建上（用户点「检查更新」就会拿到它）。
+      # 手动触发的用途是**拿 artifact 去真机测**，不是发布。
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MP-Harvest-win-*.zip
+          # append_body：与 mac 那个 job 共用同一个 release，不能把对方的说明顶掉
+          append_body: true
+          body: |
+            ## MP Harvest ${{ github.ref_name }} · Windows
+
+            本次构建由 GitHub Actions 自动完成（windows-latest）。
+
+            **下载 `MP-Harvest-win-*.zip`，解压后双击 `MP Harvest.exe` 即用** ——
+            便携版，无需安装、无需管理员权限。数据保存在
+            `%APPDATA%\MP Harvest\data\`，卸载就是删掉整个文件夹。
+
+            ⚠️ 未做代码签名，首次运行 Windows SmartScreen 会拦一下：
+            点「更多信息」→「仍要运行」。

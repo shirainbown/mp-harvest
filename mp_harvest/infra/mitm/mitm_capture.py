@@ -296,9 +296,17 @@ class MitmCaptureService:
 
             platform = get_platform()
             if not platform.ca.status():
+                # 「输入管理员密码」只在 mac 侧成立；Windows 装 CA 无需管理员，
+                # 这句提示要按平台分支，否则 Windows 用户会一直等一个不出现的密码框
+                # （与前端 CredentialView 的 caStepText 同一口径）。
+                hint = (
+                    "并输入管理员密码完成信任"
+                    if getattr(platform.ca, "needs_admin", False)
+                    else "完成信任（无需管理员密码）"
+                )
                 return False, (
                     "CA 证书未被系统信任：开启抓包会劫持全机 HTTPS 导致断网。"
-                    "请先在「凭证管理」点「安装 CA 证书」并输入管理员密码完成信任，再启动抓包"
+                    f"请先在「凭证管理」点「安装 CA 证书」{hint}，再启动抓包"
                 )
             result = platform.proxy.enable(PROXY_PORT)
         except Exception as exc:  # noqa: BLE001

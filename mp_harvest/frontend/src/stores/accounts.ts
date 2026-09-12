@@ -145,7 +145,8 @@ export const useAccountsStore = defineStore('accounts', {
         if (ca) this.ca = ca
       }
     },
-    /** 在 Finder 中打开 CA 证书所在目录（2026-08-09 补后端端点） */
+    /** 用系统默认程序打开 CA 证书**文件本身**（唤起钥匙串/证书导入向导）。
+     *  不是「打开所在目录」—— 那条路会暴露同目录下的 CA 私钥与凭证文件。 */
     async openCaFolder() {
       const r = await call(rest.post<{ ok: boolean; path?: string }>('/api/ca/open'))
       if (r) useUiStore().toast(`已打开证书文件：${r.path || '…'}`)

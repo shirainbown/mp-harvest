@@ -165,12 +165,24 @@ class ExportRecords:
                 cond.append("account_id=?")
                 args.append(str(account_id))
             if out_dir is not None:
-                cond.append("out_path LIKE ? ESCAPE '\\'")
                 # LIKE 的 _ / % 是通配符，必须转义，否则 out_dir 含 "_" 时
-                # 会把同形兄弟目录（a_c vs abc）的记录也捞进来（2026-09 修复）
-                prefix = str(out_dir).rstrip("/")
+                # 会把同形兄弟目录（a_c vs abc）的记录也捞进来（2026-09 修复）。
+                #
+                # ⚠️ 分隔符**两种都要认**（2026-09 Windows 适配时发现）：写进来的
+                # out_path 是 str(Path)/abspath 的结果，Windows 上是反斜杠，而这里
+                # 原先硬拼 "/" —— LIKE 'C:\out/%' 一条都匹配不上。外层 except 会把
+                # SQL 异常静默吞掉返回 []，调用方再退化成「只渲染本批次」，症状就是
+                # 「导出目录页的跨批次汇总悄悄没了」。
+                #
+                # 不能只看当前平台的 os.sep：data/ 目录是鼓励整份备份、拷到另一台
+                # 机器的（见用户手册「备份 = 复制整个 data/」），所以在 mac 上读一份
+                # 从 Windows 拷过来的库是正常用法，反之亦然。SQLite 的 LIKE 不支持
+                # 字符集（没有 [...]），于是两个分隔符各写一条。
+                prefix = str(out_dir).rstrip("/\\")
                 prefix = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                args.append(prefix + "/%")
+                cond.append("(out_path LIKE ? ESCAPE '\\' OR out_path LIKE ? ESCAPE '\\')")
+                args.append(prefix + "\\\\" + "%")  # 反斜杠分隔（\\ 在 LIKE 里是字面量）
+                args.append(prefix + "/%")          # 正斜杠分隔
             if cond:
                 sql += " WHERE " + " AND ".join(cond)
             sql += " ORDER BY publish_ts DESC, exported_at DESC"

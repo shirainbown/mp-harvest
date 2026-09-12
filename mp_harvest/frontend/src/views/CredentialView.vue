@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 页面一：凭证管理（§5.4）
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import SButton from '../components/SButton.vue'
 import SIcon from '../components/SIcon.vue'
 import SInput from '../components/SInput.vue'
@@ -12,13 +12,33 @@ import SModal from '../components/SModal.vue'
 import ImportDrawer from './ImportDrawer.vue'
 import { openExternal } from '../api/desktop'
 import { useAccountsStore } from '../stores/accounts'
+import { useSettingsStore } from '../stores/settings'
 import { useUiStore } from '../stores/ui'
 import { useTicker, fmtCountdown } from '../composables/useTicker'
 import type { Account } from '../types'
 
+const settings = useSettingsStore()
+
 const accounts = useAccountsStore()
 const ui = useUiStore()
 const now = useTicker()
+
+/**
+ * 「安装 CA 证书」那一步的文案，按平台给。
+ *
+ * macOS 要把 CA 装进系统钥匙串，会弹管理员授权框；Windows 只装进**当前用户**的
+ * 根证书存储（`certutil -addstore -user Root`），全程不弹密码。原先这里写死
+ * 「输入管理员密码完成信任（仅此一次）」—— Windows 用户照着做会一直等一个永远
+ * 不出现的密码框，而安装其实早就成功了。
+ *
+ * `platform` 还没拉回来时给一句两个平台都成立的通用说法，别猜。
+ */
+const caStepText = computed(() => {
+  const needsAdmin = settings.platform?.ca_needs_admin
+  if (needsAdmin === true) return '点「安装 CA 证书」，输入管理员密码完成信任（仅此一次）'
+  if (needsAdmin === false) return '点「安装 CA 证书」，装到当前用户的证书存储（无需管理员密码，仅此一次）'
+  return '点「安装 CA 证书」完成系统信任（仅此一次）'
+})
 
 // ---- 添加表单：回车提交、loading 等待抓包、90s 超时 ----
 const name = ref('')
@@ -172,7 +192,7 @@ async function doMerge() {
           </template>
           <div style="line-height:1.7">
             首次使用三步：<br />
-            1. 点「安装 CA 证书」，输入管理员密码完成信任（仅此一次）；<br />
+            1. {{ caStepText }}；<br />
             2. 点「启动代理」；<br />
             3. 添加公众号后，在微信桌面内刷新该公众号已打开的文章，即可自动捕获凭证（30 分钟有效）。
           </div>

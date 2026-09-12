@@ -31,11 +31,259 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="macOS 使用无边框（hidden title bar）窗口",
     )
+    p.add_argument(
+        "--self-check",
+        action="store_true",
+        help="自检后退出：验证模块/frontend/dist/模板/平台层都就位（CI 用）",
+    )
+    p.add_argument(
+        "--out",
+        metavar="PATH",
+        default="",
+        help="与 --self-check 搭配：把自检结果写成 JSON 文件",
+    )
     return p.parse_args(argv)
+
+
+def self_check(out_path: str = "") -> int:
+    """启动自检：证明这份**产物**真的能用，而不只是「装上了」。
+
+    为什么需要它：开发机是 macOS，Windows 二进制只能靠 CI 与用户真机验证。这个开关
+    由 ``.github/workflows/build-windows.yml`` 在真实 Windows runner 上对**构建出来
+    的 exe** 执行，是唯一能自动发现「spec 漏打 datas / hiddenimports 缺了 / 平台分派
+    错了」的手段 —— 这几类故障的共同表现都是「窗口打开了，但里面什么都没有」。
+
+    三条纪律：
+
+    1. **不做任何有副作用的操作。** 不 enable/disable 系统代理、不装 CA 信任
+       （``recover_stale`` 也别碰）—— 这是在 CI runner 上跑的，改注册表是越界的。
+       只读状态、只在临时目录里生成一次 CA。
+    2. **结果同时写文件与 stdout。** 冻结版是 ``console=False`` 的 GUI 程序，
+       从资源管理器双击起来时根本没有 stdout；CI 里也必须靠退出码 + 文件双保险。
+    3. **任何一项不过就返回非零**，不是「打印完就算」。
+    """
+    import json
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    checks: list[dict[str, Any]] = []
+    info: dict[str, Any] = {}
+
+    def check(name: str, ok: bool, detail: str = "") -> bool:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+        return bool(ok)
+
+    # ── 模块：打包漏一个就是一个功能整块消失 ──
+    for mod in (
+        "webview",
+        "mitmproxy",
+        "mitmproxy_rs",
+        "cryptography",
+        "fastapi",
+        "uvicorn",
+        "jinja2",
+        "pypdf",
+        "certifi",
+        "bs4",
+        "lxml",
+    ):
+        try:
+            __import__(mod)
+            check(f"import {mod}", True)
+        except Exception as exc:  # noqa: BLE001
+            check(f"import {mod}", False, f"{type(exc).__name__}: {exc}")
+
+    # tkinter 只是免责声明弹窗的兜底（主路径是 user32.MessageBoxW / 系统弹窗），
+    # 缺了不算致命，但要看得见 —— 免得又出现「弹窗失败被当成用户拒绝」那种事。
+    try:
+        __import__("tkinter")
+        info["tkinter"] = True
+    except Exception:  # noqa: BLE001
+        info["tkinter"] = False
+
+    # WebView2 后端单独确认：pywebview 在 Windows 上靠 pythonnet 驱动 WinForms 宿主，
+    # 拿不到就退回 IE11 —— Vue 3 的产物在 IE11 上解析不了，结果是一个**纯白窗口**，
+    # 没有任何报错信息（2026-09 复查时发现）。
+    if sys.platform == "win32":
+        try:
+            __import__("clr")
+            __import__("webview.platforms.edgechromium")
+            check("EdgeChromium 后端（pythonnet/clr）", True)
+        except Exception as exc:  # noqa: BLE001
+            check("EdgeChromium 后端（pythonnet/clr）", False, f"{type(exc).__name__}: {exc}")
+
+    # ── 路径：四个根各不相同，报障时全靠它们 ──
+    from mp_harvest.infra.platform import paths
+
+    info["frozen"] = paths.is_frozen()
+    info["executable"] = sys.executable
+    info["meipass"] = getattr(sys, "_MEIPASS", None)
+    info["package_root"] = str(paths.package_root())
+    info["app_root"] = str(paths.app_root())
+    info["data_dir"] = str(paths.data_dir())
+    info["sys_platform"] = sys.platform
+
+    exe_dir = Path(sys.executable).resolve().parent
+    if paths.is_frozen() and sys.platform == "win32":
+        # onedir 布局：exe 与 _internal 同层。WinUpdater 靠这一点决定覆盖到哪。
+        check("onedir 布局（exe 同层的 _internal/）", (exe_dir / "_internal").is_dir(),
+              str(exe_dir))
+        check("package_root 不等于 exe 目录（说明 _MEIPASS 生效）",
+              paths.package_root() != exe_dir, str(paths.package_root()))
+
+    dist = paths.package_root() / "frontend" / "dist"
+    check("frontend/dist/index.html", (dist / "index.html").is_file(), str(dist))
+
+    # 模板用**运行时真正在用的那个解析函数**去查，而不是照着清单拼路径 ——
+    # 拼对了但函数找不到，打包就是无效的。
+    from mp_harvest.core import article_reader, weekly_report
+
+    tdir = article_reader._resolve_template_dir()
+    check("导出模板 article.html", (tdir / "article.html").is_file(), str(tdir))
+    wdir = weekly_report.resolve_template_dir()
+    check("周报内置模板 weekly.html",
+          (wdir / weekly_report.BUILTIN_TEMPLATE_NAME).is_file(), str(wdir))
+
+    # ── 数据目录可写（%APPDATA% 在某些受管环境里是只读或重定向的）──
+    try:
+        probe = paths.data_dir() / ".self_check_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        check("数据目录可写", True, str(paths.data_dir()))
+    except Exception as exc:  # noqa: BLE001
+        check("数据目录可写", False, f"{type(exc).__name__}: {exc}")
+
+    # ── 平台层：只读，绝不 enable/disable ──
+    try:
+        from mp_harvest.infra.platform import get_platform
+
+        p = get_platform()
+        info["platform"] = p.info()
+        check("平台层分派", True, str(info["platform"].get("os")))
+        # ca.status() 只读证书存储；顺带验证 certutil 能跑、输出能解码
+        info["ca_trusted"] = bool(p.ca.status())
+    except Exception as exc:  # noqa: BLE001
+        check("平台层分派", False, f"{type(exc).__name__}: {exc}")
+
+    # ── CA 生成链路（cryptography + mitmproxy 的 OpenSSL 栈），只在临时目录里做 ──
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            from mitmproxy import certs
+
+            certs.CertStore.from_store(Path(td), basename="selfcheck", key_size=2048)
+        check("CA 生成（mitmproxy CertStore）", True)
+    except Exception as exc:  # noqa: BLE001
+        check("CA 生成（mitmproxy CertStore）", False, f"{type(exc).__name__}: {exc}")
+
+    if sys.platform == "win32":
+        info["webview2"] = _webview2_runtime_version()
+        check("WebView2 运行时已安装", bool(info["webview2"]), str(info["webview2"]))
+
+    # ── HTTP：把整条装配（中间件 / 静态资源 / 路由）在进程内跑一遍 ──
+    # token 是每进程随机的，外部拿不到，只有在进程内自测才可行。
+    try:
+        from fastapi.testclient import TestClient
+
+        from mp_harvest.server import get_token
+        from mp_harvest.server.app import create_app
+
+        token = get_token()
+        with TestClient(create_app()) as client:
+            check("GET /（SPA 外壳）", client.get("/").status_code == 200)
+            check(
+                "GET /api/platform（带 token）",
+                client.get("/api/platform", params={"token": token}).status_code == 200,
+            )
+            check(
+                "无 token 必须 401",
+                client.get("/api/platform").status_code == 401,
+            )
+    except Exception as exc:  # noqa: BLE001
+        check("HTTP 装配", False, f"{type(exc).__name__}: {exc}")
+
+    failed = [c for c in checks if not c["ok"]]
+    payload = {
+        "ok": not failed,
+        "version": _app_version(),
+        "info": info,
+        "checks": checks,
+        "failed": [c["name"] for c in failed],
+    }
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if out_path:
+        try:
+            Path(out_path).write_text(text, encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+    # 冻结版从资源管理器双击起来时 sys.stdout 可能是 None —— 别在这儿炸
+    try:
+        if sys.stdout is not None:
+            sys.stdout.write(text + "\n")
+            sys.stdout.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    return 0 if not failed else 1
+
+
+def _app_version() -> str:
+    try:
+        from mp_harvest.infra.platform.base import APP_VERSION
+
+        return APP_VERSION
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _webview2_runtime_version() -> str:
+    """已安装的 WebView2 Evergreen 运行时版本号；没装返回空串。
+
+    键值来自微软文档的固定 GUID（{F3017226-…}）。装在 HKLM（系统级）或 HKCU（用户级）
+    两处之一，都查一遍。
+    """
+    try:
+        import winreg  # type: ignore
+    except ImportError:
+        return ""
+    guid = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    for root, path in (
+        (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{guid}"),
+        (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{guid}"),
+        (winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\EdgeUpdate\Clients\{guid}"),
+    ):
+        try:
+            with winreg.OpenKey(root, path, 0, winreg.KEY_QUERY_VALUE) as key:
+                value = str(winreg.QueryValueEx(key, "pv")[0] or "").strip()
+                if value:
+                    return value
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
 
 
 DEFAULT_PORT = 8765
 PORT_PROBE_LIMIT = 100
+
+
+def webview_start_kwargs() -> dict[str, Any]:
+    """``webview.start()`` 的参数（抽出是为了单测平台分支）。
+
+    - ``private_mode=False``：pywebview 默认 private_mode=True，Cocoa 启动时会清空全部
+      website data（cookie/localStorage 不保留）；置 False 使用持久化 datastore。
+      已核验 pywebview 6.2.1 __init__.py / cocoa.py。
+    - Windows 的 ``storage_path``：不传时 WebView2 的用户数据落在**所有 pywebview
+      应用共享的** ``%APPDATA%\\pywebview``（winforms.init_storage 的默认值）——
+      前端 localStorage 里的本地状态会跟别的 pywebview 应用串在一起，「卸载 =
+      删 %APPDATA%\\MP Harvest\\」也清不掉它。显式指到应用数据目录下，与
+      WINDOWS.md 承诺的 ``%APPDATA%\\MP Harvest\\data\\webview\\`` 一致。
+      macOS 不传：Cocoa 忽略该参数，保持既有行为不动（2026-09 真机已验）。
+    """
+    kwargs: dict[str, Any] = {"private_mode": False}
+    if sys.platform == "win32":
+        from mp_harvest.infra.platform import paths
+
+        kwargs["storage_path"] = str(paths.data_dir() / "webview")
+    return kwargs
 
 
 def find_free_port(start: int = DEFAULT_PORT, limit: int = PORT_PROBE_LIMIT) -> int:
@@ -150,6 +398,13 @@ def cleanup(server: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    # ⚠️ 自检必须排在免责声明门禁**之前**：未同意时 require_consent() 会
+    # return 2 静默退出（下几行就是），CI 上的全新机器永远拿不到自检结果，
+    # 看着就像「产物起不来」。见 self_check 的 docstring。
+    if args.self_check:
+        return self_check(args.out)
+
     try:
         from mp_harvest.core.consent import require_consent
 
@@ -286,23 +541,43 @@ def main(argv: list[str] | None = None) -> int:
 
     window.events.closed += _cleanup_and_exit
     try:
-        # B4：pywebview 默认 private_mode=True，Cocoa 启动时会清空全部
-        # website data（cookie/localStorage 不保留）；置 False 使用持久化
-        # datastore。已核验 pywebview 6.2.1 __init__.py / cocoa.py。
-        webview.start(private_mode=False)  # 阻塞至窗口关闭（macOS 必须在主线程）
+        webview.start(**webview_start_kwargs())  # 阻塞至窗口关闭（macOS 必须在主线程）
     finally:
         _cleanup_and_exit()
 
 
 def recover_stale_proxy() -> None:
     """启动自愈（2026-08-09）：异常退出把系统代理留在 127.0.0.1:8088 且端口已死
-    时自动关闭，避免全机 HTTPS 走死端口导致断网（含本机助手）。"""
+    时自动关闭，避免全机 HTTPS 走死端口导致断网（含本机助手）。
+
+    **同时写事件日志，不能只 print**（2026-09）：冻结版是 ``console=False`` 的
+    GUI 程序，Windows 上双击起来根本没有控制台，``print`` 出去的东西全丢了 ——
+    而这条消息恰恰是用户排查「为什么刚才上不了网」的唯一线索。日志在窗口起来后
+    可以在「日志」页看到。
+    """
     try:
         from mp_harvest.infra.platform import get_platform
 
         result = get_platform().proxy.recover_stale()
-        if result and "已恢复" in (result.message or ""):
-            print(f"[mp_harvest] {result.message}", flush=True)
+        message = (result.message or "") if result else ""
+        if not message:
+            return
+        if "已恢复" in message:
+            _log_boot("warn", message)
+            print(f"[mp_harvest] {message}", flush=True)
+        elif result and not result.ok:
+            # 自愈**失败**更要留痕：机器还在断网状态，用户得知道往哪看
+            _log_boot("error", f"残留代理自愈失败：{result.error or message}")
+    except Exception as exc:  # noqa: BLE001
+        _log_boot("error", f"残留代理自愈异常：{exc}")
+
+
+def _log_boot(level: str, message: str) -> None:
+    """把启动阶段的消息写进事件日志（失败不影响启动）。"""
+    try:
+        from mp_harvest.core.event_log import log_event
+
+        log_event(level, "app.startup", message)
     except Exception:  # noqa: BLE001
         pass
 

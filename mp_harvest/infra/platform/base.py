@@ -175,6 +175,31 @@ def _html_notes_to_markdown(fragment: str) -> str:
     return "\n\n".join(merged)
 
 
+# 本应用抓包代理的监听地址（ca_setup.PROXY_HOST/PROXY_PORT）。
+# 这里写死常量而**不 import ca_setup**：那个模块一被导入就会去建数据目录，
+# 而 _system_proxy 只是个读配置的函数，不该有这种副作用。
+OWN_PROXY_HOST = "127.0.0.1"
+OWN_PROXY_PORT = 8088
+
+
+def _is_own_capture_proxy(value: str, *, host: str = OWN_PROXY_HOST,
+                          port: int = OWN_PROXY_PORT) -> bool:
+    """这个代理地址是不是**本应用自己的抓包代理**（纯函数，可单测）。
+
+    是的话就不能当成「可用的系统代理」交出去：那时「跟随系统代理」等于让检查更新
+    与下载绕回本机 8088，能不能通完全取决于抓包代理是否还活着（用户下载到一半把
+    抓包停了就断）。mac 与 Windows 都会命中这种情况 —— 抓包开着的时候，系统代理
+    本来就指向我们自己。
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    for prefix in ("http://", "https://"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    return text.rstrip("/") == f"{host}:{port}"
+
+
 def _system_proxy() -> str:
     """当前系统代理（返回 ``http://host:port``，取不到返回空串）。
 
@@ -187,7 +212,26 @@ def _system_proxy() -> str:
     而 macOS 上它依赖 ``_scproxy`` 这个 C 扩展；PyInstaller 冻结后一旦漏打包，
     ``getproxies()`` 会**静默返回空**（spec 已显式打包 ``_scproxy``）。所以本函数
     在 ``getproxies()`` 之外还补了一条不依赖 C 扩展的 ``scutil --proxy`` 读取。
+
+    Windows（2026-09 适配）：**不走 ``getproxies()``**。它读的是同一个注册表键
+    ``ProxyServer``，但会把值原样返回 —— 而那个值可以写成
+    ``http=127.0.0.1:7897;https=127.0.0.1:7898``，拼成 URL 是非法地址，表现就是
+    「开着 Clash 却提示连不上 GitHub」。交给 ``win.read_system_proxy`` 解析。
     """
+    detected = _detect_system_proxy()
+    return "" if _is_own_capture_proxy(detected) else detected
+
+
+def _detect_system_proxy() -> str:
+    """原样探测系统代理，**不做**「是不是本应用自己」的过滤。"""
+    if sys.platform == "win32":
+        try:
+            from mp_harvest.infra.platform.win import read_system_proxy
+
+            return read_system_proxy()
+        except Exception:  # noqa: BLE001
+            return ""
+
     import urllib.request
 
     try:
@@ -434,13 +478,31 @@ def _parse_version(tag: str) -> tuple[int, ...]:
         return (0,)
 
 
-def pick_zip_url(assets: list[dict[str, Any]], suffix: str = ".zip") -> str:
-    """从 release assets 挑第一个匹配后缀的下载地址（纯函数）。"""
+def pick_zip_url(
+    assets: list[dict[str, Any]], suffix: str = ".zip", prefix: str = ""
+) -> str:
+    """从 release assets 挑本平台更新包的下载地址（纯函数）。
+
+    **必须按平台前缀过滤**（2026-09，Windows 版上线时发现）：同一个 release 里
+    从此同时挂着 ``MP-Harvest-mac-<ver>.zip`` 与 ``MP-Harvest-win-<ver>.zip``，
+    只按后缀挑就会拿到**对面平台**的包，而且两个方向都是静默失败：
+
+    - mac 拿到 Windows 包：``apply`` 里 ``ls -d *.app`` 找不到东西 → 脚本直接
+      ``exit 1``，应用已经关了却不再起来，什么都不显示；
+    - Windows 拿到 mac 包：``xcopy`` 把 ``MP Harvest.app/...`` 抄进安装目录，
+      最后 ``start`` 起来的还是**原来那个** exe → 「更新成功但版本没变」。
+
+    ``prefix`` 为空时退回旧行为（只判后缀），供没有平台前缀的调用方使用。
+    """
+    want = str(prefix or "").lower()
     for asset in assets or []:
         name = str(asset.get("name") or "")
         url = str(asset.get("browser_download_url") or "")
-        if url and name.lower().endswith(suffix):
-            return url
+        if not url or not name.lower().endswith(suffix):
+            continue
+        if want and not name.lower().startswith(want):
+            continue
+        return url
     return ""
 
 
@@ -590,7 +652,9 @@ class GithubUpdater(Updater):
             available=available,
             version=tag,
             release_url=str(payload.get("html_url") or RELEASE_PAGE),
-            zip_url=pick_zip_url(payload.get("assets") or [], self.asset_suffix),
+            zip_url=pick_zip_url(
+                payload.get("assets") or [], self.asset_suffix, self.asset_prefix
+            ),
             notes=str(payload.get("body") or "").strip(),
             message=(f"发现新版本 {tag}" if available else f"已是最新版（{APP_VERSION}）"),
         )
