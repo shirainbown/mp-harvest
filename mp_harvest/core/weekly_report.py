@@ -773,6 +773,13 @@ def normalize_wechat(
         # AI 筛选的**最终判定**（内容筛选优先，没有则标题筛选；都没判过是 None）。
         # 只有明确的 False 才该被排除 —— 未判定 ≠ 被否掉（2026-09）
         "verdict": row.get("keep"),
+        # 「正文反复拿不到、已放弃自动重试」（见 state.BODY_GIVE_UP_AFTER）。
+        # 这类文章每期都被重新抓一遍、每期报一次失败，且永远不会成功
+        # （实测：转发/分享型消息的正文不在那一页）—— 从候选里排除。
+        # ⚠️ 代价是**它也不再进周报**（哪怕标题很相关）：列表里能看到它的状态、
+        # 也能勾选手动重跑，但报告本身不会提它。要改回「照收但不再抓正文」，
+        # 把下面 _keep 里那条判断去掉、同时让 needs_body 认这个标记即可。
+        "give_up": bool(row.get("body_give_up")),
         # 上面那条判定的**理由**（合并时按同一优先级写进 row["reason"]）。
         # 只用于「候选明细」展示：让人看得出这篇为什么在/不在池子里。
         "verdict_reason": str(row.get("reason") or ""),
@@ -861,6 +868,8 @@ def collect_candidates(
     def _keep(c: dict[str, Any] | None) -> bool:
         if c is None or not _in_window(c["publish_ts"], start_ts, end_ts):
             return False
+        if c.get("give_up"):
+            return False      # 正文拿不到且已放弃 —— 不进候选（见 normalize_wechat）
         return not (only_kept and c.get("verdict") is False)
 
     for row, name, account_id in wechat_rows:
@@ -892,6 +901,9 @@ def needs_body(it: dict[str, Any]) -> bool:
     """这篇候选是不是只有标题/摘要（没有正文）。"""
     if it.get("kind") != "公众号":
         return False          # 外部条目的摘要本身就是可判定内容，不必联网抓
+    if it.get("give_up"):
+        # 正文反复拿不到、已放弃：再抓也只是每期多一条失败
+        return False
     if not str(it.get("url") or "").strip():
         return False
     return len(str(it.get("text") or "").strip()) < BODY_MIN_CHARS
@@ -928,12 +940,10 @@ def fetch_missing_bodies(
         parsed = article_reader.fetch_and_parse_article(
             str(it["url"]), cred=cred_for(str(it.get("source_id") or ""))
         )
-        if not parsed.get("content_found", True):
-            # 页面没有 #js_content：多半是微信的环境校验页，拿它判定毫无意义
-            raise RuntimeError("页面没有正文（可能触发了微信的环境校验）")
         text = str(parsed.get("body_text") or "").strip()
-        if len(text) < 20:
-            raise RuntimeError("正文过短或无实质内容")
+        if not parsed.get("content_found", True) or len(text) < 20:
+            # 一句能解释原因的话（共用实现，与内容筛选那边口径一致）
+            raise RuntimeError(article_reader.body_failure_reason(parsed))
         return text, str(parsed.get("body_html") or "")
 
     results: dict[str, Any] = {}

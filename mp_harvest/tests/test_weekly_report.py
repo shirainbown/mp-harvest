@@ -1573,3 +1573,50 @@ def test_candidate_carries_its_verdict():
     got = wr.collect_candidates(
         wechat_rows=[(_cand("a1", "甲"), "号A", "acct-A")], start_ts=0, end_ts=0)
     assert "verdict" in got[0]
+
+
+# ── 正文反复拿不到的文章不进候选（2026-09）──────────────────────────
+#
+# 这类文章（实测：转发/分享型消息，正文不在那一页）永远抓不到正文，
+# 而候选规则是「未判定照收」+「正文短就补抓」—— 于是每期都被重抓一遍、
+# 每期在结果里报一次「失败 N 篇」。够次数后从候选里排除。
+
+
+def _wechat_cand(**over) -> dict:
+    row = {
+        "title": "标题",
+        "link": "https://mp.weixin.qq.com/s/x",
+        "identity": "art-x",
+        "publish_ts": 1786000000,
+    }
+    row.update(over)
+    return row
+
+
+def test_given_up_article_is_excluded_from_candidates():
+    from mp_harvest.core.weekly_report import collect_candidates
+
+    rows = [
+        (_wechat_cand(identity="art-ok"), "号", "acc1"),
+        (_wechat_cand(identity="art-dead", body_give_up=True), "号", "acc1"),
+    ]
+    cands = collect_candidates(
+        wechat_rows=rows, start_ts=1785900000, end_ts=1786100000, only_kept=True
+    )
+    keys = [c["key"] for c in cands]
+    assert len(keys) == 1, f"已放弃的那篇不该进候选：{keys}"
+    assert "art-ok" in keys[0]
+
+
+def test_given_up_article_is_not_refetched():
+    """双重保险：即便有人绕过 collect_candidates 直接调 needs_body，也不该再抓。"""
+    from mp_harvest.core.weekly_report import needs_body, normalize_wechat
+
+    c = normalize_wechat(_wechat_cand(body_give_up=True))
+    assert c is not None and c["give_up"] is True
+    c["text"] = ""      # 没有正文
+    assert needs_body(c) is False, "已放弃的不该再触发补抓"
+    # 没这个标记时照常要抓（别把整条路关掉）
+    c2 = normalize_wechat(_wechat_cand())
+    c2["text"] = ""
+    assert needs_body(c2) is True

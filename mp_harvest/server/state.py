@@ -391,6 +391,60 @@ def merge_article_bodies(account_id: str, bodies: list[dict[str, Any]]) -> None:
         _save_articles_to_disk(key)
 
 
+# 「正文反复拿不到」几次之后就不再自动重试（2026-09）。
+#
+# 为什么需要这个：正文取不到的文章会一直停在「待内容筛选」，而周报的候选规则是
+# 「未判定照收」—— 于是它**每期都被重新抓一遍、每期都报一次失败**。实测用户库里有
+# 一类文章（转发/分享型消息）正文根本不在那一页，永远不会成功。
+#
+# 为什么**不是**判成「丢弃」：那正是之前修掉的 bug —— 一次网络抖动就把文章永久
+# 钉成「AI 判定为不相关」，且不可逆。这里只记「拿不到正文」这件事本身，
+# 不动判定；列表里能看到，用户想重试可以勾选后手动重跑（见 ai.py 的 ids 分支）。
+BODY_GIVE_UP_AFTER = 3
+
+
+def merge_body_failures(
+    account_id: str, failures: list[dict[str, Any]]
+) -> None:
+    """记一次「正文没拿到」：累加计数、存下原因，够次数就标记不再自动重试。
+
+    ``failures`` 每项：``{"identity": ..., "reason": ...}``（identity 取不到就用 link）。
+    **只写``body_*``字段**，绝不碰 ``content_keep``/``keep`` —— 判定只能由 AI 给。
+    """
+    key_of = lambda a: str(a.get("identity") or a.get("link") or "")  # noqa: E731
+    with _lock:
+        key = str(account_id)
+        if key not in _articles:
+            _load_articles_from_disk(key)
+        rows = _articles.get(key)
+        if not rows:
+            return
+        by_key = {key_of(f): f for f in failures if key_of(f)}
+        for row in rows:
+            f = by_key.get(key_of(row))
+            if not f:
+                continue
+            count = int(row.get("body_fail_count") or 0) + 1
+            row["body_fail_count"] = count
+            row["body_error"] = str(f.get("reason") or "")
+            # 一旦放弃就**不再降级回来**：这几篇正文多半永远不会成功，
+            # 来回翻转只会让「每期重试」的噪声回来
+            if count >= BODY_GIVE_UP_AFTER:
+                row["body_give_up"] = True
+        _save_articles_to_disk(key)
+
+
+def merge_body_failures_by_account(failures: list[dict[str, Any]]) -> None:
+    """按 ``_account_id`` 分账号记失败（「全部公众号」筛选时用）。"""
+    by_account: dict[str, list[dict[str, Any]]] = {}
+    for f in failures:
+        aid = _account_of(f)
+        if aid:
+            by_account.setdefault(aid, []).append(f)
+    for aid, items in by_account.items():
+        merge_body_failures(aid, items)
+
+
 def _account_of(row: dict[str, Any]) -> str:
     return str(row.get("_account_id") or row.get("account_id") or "")
 

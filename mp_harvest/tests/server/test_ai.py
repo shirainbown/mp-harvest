@@ -558,3 +558,129 @@ def test_content_filter_ids_without_title_keep_says_why(client, auth):
     assert resp.status_code == 400
     detail = resp.json()["detail"]
     assert "标题" in detail and "选中" in detail, detail
+
+
+# ── 正文反复拿不到 → 记原因、够次数就停（2026-09）──────────────────
+#
+# 用户问「拿不到正文为什么内容筛选时没被剔除」。答案是**故意不剔除**：剔除
+# （写 content_keep=False）是不可逆的，一次网络抖动就把文章永久钉成「AI 判定不
+# 相关」，而且跟真判定长得一样。但一直不管也不行 —— 这类文章（转发/分享型消息，
+# 正文根本不在那一页）会每期被重抓、每期报一次失败。折中是：记下原因 + 够
+# BODY_GIVE_UP_AFTER 次就停止自动重试，**手动勾选仍可强制重跑**。
+
+
+def _failing_fetch(monkeypatch, why="正文过短或无实质内容"):
+    """让 article_reader.fetch_and_parse_article 每次都拿不到正文。"""
+    from mp_harvest.core import article_reader as ar
+
+    monkeypatch.setattr(
+        ar,
+        "fetch_and_parse_article",
+        lambda url, **kw: {"content_found": True, "body_text": "", "body_html": "", "title": "t"},
+    )
+    return why
+
+
+def _run_content(client, auth, account_id, ids=None):
+    payload = {"account_id": account_id}
+    if ids:
+        payload["ids"] = ids
+    r = client.post("/api/ai/filter-content", params=auth, json=payload)
+    assert r.status_code == 202, r.text
+    return wait_task(r.json()["task_id"])
+
+
+def test_body_failure_is_recorded_with_reason(client, auth, monkeypatch):
+    """拿不到正文：计数 + 原因落盘（原先只广播，重启就没了）。"""
+    from mp_harvest.server import state
+
+    _failing_fetch(monkeypatch)
+    acc = _prepare_articles(client, auth)
+    state.set_articles(acc["id"], [_mk("A", title_keep=True)])
+    assert _run_content(client, auth, acc["id"]).status == "done"
+
+    row = state.get_articles(acc["id"])[0]
+    assert row["body_fail_count"] == 1
+    assert "正文过短" in row["body_error"]
+    assert not row.get("body_give_up"), "第一次失败不该放弃"
+    # ⚠️ 绝不能顺手写判定 —— 那正是被修掉的「网络抖动 = 永久丢弃」
+    assert row.get("content_keep") is None
+    assert row.get("keep") is None
+
+
+def test_body_failure_gives_up_after_three_tries(client, auth, monkeypatch):
+    """连续 BODY_GIVE_UP_AFTER 次之后标记放弃，并且**不再自动重试**。"""
+    from mp_harvest.server import state
+
+    _failing_fetch(monkeypatch)
+    acc = _prepare_articles(client, auth)
+    state.set_articles(acc["id"], [_mk("A", title_keep=True)])
+    for _ in range(state.BODY_GIVE_UP_AFTER):
+        _run_content(client, auth, acc["id"])
+
+    row = state.get_articles(acc["id"])[0]
+    assert row["body_fail_count"] == state.BODY_GIVE_UP_AFTER
+    assert row["body_give_up"] is True
+
+    # 再跑一次：不该再抓（次数不再增长）
+    before = state.get_articles(acc["id"])[0]["body_fail_count"]
+    task = _run_content(client, auth, acc["id"])
+    assert task.result["fetch_failed"] == 0, "已放弃的不该再被重试"
+    assert state.get_articles(acc["id"])[0]["body_fail_count"] == before
+
+
+def test_manual_selection_forces_retry_of_given_up(client, auth, monkeypatch):
+    """勾选重跑 = 明确要求再试一次，放弃标记不该挡住它（唯一的重试入口）。"""
+    from mp_harvest.server import state
+
+    _failing_fetch(monkeypatch)
+    acc = _prepare_articles(client, auth)
+    state.set_articles(
+        acc["id"], [_mk("A", title_keep=True, body_give_up=True, body_fail_count=9)]
+    )
+    rows = client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()
+    task = _run_content(client, auth, acc["id"], ids=[rows[0]["id"]])
+    assert task.result["fetch_failed"] == 1, "手动指定就该重试"
+    assert state.get_articles(acc["id"])[0]["body_fail_count"] == 10
+
+
+def test_body_state_is_exposed_to_the_list(client, auth, monkeypatch):
+    """列表要能看到「为什么它还在待筛选」—— 这是用户要求的可见性。"""
+    from mp_harvest.server import state
+
+    _failing_fetch(monkeypatch)
+    acc = _prepare_articles(client, auth)
+    state.set_articles(acc["id"], [_mk("A", title_keep=True)])
+    _run_content(client, auth, acc["id"])
+
+    row = client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()[0]
+    assert row["body_fail_count"] == 1
+    assert "正文过短" in row["body_error"]
+    assert row["body_give_up"] is False
+
+
+def test_body_failure_broadcast_does_not_fake_a_verdict(client, auth, monkeypatch):
+    """失败时的**实时推送**也不能带上判定 —— 前端会当场把这篇显示成「过滤」。
+
+    那条推送载荷只是 ``dict(art)`` 的副本、不会写回缓存，所以它错得「不持久」，
+    刷新一下又变回待判。这种「显示一会儿红、刷新又好了」最难被当成 bug 报上来，
+    可它确实是错的：正文没拿到 ≠ 判定为不相关。
+    """
+    from mp_harvest.server import state
+    from mp_harvest.server.routes import ai as ai_routes
+
+    _failing_fetch(monkeypatch)
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        ai_routes, "broadcast_event", lambda t, p=None: events.append((t, p))
+    )
+    acc = _prepare_articles(client, auth)
+    state.set_articles(acc["id"], [_mk("A", title_keep=True)])
+    assert _run_content(client, auth, acc["id"]).status == "done"
+
+    pushes = [p for t, p in events if t == "ai.batch"]
+    assert pushes, "失败也该推一条（前端要即时看到「正文没拿到」）"
+    art = pushes[-1]["articles"][0]
+    assert art["content_verdict"] is None, f"失败被推成了判定：{art}"
+    assert art["verdict"] != "drop", f"失败被推成了「过滤」：{art}"
+    assert "正文" in str(art["content_reason"]), "要推原因，不能空着"

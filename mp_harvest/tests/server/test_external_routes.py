@@ -183,8 +183,12 @@ def test_items_merge_verdicts_from_cache(client, auth, tmp_path, fake_core):
     """判定结果从 AI 缓存合并进列表行（外部条目不另存判定，避免两处真相）。"""
     src = _add(client, auth, _make_dir(tmp_path))
     _scan(client, auth, src["id"])
+    # ⚠️ 夹具必须是**真实缓存条目的形状**：真缓存里只有 ``title_keep``/
+    # ``title_reason``，**没有** ``keep``/``reason``（那是列表端要现算出来的）。
+    # 原先这里顺手塞了 keep/reason，于是「列表端没算最终判定」这个 bug 一直绿
+    # —— 夹具比现实更宽容，测试就成了摆设（2026-09）。
     fake_core.ai_filter._verdicts["title"]["ext:arxiv:2608.1"] = {
-        "keep": True, "reason": "相关", "title_keep": True, "title_reason": "相关"
+        "title_keep": True, "title_reason": "相关"
     }
     rows = client.get("/api/external/items", params=auth).json()
     hit = next(r for r in rows if r["item_key"] == "arxiv:2608.1")
@@ -393,3 +397,115 @@ def test_format_text_has_no_markdown_markers(client, auth):
         for key, val in f.items():
             assert "**" not in str(val), f"字段 {f['name']} 的 {key} 里有 markdown 标记：{val}"
     assert "**" not in b["example"]
+
+
+# ── 外部条目的「最终判定」（2026-09 用户报：筛完看不出区别）──────────
+#
+# 外部条目不把判定存进自己的库（避免两处真相），判定只活在 ai_filter 的两阶段
+# 缓存里，读的时候合并。**合并出 keep/reason 这一步原先漏了**：`_core_row` 只把
+# `title_keep`/`title_reason` 放进行里，而界面「判定」列读的是 `keep` ——
+# 于是筛完仍然是满屏「待判」，用户看到的结论是「AI 筛选根本没生效」。
+
+
+def _seed_verdicts(fake_core, *, title=None, content=None) -> None:
+    """往假模块的判定桶里塞条目。
+
+    ⚠️ 条目必须是**真实缓存的形状**（只有 ``title_keep``/``title_reason`` 这种
+    带前缀的字段，没有 ``keep``/``reason``）—— 列表端的最终判定是**现算**的，
+    夹具里顺手塞 keep 会让「没算」这个 bug 一直绿（2026-09 就是这么漏掉的）。
+
+    也**不能往磁盘写缓存文件**：server 契约测试把 ``core.ai_filter`` 换成了假模块，
+    它根本不读文件 —— 那样写出来的用例要么恒绿，要么依赖别的用例留下的内存状态
+    （第一版两条测试就是这样互相顶包的，单跑必红）。
+    """
+    for bucket, entries in (("title", title), ("content", content)):
+        if entries:
+            fake_core.ai_filter._verdicts[bucket].update(entries)
+
+
+def _items(client, auth) -> list[dict]:
+    return client.get("/api/external/items", params=auth).json()
+
+
+def test_items_derive_final_verdict_from_title_cache(client, auth, tmp_path, fake_core):
+    """标题阶段判过 → 列表的 verdict/reason 必须有值（不是「待判」）。"""
+    src = _add(client, auth, _make_dir(tmp_path))
+    _scan(client, auth, src["id"])
+    assert {r["verdict"] for r in _items(client, auth)} == {None}, "前提：还没判定过"
+
+    _seed_verdicts(
+        fake_core,
+        title={
+            "ext:arxiv:2608.1": {"title_keep": True, "title_reason": "标题相关"},
+            "ext:arxiv:2608.2": {"title_keep": False, "title_reason": "标题无关"},
+        },
+    )
+    rows = {r["title"]: r for r in _items(client, auth)}
+    assert rows["甲"]["verdict"] == "keep" and rows["甲"]["reason"] == "标题相关"
+    assert rows["乙"]["verdict"] == "drop" and rows["乙"]["reason"] == "标题无关"
+    # 两阶段的字段也照旧透出（界面按它显示阶段明细）
+    assert rows["甲"]["title_verdict"] == "keep"
+
+
+def test_content_verdict_wins_over_title(client, auth, tmp_path, fake_core):
+    """内容筛选是第二阶段，它的判定才是最终意见；理由也要跟着它自己那阶段。"""
+    src = _add(client, auth, _make_dir(tmp_path))
+    _scan(client, auth, src["id"])
+    _seed_verdicts(
+        fake_core,
+        title={"ext:arxiv:2608.1": {"title_keep": True, "title_reason": "标题说留"}},
+        content={"ext:arxiv:2608.1": {"content_keep": False, "content_reason": "正文说扔"}},
+    )
+    row = next(r for r in _items(client, auth) if r["title"] == "甲")
+    assert row["verdict"] == "drop", row
+    assert row["reason"] == "正文说扔", "理由必须来自内容阶段，不能张冠李戴"
+    assert row["title_verdict"] == "keep" and row["content_verdict"] == "drop"
+
+
+def test_unjudged_item_stays_pending(client, auth, tmp_path, fake_core):
+    """没判过的条目保持待判 —— 不能因为「合并判定」这步就冒出一个默认值。"""
+    src = _add(client, auth, _make_dir(tmp_path))
+    _scan(client, auth, src["id"])
+    _seed_verdicts(
+        fake_core,
+        title={"ext:arxiv:2608.1": {"title_keep": True, "title_reason": "只有这一条判过"}},
+    )
+    rows = {r["title"]: r for r in _items(client, auth)}
+    assert rows["甲"]["verdict"] == "keep"
+    assert rows["乙"]["verdict"] is None and rows["乙"]["reason"] == ""
+
+
+def test_weekly_and_list_agree_on_external_verdicts(client, auth, tmp_path, fake_core):
+    """**漂移守卫**：周报与列表对同一批外部条目必须算出同样的判定。
+
+    2026-09 的 bug 正是这两处不一致：周报那份（``_external_verdicts``）算出了
+    最终判定、筛选确实生效；列表那份没算，界面全是「待判」。两处各写一遍优先级
+    规则必然再次漂移，所以现在共用 ``core.verdicts.final_verdict``，这条用例盯着
+    「共用」这件事本身。
+
+    注：这里用的是假模块的内存判定（契约测试只验证「接线」）；优先级规则本身
+    由 ``tests/test_verdicts.py`` 用真实现覆盖。
+    """
+    from mp_harvest.server.routes import weekly as weekly_mod
+
+    src = _add(client, auth, _make_dir(tmp_path))
+    _scan(client, auth, src["id"])
+    _seed_verdicts(
+        fake_core,
+        title={
+            "ext:arxiv:2608.1": {"title_keep": True, "title_reason": "标题留"},
+            "ext:arxiv:2608.2": {"title_keep": False, "title_reason": "标题扔"},
+        },
+        content={"ext:arxiv:2608.2": {"content_keep": True, "content_reason": "正文留"}},
+    )
+
+    listed = {
+        r["id"].split(":", 1)[1]: (r["verdict"], r["reason"]) for r in _items(client, auth)
+    }
+    weekly = weekly_mod._external_verdicts()
+    assert listed, "列表没有条目，用例白跑"
+    for key, (verdict, reason) in listed.items():
+        w = weekly.get(key)
+        assert w is not None, f"周报没认出这条：{key}"
+        assert w["keep"] == (verdict == "keep"), f"{key} 判定不一致：周报 {w} vs 列表 {verdict}"
+        assert w["reason"] == reason, f"{key} 理由不一致：{w['reason']!r} vs {reason!r}"

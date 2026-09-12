@@ -222,12 +222,29 @@ const stageTabs = [
 ]
 const viewTabs = computed(() => articles.stageTabs)
 
+/** 「正文没拿到」的说明 —— 这几篇一直停在待筛选，用户有权知道为什么。
+ *
+ * 原先这种情况什么都不显示（内容判定没写、正文也没拿到），界面上跟「你还没
+ * 跑过筛选」长得一样，于是只能去执行日志里翻（2026-09 用户问「为什么没被剔除」）。
+ * 文案里带上次数和「已放弃自动重试」——放弃是**不会自己恢复**的状态，
+ * 不说清楚用户会一直等它好。
+ */
+function bodyFailLabel(a: Article): string {
+  if (!a.body_error) return ''
+  const n = a.body_fail_count || 0
+  return a.body_give_up
+    ? `正文取不到（试过 ${n} 次，已停止自动重试）：${a.body_error}`
+    : `正文没拿到（第 ${n} 次）：${a.body_error}`
+}
+
 function rowReason(a: Article) {
   // 外部条目不参与「阶段」切换（那是公众号两阶段筛选的概念），直接取最有信息量的一条
   if (rowIsExternal(a)) return a.content_reason || a.title_reason || a.reason || '未判定'
   if (articles.aiStage === 'title') return a.title_reason || '未做标题筛选'
-  if (articles.aiStage === 'content') return a.content_reason || '未做内容筛选'
-  return a.reason
+  if (articles.aiStage === 'content') {
+    return a.content_reason || bodyFailLabel(a) || '未做内容筛选'
+  }
+  return a.reason || bodyFailLabel(a)
 }
 
 // ---- 选择 & 导出 HTML ----

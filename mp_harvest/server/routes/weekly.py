@@ -141,18 +141,14 @@ def _external_verdicts() -> dict[str, dict[str, Any]]:
             bucket.update(ai_mod.load_verdicts(path, prefix=prefix) or {})
         except Exception:  # noqa: BLE001
             continue
+    from mp_harvest.core import verdicts as verdicts_mod
+
     for key in set(title) | set(content):
-        c = content.get(key) or {}
-        t = title.get(key) or {}
-        ck = c.get("content_keep")
-        tk = t.get("title_keep")
-        keep = ck if ck is not None else tk
+        # 优先级规则与列表端**共用同一份实现**（core.ai_filter.final_verdict）：
+        # 这里曾经各写一遍，结果一边改一边没改就漂移（2026-09）。
+        keep, reason = verdicts_mod.final_verdict(title.get(key), content.get(key))
         if keep is not None:
-            out[key] = {
-                "keep": bool(keep),
-                "reason": str((c.get("content_reason") if ck is not None
-                               else t.get("title_reason")) or ""),
-            }
+            out[key] = {"keep": keep, "reason": reason}
     return out
 
 

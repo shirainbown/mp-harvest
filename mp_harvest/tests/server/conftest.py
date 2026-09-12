@@ -319,6 +319,11 @@ def _fake_article_reader() -> types.ModuleType:
 
     mod.fetch_and_parse_article = fetch_and_parse_article
 
+    # 正文拿不到时的解释文案：与真实实现同契约（路由在失败分支上会调它）。
+    # 上面的假实现总是成功，所以今天走不到；留着是为了「哪天有测试要造失败」
+    # 时不会因为缺这个函数而 AttributeError。
+    mod.body_failure_reason = lambda parsed: "正文过短或无实质内容"
+
     # 周报归档复用 article_reader 的这几个入口（2026-09）。这里给语义等价的
     # 轻量实现 —— 真实的排版细节由 tests/test_weekly_report.py 用真模块覆盖，
     # 本文件只保证 server 层拿到符合契约的返回值。
@@ -504,7 +509,14 @@ def _fake_ai_filter() -> types.ModuleType:
     _verdicts: dict[str, Any] = {"title": {}, "content": {}}
 
     def load_verdicts(cache_path, prefix=""):
-        key = "content" if prefix else "title"
+        # 按**文件名**分桶 —— 真实现就是按传入的 cache_path 读不同文件，
+        # ``prefix`` 只用于旧格式迁移。原先按 prefix 真假分桶，与真实语义对不上：
+        # 周报传的是 prefix="title_"，会被分到 content 桶去（2026-09 发现，
+        # 正好是「两处判定漂移」那个 bug 的邻居）。
+        # 只看**文件名**：用整个路径判断会被测试的临时目录名带偏 ——
+        # pytest 的 tmp_path 里带着用例名，`test_content_...` 这种名字会让
+        # 标题缓存也被判成内容桶（写这条时真踩了，用例当场红给我看）。
+        key = "content" if "content" in Path(cache_path).name else "title"
         return dict(_verdicts[key])
 
     mod.load_verdicts = load_verdicts

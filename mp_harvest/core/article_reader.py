@@ -218,8 +218,22 @@ def sanitize_article_html(fragment: str) -> str:
     soup = BeautifulSoup(fragment, "html.parser")
 
     for tag in list(soup.find_all(True)):
-        if not isinstance(tag, Tag) or tag.name is None:
-            continue  # 已随父节点被 decompose
+        # 「已随父节点被丢掉」要用 bs4 的公开属性 ``decomposed`` 判断。
+        #
+        # ⚠️ 原先判的是 ``tag.name is None`` —— bs4 4.15 的 ``decompose()`` 把 name
+        # 设成**空字符串**、并 ``__dict__.clear()``（attrs 随之变成 None），所以那条
+        # 守卫整条失效，紧接着 ``tag.get("id")`` 就抛
+        # ``'NoneType' object has no attribute 'get'``（2026-09 用户报的单篇导出失败）。
+        # 触发条件：**被丢掉的标签里还有子标签** —— ``<svg>`` 就是典型
+        # （正文里的矢量图，含 <path>/<ellipse>）。纯文本的 <script> 不会触发，
+        # 所以这个问题藏了很久。
+        #
+        # 两个判断（``decomposed`` / 空 name）在 bs4 4.15 上**互为冗余**（变异测试
+        # 证明删掉任一个都还有另一条兜住），但都要留：各版本行为不同 —— 新版把
+        # name 置空串，旧版置 None。只写一条会在升级/降级 bs4 时静默失效，
+        # 而失效的表现是「带矢量图的文章整篇导出失败」。
+        if not isinstance(tag, Tag) or tag.decomposed or not tag.name:
+            continue
         name = tag.name.lower()
 
         # id 在属性白名单外，先基于 id 处理再清洗
@@ -983,6 +997,47 @@ def fetch_article_html(
     return resp.text
 
 
+# 正文短于这个长度就认为「这一页没有正文」——与周报 fetch_missing_bodies 的
+# 阈值一致（那边 20 字以下报「正文过短或无实质内容」）。
+_MIN_BODY_CHARS = 20
+
+
+def share_source_url(html_text: str) -> str:
+    """「分享」型消息的中转页里，指向**原文**的链接；没有则返回空串。
+
+    微信里 `digest` 为「分享一篇文章。」的消息（转发别人文章、群里的分享卡片），
+    它的 ``/s`` 页面**本身是个中转页**：``#js_content`` 是空的
+    （``aria-hidden`` 的占位 div），真正的正文在**另一个公众号**的文章里 ——
+    页面上那个「阅读全文」按钮（``#js_share_source``）的 ``data-url`` 才是原文地址。
+
+    ⚠️ 不跟进的话，这类文章永远拿不到正文：解析出来 0 字，被下游判成
+    「正文过短或无实质内容」，用户看到的就是周报里一篇篇「失败」。实测用户库里
+    有 11 条这种条目（2026-09）。
+
+    只认微信自己的域名：``data-url`` 名义上由微信给出，但真按外部链接去抓，
+    就等于「页面内容决定我们去请求谁」——没有理由开这个口子。
+    """
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    el = soup.select_one("#js_share_source")
+    if el is None:
+        return ""
+    target = str(el.get("data-url") or el.get("href") or "").strip()
+    if not target:
+        return ""
+    try:
+        host = (urlparse(target).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
+    if host != "mp.weixin.qq.com":
+        return ""
+    return target
+
+
+def _same_article(a: str, b: str) -> bool:
+    """两个链接是不是同一篇（忽略 fragment 与跟踪参数）。"""
+    return _strip_tracking_params(a).split("#")[0] == _strip_tracking_params(b).split("#")[0]
+
+
 def fetch_and_parse_article(
     url: str,
     *,
@@ -990,4 +1045,48 @@ def fetch_and_parse_article(
     timeout: float = 25.0,
 ) -> dict[str, Any]:
     html_text = fetch_article_html(url, cred=cred, timeout=timeout)
-    return parse_wechat_article_html(html_text, source_url=url)
+    parsed = parse_wechat_article_html(html_text, source_url=url)
+
+    # 「分享」中转页 → 跟进「阅读全文」取原文（**只跟一跳**）。
+    # 判据是「这一页没正文」，而不是「有没有 share 链接」：正常文章页里
+    # 也可能有 #js_share_source（原创转载关系），那些页面不该多打一次请求。
+    if len(str(parsed.get("body_text") or "").strip()) < _MIN_BODY_CHARS:
+        target = share_source_url(html_text)
+        if target and not _same_article(target, url):
+            # 先记下「原文在哪」再动手：跟进失败时它就是唯一能解释原因的线索
+            # （这个字段也让 body_failure_reason 说得出「这是转发型消息」）。
+            # 一开始写在 try 之后，结果失败分支提前 return，线索丢了 ——
+            # 而失败分支正是唯一需要它的地方。
+            parsed["share_target_url"] = target
+            try:
+                html2 = fetch_article_html(target, cred=cred, timeout=timeout)
+            except Exception:  # noqa: BLE001
+                # 跟进失败就如实返回中转页的结果：调用方照旧报「没有正文」，
+                # 不能因为跟进失败把整篇判成成功
+                return parsed
+            parsed2 = parse_wechat_article_html(html2, source_url=target)
+            if len(str(parsed2.get("body_text") or "").strip()) > len(
+                str(parsed.get("body_text") or "").strip()
+            ):
+                # 正文来自原文页：记下中转页地址，排查时能看出「这篇的正文哪来的」
+                parsed2["share_target_url"] = target
+                parsed2["share_relay_url"] = url
+                return parsed2
+    return parsed
+
+
+def body_failure_reason(parsed: dict[str, Any]) -> str:
+    """正文拿不到时，给一句**解释得清原因**的话。
+
+    各调用方共用一份：周报（``fetch_missing_bodies``）与内容筛选
+    （``routes/ai.py``）都要报同一件事，各写一遍必然漂移 —— 而用户看到的
+    就是这句话，漂移的代价是他拿着一句「正文过短」来问「为什么」。
+
+    真正需要用户动手的只有第一种（去微信里打开一次、或等一会儿再试）；
+    后两种是这篇文章本身取不到正文，重试也一样。
+    """
+    if not parsed.get("content_found", True):
+        return "页面没有正文（可能是微信的环境校验页，稍后重试或先在微信里打开一次）"
+    if parsed.get("share_target_url"):
+        return "这是转发/分享型消息，正文在原文那篇里（这次没能取到原文）"
+    return "正文过短或无实质内容"

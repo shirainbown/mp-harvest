@@ -130,6 +130,11 @@ def article_out(
         # 文章挂着今天的日期，用户只会觉得数据坏了（2026-09 用户报的）。
         "has_publish_time": bool(ts),
         "seen_at": seen_at,
+        # 「正文拿不到」的状态：只影响**待筛选**的显示与是否自动重试，
+        # 与判定无关（判定只能由 AI 给，见 state.merge_body_failures）
+        "body_error": str(row.get("body_error") or ""),
+        "body_fail_count": int(row.get("body_fail_count") or 0),
+        "body_give_up": bool(row.get("body_give_up")),
         "fetched_at": fetched_at,
         "source": article_source(row.get("source")),
         "verdict": verdict,

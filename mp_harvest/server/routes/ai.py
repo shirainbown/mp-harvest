@@ -272,10 +272,20 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
         # 1) 逐篇获取正文：已缓存 body_text 的复用，没有的现拉
         fetch_failed = 0
         fetch_errors: list[str] = []
+        # 已放弃的不再自动重试（正文多半永远拿不到，重试只会让周报每期报一次失败）。
+        # **但用户勾选重跑时照做** —— 手动指定就是明确要求再试一次，这也是唯一的
+        # 重试入口（2026-09）。
+        force = bool(body.ids)
         to_fetch = [
-            a for a in kept if not str(a.get("body_text") or "").strip()
+            a
+            for a in kept
+            if not str(a.get("body_text") or "").strip()
+            and (force or not a.get("body_give_up"))
         ]
         total_fetch = len(to_fetch)
+        # 本轮「正文没拿到」的明细，循环结束后统一落盘（原先只广播到日志，
+        # 重启就没了 —— 列表里看不出这几篇为什么一直停在待筛选）
+        body_failures: list[dict] = []
 
         def _fetch_failed_keep_pending(art: dict, row: dict, why: str) -> None:
             """正文拿不到：只播报，**不写判定**（2026-09 修复）。
@@ -283,11 +293,19 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
             原先写 ``content_keep=False`` 并合并回文章缓存，而内容筛选的候选又要求
             ``keep is not False`` —— 一次网络抖动就把文章永久钉成「丢弃」，
             下轮即使正文抓成功也不会再判它，理由还停在「正文获取失败」。
-            现在改为保持待筛选，下次运行会重试。
+            现在改为保持待筛选；连续几次都拿不到才不再自动重试（见
+            ``state.BODY_GIVE_UP_AFTER``）。
             """
             nonlocal fetch_failed
             fetch_failed += 1
-            row["content_reason"] = f"{why}（保留在「待内容筛选」，可重新运行）"
+            # 给**实时推送**用的理由（前端当前这一屏立刻能看见）。这份 row 只是
+            # 推送载荷，不会写回缓存 —— 落盘的是下面 body_failures 里的明细。
+            row["content_reason"] = f"{why}（保留待筛选）"
+            body_failures.append({
+                "identity": str(art.get("identity") or art.get("link") or ""),
+                "_account_id": str(art.get("_account_id") or ""),
+                "reason": str(why),
+            })
             fetch_errors.append(f"{art.get('title', '')}: {why}")
             broadcast_event(
                 "ai.batch",
@@ -321,13 +339,13 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                 except Exception as exc:  # noqa: BLE001
                     _fetch_failed_keep_pending(art, row, f"正文获取失败：{exc}")
                     continue
-                if not parsed.get("content_found", True):
-                    # 页面没有 #js_content：通常是环境校验页，拿它去判定毫无意义
-                    _fetch_failed_keep_pending(art, row, "页面没有正文（可能触发了微信的环境校验）")
-                    continue
                 body_text = str(parsed.get("body_text") or "").strip()
-                if len(body_text) < 20:
-                    _fetch_failed_keep_pending(art, row, "正文过短或无实质内容")
+                if not parsed.get("content_found", True) or len(body_text) < 20:
+                    # 与周报共用同一句解释文案：这句话是用户唯一看得到的线索，
+                    # 两处各写一份必然漂移（2026-09 就被问过「为什么会报错」）
+                    _fetch_failed_keep_pending(
+                        art, row, article_reader.body_failure_reason(parsed)
+                    )
                     continue
                 art["body_text"] = body_text
                 if parsed.get("body_html"):
@@ -338,6 +356,12 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
                     body.account_id,
                     [a for a in to_fetch if str(a.get("body_text") or "").strip()],
                 )
+                # 失败明细同样落盘（成功的那批已经写回去了）
+                if body_failures:
+                    if body.account_id:
+                        state.merge_body_failures(body.account_id, body_failures)
+                    else:
+                        state.merge_body_failures_by_account(body_failures)
 
         # 2) 内容判定。
         # 不再排除 `keep is False`：内容筛完后 merge_article_verdicts 会把

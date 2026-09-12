@@ -95,9 +95,20 @@ def _core_row(item: dict[str, Any], *, verdicts: dict[str, dict], content: dict[
         # 会当场冷解析全库。列表传 with_body=False。
         row["body_text"] = ext.read_external_body(item)
     # 判定结果从缓存合并进来（外部条目不另存判定，避免两处真相）。
-    # 标题缓存是裸字段名，内容缓存读出来就带 content_ 前缀，各自 update 即可。
+    # 标题缓存带 title_ 前缀、内容缓存带 content_ 前缀，各自 update 即可
+    # （article_out 就是从这些字段算 title_verdict/content_verdict 的）。
     row.update(verdicts.get(key) or {})
     row.update(content.get(key) or {})
+    # 但**最终判定**（keep/reason）得现算：上面两个 update 只带进来
+    # title_*/content_*，而界面「判定」列读的是 keep。少了这一步，那一列
+    # 永远显示「待判」—— 用户筛完发现跟没筛一样（2026-09 用户报的）。
+    # 规则与公众号侧（state.merge_article_verdicts）一致：内容优先，其次标题。
+    from mp_harvest.core import verdicts as verdicts_mod
+
+    keep, reason = verdicts_mod.final_verdict(verdicts.get(key), content.get(key))
+    if keep is not None:
+        row["keep"] = keep
+        row["reason"] = reason
     return row
 
 

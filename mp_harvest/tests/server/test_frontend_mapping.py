@@ -22,6 +22,8 @@ ARTICLE_KEYS = {
     "exported",
     # date 是不是真正的发布时间（false = 抓包目击/补录，只有看到它的时刻）
     "has_publish_time", "seen_at",
+    # 正文拿不到的状态（不影响判定，只影响「待筛选」的显示与是否自动重试）
+    "body_error", "body_fail_count", "body_give_up",
 }
 
 

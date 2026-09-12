@@ -40,6 +40,12 @@ export interface Article {
   has_publish_time?: boolean
   /** 抓包目击时看到的时刻（ISO）；非目击行为空 */
   seen_at?: string
+  /** 最近一次「正文没拿到」的原因；没有过失败则为空 */
+  body_error?: string
+  /** 连续失败次数 */
+  body_fail_count?: number
+  /** 反复拿不到正文、已不再自动重试（内容筛选/周报都会跳过它） */
+  body_give_up?: boolean
   /** 最近一次被抓取到的时间（ISO）；旧缓存可能为空（2026-08-23） */
   fetched_at?: string
   source: ArticleSource
