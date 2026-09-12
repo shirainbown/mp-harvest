@@ -153,3 +153,136 @@ def test_renew_no_biz_no_url_400(client, auth):
     resp = client.post(f"/api/accounts/{acc['id']}/renew", params=auth)
     assert resp.status_code == 400
     assert "无法续约" in resp.json()["detail"]
+
+
+# ── 重复公众号的发现与合并（2026-09）──────────────────────────────
+#
+# 用户实机数据里出现 4 对「同一个 __biz 两行」（批量导入按名称去重、不按公众号，
+# 而短链里没有 __biz 可判）→ 同一篇文章在两个账号下各存一份：列表里成对出现、
+# 筛选跑两遍、正文拉两遍、日志打两遍。341 行里 55 行是重复的。
+
+
+def _acc_with_biz(client, auth, name, biz, articles=()) -> dict:
+    """建一个带 biz 的账号（正常流程里 biz 由抓包写入，测试直接给）。
+
+    URL 必须逐行不同：添加接口按文章链接去重，同名同链接的第二行会 409。
+    """
+    from mp_harvest.server import state
+
+    acc = add_account(client, auth, name=name, url=f"https://mp.weixin.qq.com/s/{name}")
+    store = state.get_store()
+    for row in store._rows:
+        if row["id"] == acc["id"]:
+            row["biz"] = biz
+            row["credentials"] = {"__biz": biz, "key": "k", "uin": "u"}
+    if articles:
+        state.set_articles(acc["id"], [dict(a) for a in articles])
+    return acc
+
+
+def _art(tag, **over) -> dict:
+    row = {"title": tag, "link": f"https://x/{tag}", "publish_ts": 2, "identity": f"art-{tag}"}
+    row.update(over)
+    return row
+
+
+def test_duplicates_lists_same_biz_groups(client, auth):
+    """同 __biz 两行 → 报成一组；不同 biz 的账号不进列表。"""
+    _acc_with_biz(client, auth, "甲号", "bizA", [_art("1"), _art("2")])
+    _acc_with_biz(client, auth, "甲号重复", "bizA", [_art("1")])
+    _acc_with_biz(client, auth, "乙号", "bizB", [_art("9")])
+
+    resp = client.get("/api/accounts/duplicates", params=auth)
+    assert resp.status_code == 200, resp.text
+    groups = resp.json()["groups"]
+    assert len(groups) == 1, f"只该有一组重复：{groups}"
+    assert groups[0]["biz"] == "bizA"
+    names = [a["name"] for a in groups[0]["accounts"]]
+    assert names == ["甲号", "甲号重复"], "文章多的应排在前面（前端拿它当默认选择）"
+    assert groups[0]["accounts"][0]["article_count"] == 2
+
+
+def test_duplicates_ignores_accounts_without_biz(client, auth):
+    """取不到 biz 的账号不能被当成「彼此重复」—— 那会把两个不相干的号并到一起。"""
+    add_account(client, auth, name="无biz一号", url="https://mp.weixin.qq.com/s/nb1")
+    add_account(client, auth, name="无biz二号", url="https://mp.weixin.qq.com/s/nb2")
+    resp = client.get("/api/accounts/duplicates", params=auth)
+    assert resp.json()["groups"] == []
+
+
+def test_merge_duplicates_unions_articles_and_drops_rows(client, auth):
+    """合并：文章取并集、判定结果以保留行为准、多余的行被删掉。"""
+    from mp_harvest.server import state
+
+    keep = _acc_with_biz(client, auth, "保留行", "bizA", [_art("1", keep=True, reason="已判")])
+    drop = _acc_with_biz(client, auth, "被并掉", "bizA", [
+        _art("1", keep=False, reason="旧判定"),   # 同一篇（identity 相同）→ 以保留行为准
+        _art("2"),                                # 只在这行有 → 搬过去
+    ])
+
+    resp = client.post(
+        "/api/accounts/merge-duplicates",
+        params=auth,
+        json={"keep_id": keep["id"], "drop_ids": [drop["id"]]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["added_articles"] == 1 and body["total"] == 2
+
+    rows = state.get_articles(keep["id"])
+    by_key = {r["identity"]: r for r in rows}
+    assert set(by_key) == {"art-1", "art-2"}
+    assert by_key["art-1"]["reason"] == "已判", "保留行的判定不能被覆盖掉"
+
+    # 被合并的行连同文章缓存一起消失
+    assert client.get("/api/accounts", params=auth).json()
+    assert state.get_store().get(drop["id"]) is None
+    assert state.get_articles(drop["id"]) == []
+
+
+def test_merge_refuses_different_biz(client, auth):
+    """__biz 不同 = 不是同一个公众号，合并会把两个号的文章混在一起（不可逆）。"""
+    from mp_harvest.server import state
+
+    keep = _acc_with_biz(client, auth, "甲", "bizA", [_art("1")])
+    other = _acc_with_biz(client, auth, "乙", "bizB", [_art("2")])
+    resp = client.post(
+        "/api/accounts/merge-duplicates",
+        params=auth,
+        json={"keep_id": keep["id"], "drop_ids": [other["id"]]},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "__biz" in resp.json()["detail"]
+    # 两边都原样留着
+    assert state.get_store().get(other["id"]) is not None
+    assert len(state.get_articles(keep["id"])) == 1
+
+
+def test_merge_refuses_missing_biz(client, auth):
+    """两边都取不到 biz 时也必须拒绝 —— 空 == 空 不是「同一个号」。"""
+    from mp_harvest.server import state
+
+    keep = add_account(client, auth, name="无biz甲", url="https://mp.weixin.qq.com/s/nb3")
+    other = add_account(client, auth, name="无biz乙", url="https://mp.weixin.qq.com/s/nb4")
+    state.set_articles(keep["id"], [_art("1")])
+    resp = client.post(
+        "/api/accounts/merge-duplicates",
+        params=auth,
+        json={"keep_id": keep["id"], "drop_ids": [other["id"]]},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_merge_requires_at_least_one_drop(client, auth):
+    acc = _acc_with_biz(client, auth, "甲", "bizA", [_art("1")])
+    resp = client.post(
+        "/api/accounts/merge-duplicates", params=auth, json={"keep_id": acc["id"], "drop_ids": []}
+    )
+    assert resp.status_code == 400
+
+
+def test_merge_unknown_keep_404(client, auth):
+    resp = client.post(
+        "/api/accounts/merge-duplicates", params=auth, json={"keep_id": "nope", "drop_ids": ["x"]}
+    )
+    assert resp.status_code == 404

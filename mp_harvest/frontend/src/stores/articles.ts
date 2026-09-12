@@ -297,7 +297,8 @@ export const useArticlesStore = defineStore('articles', {
       this.view = 'all'
     },
     /** AI 标题筛选：batch_size/workers 可调；includeContent=true 时标题完成后继续内容筛选（2026-08-16）。 */
-    async aiFilter(batchSize = 50, workers = 4, includeContent = false) {
+    /** AI 标题筛选。ids 非空 = 只筛这几篇（「只筛选中」）。 */
+    async aiFilter(batchSize = 50, workers = 4, includeContent = false, ids: string[] = []) {
       if (this.aiTaskId) return
       const bs = Math.max(1, Math.min(200, Math.round(Number(batchSize) || 50)))
       const wk = Math.max(1, Math.min(16, Math.round(Number(workers) || 4)))
@@ -306,6 +307,7 @@ export const useArticlesStore = defineStore('articles', {
           account_id: this.accountId,
           batch_size: bs,
           workers: wk,
+          ids,
           ...this._timeFilterBody(),
         }),
       )
@@ -359,7 +361,8 @@ export const useArticlesStore = defineStore('articles', {
       })
     },
     /** AI 内容筛选（第二阶段）：只对当前 keep=true 的文章拉正文并判定（2026-08-16）。 */
-    async contentFilter(batchSize = 30, workers = 4) {
+    /** 内容筛选（第二阶段）。ids 非空 = 只筛这几篇（「只筛选中」）。 */
+    async contentFilter(batchSize = 30, workers = 4, ids: string[] = []) {
       if (this.aiTaskId) return
       const bs = Math.max(1, Math.min(200, Math.round(Number(batchSize) || 30)))
       const wk = Math.max(1, Math.min(16, Math.round(Number(workers) || 4)))
@@ -368,6 +371,7 @@ export const useArticlesStore = defineStore('articles', {
           account_id: this.accountId,
           batch_size: bs,
           workers: wk,
+          ids,
           ...this._timeFilterBody(),
         }),
       )

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { Account, CaStatus, ImportItem, MitmStatus } from '../types'
+import type { Account, CaStatus, DuplicateGroup, ImportItem, MitmStatus } from '../types'
 import { call, rest, LONG_TIMEOUT } from '../api/rest'
 import { copyText } from '../api/desktop'
 import { useUiStore } from './ui'
@@ -12,6 +12,8 @@ export const useAccountsStore = defineStore('accounts', {
     ca: { trusted: false } as CaStatus,
     loading: false,
     loaded: false,
+    /** 同一个公众号（__biz）被添加了多次的分组；空 = 没有重复（2026-09） */
+    duplicates: [] as DuplicateGroup[],
   }),
   getters: {
     valid: (s) => s.list.filter((a) => a.expires_at && a.expires_at * 1000 > Date.now()),
@@ -29,6 +31,28 @@ export const useAccountsStore = defineStore('accounts', {
       if (ca) this.ca = ca
       this.loading = false
       this.loaded = true
+      // 顺带看看有没有重复的公众号（同一个 __biz 两行）。**放在 load 里**：
+      // 视图是 v-show 常驻的，onMounted 只跑一次 —— 删掉重复行之后切回本页
+      // 不重新查的话，那个提示会一直挂在那儿（2026-09 踩过同一类坑）。
+      await this.loadDuplicates()
+    },
+    /** 查重复公众号分组（同一个 __biz 被添加多次）。失败静默：这只是个提示。 */
+    async loadDuplicates() {
+      const r = await call(rest.get<{ groups: DuplicateGroup[] }>('/api/accounts/duplicates'))
+      if (r) this.duplicates = r.groups || []
+    },
+    /** 合并重复行：保留 keepId，把 dropIds 的文章并进去再删掉它们。
+     *  返回是否成功；调用方负责提示与刷新。 */
+    async mergeDuplicates(keepId: string, dropIds: string[]): Promise<boolean> {
+      const r = await call(
+        rest.post<{ added_articles: number; total: number }>('/api/accounts/merge-duplicates', {
+          keep_id: keepId,
+          drop_ids: dropIds,
+        }),
+      )
+      if (r === null) return false
+      await this.load()
+      return true
     },
     /** 添加公众号并抓包；返回 account（调用方负责 90s 等待逻辑）。
      *  后端 best-effort 启动 MITM 失败时会在 mitm_message 给出原因（账号仍已添加） */

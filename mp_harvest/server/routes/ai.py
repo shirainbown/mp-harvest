@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from mp_harvest.infra.platform import paths
-from mp_harvest.server import state
+from mp_harvest.server import mappers, state
 from mp_harvest.server.schemas import (
     AiContentFilterIn,
     AiFilterIn,
@@ -85,17 +85,35 @@ def _invalidate_cache(path: str | Path) -> None:
         pass
 
 
+def _no_articles_detail(ids: list[str] | None, account_id: str) -> str:
+    """「一篇都没有」时到底为什么 —— 两种情况用户要做的事完全不同。
+
+    勾选筛选的情形最容易被误解成「按钮没反应」：选中的文章可能刚被删掉、
+    或者已经被同一阶段判过（前端列表里还在，但缓存里已不是待筛选状态）。
+    """
+    if ids:
+        return "选中的文章已经不在待筛选范围里（可能已删除或刚被筛选过），刷新列表后再试"
+    if account_id:
+        return "这个公众号没有可筛选的文章（请先拉取历史）"
+    return "没有可筛选的文章（请先拉取历史）"
+
+
 def _articles_for(
     account_id: str,
     *,
     start_ts: int = 0,
     end_ts: int = 0,
     latest_fetch: bool = False,
+    ids: list[str] | None = None,
 ) -> list[dict]:
     """取待筛选文章，每篇带 ``_account_id``；account_id 为空 = 全部公众号。
 
     start_ts/end_ts 按发布时间筛选；latest_fetch=True 只取各账号最近一次
     拉取的文章（2026-08-23）。
+
+    ``ids`` 非空时只保留这些文章（前端 ``Article.id`` = ``{__biz}:{identity}``）
+    —— 「只筛选中」用它。**按同一函数现算现比**，不去拆 id 里的冒号
+    （identity 自己就带冒号，手工拆前缀迟早拆错，与 ``delete_articles`` 同）。
     """
     if account_id:
         if state.get_store().get(account_id) is None:
@@ -103,20 +121,24 @@ def _articles_for(
         rows = state.get_articles(account_id)
         latest_ts = state.get_last_fetch_ts(account_id) if latest_fetch else 0
         rows = state.time_filter(rows, start_ts=start_ts, end_ts=end_ts, latest_ts=latest_ts)
-        return [dict(a, _account_id=account_id) for a in rows]
+        out = [dict(a, _account_id=account_id) for a in rows]
+    else:
+        out = []
+        for acct in state.get_store().list_accounts():
+            aid = str(acct.get("id") or "")
+            if not aid:
+                continue
+            acct_rows = state.get_articles(aid)
+            latest_ts = state.get_last_fetch_ts(aid) if latest_fetch else 0
+            acct_rows = state.time_filter(
+                acct_rows, start_ts=start_ts, end_ts=end_ts, latest_ts=latest_ts
+            )
+            out.extend(dict(a, _account_id=aid) for a in acct_rows)
 
-    rows: list[dict] = []
-    for acct in state.get_store().list_accounts():
-        aid = str(acct.get("id") or "")
-        if not aid:
-            continue
-        acct_rows = state.get_articles(aid)
-        latest_ts = state.get_last_fetch_ts(aid) if latest_fetch else 0
-        acct_rows = state.time_filter(
-            acct_rows, start_ts=start_ts, end_ts=end_ts, latest_ts=latest_ts
-        )
-        rows.extend(dict(a, _account_id=aid) for a in acct_rows)
-    return rows
+    wanted = {str(i).strip() for i in (ids or []) if str(i).strip()}
+    if wanted:
+        out = [a for a in out if mappers.article_public_id(a) in wanted]
+    return out
 
 
 def _merge_verdicts(account_id: str, rows: list[dict]) -> None:
@@ -142,10 +164,14 @@ def ai_filter(body: AiFilterIn) -> dict:
 
     start_ts, end_ts = parse_date_range(body.start_date, body.end_date)
     articles = _articles_for(
-        body.account_id, start_ts=start_ts, end_ts=end_ts, latest_fetch=body.latest_fetch
+        body.account_id,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        latest_fetch=body.latest_fetch,
+        ids=body.ids,
     )
     if not articles:
-        raise HTTPException(status_code=400, detail="没有可筛选的文章（请先拉取历史）")
+        raise HTTPException(status_code=400, detail=_no_articles_detail(body.ids, body.account_id))
 
     def work(task: Task) -> dict:
         models = ai_mod.load_models(_models_path())
@@ -212,15 +238,23 @@ def ai_filter_content(body: AiContentFilterIn) -> dict:
 
     start_ts, end_ts = parse_date_range(body.start_date, body.end_date)
     articles = _articles_for(
-        body.account_id, start_ts=start_ts, end_ts=end_ts, latest_fetch=body.latest_fetch
+        body.account_id,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        latest_fetch=body.latest_fetch,
+        ids=body.ids,
     )
     if not articles:
-        raise HTTPException(status_code=400, detail="没有可筛选的文章（请先拉取历史）")
+        raise HTTPException(status_code=400, detail=_no_articles_detail(body.ids, body.account_id))
     kept = [a for a in articles if a.get("title_keep") is True]
     if not kept:
         raise HTTPException(
             status_code=400,
-            detail="没有通过标题筛选的文章（请先执行 AI 标题筛选）",
+            detail=(
+                "选中的文章里没有通过标题筛选的 —— 内容筛选只处理标题阶段通过的文章"
+                if body.ids
+                else "没有通过标题筛选的文章（请先执行 AI 标题筛选）"
+            ),
         )
     cred_by_account: dict[str, dict] = {}
     for a in kept:

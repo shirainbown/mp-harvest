@@ -249,6 +249,29 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
     }, 2200)
     return acct as T
   }
+  // 演示数据里造一组重复：a1「互联网周刊」与 a2 其实是同一个公众号（同一个 __biz），
+  // 好让「N 组重复公众号」按钮在演示模式下真的能点开看
+  if (p === '/api/accounts/duplicates' && method === 'GET') {
+    return {
+      groups: [
+        {
+          biz: 'aXJvc2RlbW8x',
+          accounts: [
+            { id: 'a1', name: '互联网周刊', article_count: 620, created_at: '2026-08-16T18:42:25' },
+            { id: 'a2', name: '芯片那些事', article_count: 0, created_at: '2026-08-16T18:42:25' },
+          ],
+        },
+      ],
+    } as T
+  }
+  if (p === '/api/accounts/merge-duplicates' && method === 'POST') {
+    const drop = (b.drop_ids as string[]) || []
+    for (const id of drop) {
+      const i = accounts.findIndex((a) => a.id === id)
+      if (i >= 0) accounts.splice(i, 1)
+    }
+    return { ok: true, keep_id: String(b.keep_id || ''), merged: drop, added_articles: 0, total: articles.length } as T
+  }
   if (p === '/api/accounts/import' && method === 'POST') {
     if (b.stage === 'confirm') {
       const items = (b.items as ImportItem[]) || []

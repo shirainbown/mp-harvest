@@ -294,3 +294,35 @@ def test_handler_calls_the_right_thing(rel: str, fn: str, must_call: str):
     assert script, f"{rel} 没有 script setup"
     body = _body_of(script, fn)
     assert must_call in body, f"{rel} 的 `{fn}` 里没有调用 `{must_call}`"
+
+
+# ── 「只筛选中」的 ids 必须真的传下去（2026-09）────────────────────
+
+
+def test_targeted_filter_buttons_pass_ids():
+    """勾选筛选的两个按钮必须把 ids 传给 store。
+
+    漏传的后果**完全不报错**：按钮照常转圈、任务照常完成，只是它筛了全部 ——
+    用户以为只重跑了那几篇（比如正文抓失败的那几篇），实际整个范围又跑了一遍，
+    还要重新联网拉那些没正文的文章。这比按钮没反应更难发现。
+    """
+    src = (SRC / "views" / "HistoryView.vue").read_text(encoding="utf-8")
+    calls = re.findall(r"articles\.(aiFilter|contentFilter)\(([^)]*)\)", src)
+    targeted = [(fn, args) for fn, args in calls if "pickedIds" in args]
+    assert len(targeted) == 2, (
+        f"「只筛选中」应当有标题 / 内容两个入口各传一次 ids，实际 {targeted}"
+    )
+    assert {fn for fn, _ in targeted} == {"aiFilter", "contentFilter"}, targeted
+    # 传给 store 的必须是**数组快照**（pickedIds 是 computed），不能是响应式对象本身：
+    # 关掉弹窗 / 清空勾选之后任务才真正开始跑，传引用等于传了个空数组
+    assert all("pickedIds" in args for _, args in targeted), targeted
+
+
+def test_whole_scope_filter_buttons_pass_no_ids():
+    """页脚那两个「整范围」按钮不能带 ids —— 带上就变成「只筛上次勾选的」。"""
+    src = (SRC / "views" / "HistoryView.vue").read_text(encoding="utf-8")
+    for fn in ("aiFilter", "contentFilter"):
+        for args in re.findall(rf"articles\.{fn}\(([^)]*)\)", src):
+            if "pickedIds" in args:
+                continue
+            assert "ids" not in args, f"整范围的 {fn} 不该带 ids：{args}"

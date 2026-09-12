@@ -236,6 +236,14 @@ function rowReason(a: Article) {
 // 默认目录）与「导出到目录…」（弹目录框、不确认）。两者调的是同一个 exportHtml，
 // 只是参数收集方式不同，于是出现「走哪条路决定你被不被拦一下」的怪现象。
 // 现在只有一条：一律弹目录框（预填默认目录），目录可见可改，弹窗本身就是确认。
+/** 「只筛选中」用的勾选集合（AI 筛选只处理公众号文章，外部来源不走这条路）。 */
+const pickedWechat = computed(() => articles.selectedInView)
+const pickedIds = computed(() => pickedWechat.value.map((a) => a.id))
+/** 勾选的里面有几篇通过了标题阶段 —— 内容筛选只处理这些，一篇都没有就别让点 */
+const pickedTitleKeep = computed(
+  () => pickedWechat.value.filter((a) => a.title_verdict === 'keep').length,
+)
+
 const exportCount = computed(() => articles.selectedInView.length || articles.counts[articles.view])
 function exportSingle(a: Article) {
   // 外部条目不能走 /api/articles/export-html：那条路会用公众号解析器去抓
@@ -709,11 +717,28 @@ function toggleAiIncludeContent() {
     <template #head>AI 筛选</template>
     <div style="display:flex;flex-direction:column;gap:var(--sp-2)">
       <span class="muted" style="font-size:var(--fs-sm)">
-        AI 筛选针对当前列表（具体公众号或「全部公众号」）自动执行，不需要勾选文章；表格勾选仅用于导出。
+        不勾选 = 对当前列表（具体公众号或「全部公众号」）整体筛选；
+        在表格里勾选之后，可以只筛勾选的那几篇。
       </span>
       <span class="muted" style="font-size:var(--fs-sm)">
         当前文章 {{ articles.list.length }} 篇；标题通过 {{ titleKeepCount }} 篇。
       </span>
+      <!-- 只筛选中（2026-09）：正文抓取失败之类的情况只需要重跑那几篇，
+           整体重跑虽然靠缓存不花 AI 的钱，但会重新去拉那些没拿到正文的。
+           放在这里而不是页脚：页脚那三个是「整范围」的动作，这两种范围
+           混在一排按钮里容易点错。 -->
+      <div v-if="sourceScope !== 'external' && pickedWechat.length" class="toolbar"
+           style="padding:var(--sp-2);border:1px solid var(--border);border-radius:var(--radius-md)">
+        <span class="form-label">已勾选 {{ pickedWechat.length }} 篇</span>
+        <SButton size="sm" variant="ghost"
+                 @click="aiFilterOpen = false; articles.aiFilter(aiBatchSize, aiWorkers, false, pickedIds)"
+        >只筛这 {{ pickedWechat.length }} 篇标题</SButton>
+        <SButton size="sm" variant="ghost"
+                 :disabled="!pickedTitleKeep"
+                 :title="pickedTitleKeep ? '只对勾选中标题通过的文章执行' : '勾选的里面没有通过标题筛选的文章'"
+                 @click="aiFilterOpen = false; articles.contentFilter(aiBatchSize, aiWorkers, pickedIds)"
+        >只筛这 {{ pickedTitleKeep }} 篇内容</SButton>
+      </div>
       <div>
         <span class="form-label">第一阶段：标题筛选原则</span>
         <div class="ai-principle-preview">{{ principlesPreview || '（未配置原则）' }}</div>

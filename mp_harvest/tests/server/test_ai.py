@@ -395,3 +395,166 @@ def test_put_content_principles_only_wipes_cache_when_changed(client, auth, isol
     cache.write_text('{"__version__":2,"entries":{}}', encoding="utf-8")
     client.put("/api/ai/content-principles", params=auth, json={"text": "内容原则 A"})
     assert cache.exists()              # 没改 → 保留
+
+
+# ── 只筛选中（2026-09）────────────────────────────────────────────
+#
+# 场景：一次内容筛选里有几篇正文没抓到（微信的环境校验、网络抖动），
+# 用户只想重跑那几篇。整体重跑虽然缓存命中不花 AI 的钱，但仍会**重新联网**
+# 去拉那些没正文的，而且失败原因不一定还是同一个。
+#
+# ids 用的是前端可见的 ``Article.id``（``{__biz}:{identity}``）——所以测试
+# 一律**从 /api/articles 取 id**，不自己拼字符串：拼法一旦和 mappers 不一致，
+# 测试会跟着一起错，等于没测。
+
+
+def _mk(tag: str, **over) -> dict:
+    # 默认带 __biz：**真实的缓存行一定有**（merge_articles 会写上），而
+    # ``article_public_id`` 带上它之后 id 才不等于 identity。不带的话
+    # 「按 id 比对」和「按 identity 比对」两种写法结果一样，用例就是空转的
+    # ——变异测试正是这么抓出来的。
+    row = {
+        "title": tag,
+        "link": f"https://x/{tag}",
+        "publish_ts": 2,
+        "identity": f"art-{tag}",
+        "__biz": "bizTest",
+    }
+    row.update(over)
+    return row
+
+
+def _verdicts(client, auth, account_id) -> dict[str, object]:
+    rows = client.get("/api/articles", params={**auth, "account_id": account_id}).json()
+    return {r["id"]: r["verdict"] for r in rows}
+
+
+def test_ai_filter_only_selected_ids(client, auth):
+    """只判勾选的那一篇，其余原样不动。"""
+    from mp_harvest.server import state
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(acc["id"], [_mk("A"), _mk("B"), _mk("C")])
+    listing = client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()
+    assert len(listing) == 3
+    picked = [listing[0]["id"]]
+
+    resp = client.post(
+        "/api/ai/filter", params=auth, json={"account_id": acc["id"], "ids": picked}
+    )
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.result["judged"] == 1, "只勾了一篇，判定数必须是 1"
+    assert resp.json()["total"] == 1
+
+    verdicts = _verdicts(client, auth, acc["id"])
+    assert verdicts[picked[0]] == "keep"
+    others = [v for k, v in verdicts.items() if k != picked[0]]
+    assert others == [None, None], f"没勾的不该被判定：{verdicts}"
+
+
+def test_ai_filter_empty_ids_keeps_whole_scope_behaviour(client, auth):
+    """ids 为空 = 老行为（整个范围），保证旧调用方不受影响。"""
+    from mp_harvest.server import state
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(acc["id"], [_mk("A"), _mk("B")])
+    for payload in ({"account_id": acc["id"]}, {"account_id": acc["id"], "ids": []}):
+        resp = client.post("/api/ai/filter", params=auth, json=payload)
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["total"] == 2, payload
+
+
+def test_ai_filter_ids_from_another_account_are_not_matched(client, auth):
+    """勾选的 id 属于另一个账号时不能被误判（同一 identity 可能存在于多个账号）。
+
+    这是「只筛选中」最容易出的错：如果按 identity 比对而不是按现算的 id，
+    另一个账号下同 identity 的文章会连坐被判。
+    """
+    from mp_harvest.server import state
+
+    a = _prepare_articles(client, auth)
+    b = _prepare_articles(client, auth, url="https://mp.weixin.qq.com/s/def")
+    # 行上必须带 __biz：真实缓存里 merge_articles 会写上（id 靠它区分账号）。
+    # 不写的话两个账号的文章会算出**同一个 id**，这个用例就变成了自欺欺人 ——
+    # 它要验的正是「id 能区分账号」。
+    state.set_articles(a["id"], [_mk("A", __biz="bizA")])
+    state.set_articles(b["id"], [_mk("A", __biz="bizB")])
+    ids_a = [r["id"] for r in client.get("/api/articles", params={**auth, "account_id": a["id"]}).json()]
+    ids_b = [r["id"] for r in client.get("/api/articles", params={**auth, "account_id": b["id"]}).json()]
+    assert ids_a != ids_b, f"前提不成立：两个账号的 id 竟然一样（{ids_a}）"
+
+    # 拿 B 的 id 去筛 A：一篇都匹配不上 → 400，且 A 的文章一篇都没被判
+    resp = client.post(
+        "/api/ai/filter", params=auth, json={"account_id": a["id"], "ids": ids_b}
+    )
+    assert resp.status_code == 400, resp.text
+    assert "选中" in resp.json()["detail"], resp.json()["detail"]
+    assert _verdicts(client, auth, a["id"]) == {ids_a[0]: None}
+
+
+def test_ai_filter_ids_not_found_message_is_specific(client, auth):
+    """勾选的都失效了 → 提示要说明是「选中的不在范围内」，不是「请先拉取历史」。
+
+    两种情况用户要做的事完全不同：前者刷新列表重勾，后者去拉历史。
+    """
+    acc = _prepare_articles(client, auth)
+    resp = client.post(
+        "/api/ai/filter",
+        params=auth,
+        json={"account_id": acc["id"], "ids": ["不存在:id"]},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "选中" in detail and "拉取历史" not in detail, detail
+
+
+def test_content_filter_only_selected_ids(client, auth):
+    """内容筛选同样支持只筛选中，且只处理勾选中通过标题阶段的那几篇。"""
+    from mp_harvest.server import state
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(
+        acc["id"],
+        [
+            _mk("A", title_keep=True, body_text="正文" * 20),
+            _mk("B", title_keep=True, body_text="正文" * 20),
+            _mk("C", title_keep=False, body_text="正文" * 20),
+        ],
+    )
+    listing = client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()
+    picked = [listing[0]["id"]]
+
+    resp = client.post(
+        "/api/ai/filter-content",
+        params=auth,
+        json={"account_id": acc["id"], "ids": picked},
+    )
+    assert resp.status_code == 202, resp.text
+    task = wait_task(resp.json()["task_id"])
+    assert task.result["judged"] == 1, f"只勾了一篇（且它有正文）→ 判定数应为 1：{task.result}"
+
+    verdicts = {
+        r["id"]: r["content_verdict"]
+        for r in client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()
+    }
+    assert verdicts[picked[0]] == "keep"
+    assert [v for k, v in verdicts.items() if k != picked[0]] == [None, None]
+
+
+def test_content_filter_ids_without_title_keep_says_why(client, auth):
+    """勾选的都没过标题阶段 → 说清楚原因（内容筛选只处理标题通过的）。"""
+    from mp_harvest.server import state
+
+    acc = _prepare_articles(client, auth)
+    state.set_articles(acc["id"], [_mk("A", title_keep=False), _mk("B")])
+    listing = client.get("/api/articles", params={**auth, "account_id": acc["id"]}).json()
+
+    resp = client.post(
+        "/api/ai/filter-content",
+        params=auth,
+        json={"account_id": acc["id"], "ids": [r["id"] for r in listing]},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "标题" in detail and "选中" in detail, detail

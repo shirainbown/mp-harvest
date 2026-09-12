@@ -24,6 +24,13 @@ class ImportItemIn(BaseModel):
     dup: bool = False
 
 
+class MergeAccountsIn(BaseModel):
+    """合并重复账号（2026-09）：保留 keep_id，把 drop_ids 的文章并进去再删掉它们。"""
+
+    keep_id: str
+    drop_ids: list[str] = Field(default_factory=list)
+
+
 class ImportIn(BaseModel):
     """批量导入两段式：preview 解析去重（{text}）→ confirm 确认入库（{items}）。"""
 
@@ -91,6 +98,8 @@ class AiFilterIn(BaseModel):
     start_date: str = ""
     end_date: str = ""
     latest_fetch: bool = False
+    # 只筛这些文章（2026-09：「只筛选中」）。空 = 按上面的范围筛全部。
+    ids: list[str] = Field(default_factory=list)
 
 
 class AiContentFilterIn(BaseModel):
@@ -102,6 +111,8 @@ class AiContentFilterIn(BaseModel):
     start_date: str = ""
     end_date: str = ""
     latest_fetch: bool = False
+    # 只筛这些文章（2026-09：「只筛选中」）。空 = 按上面的范围筛全部。
+    ids: list[str] = Field(default_factory=list)
 
 
 class AiModelIn(BaseModel):

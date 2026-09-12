@@ -1,5 +1,12 @@
 // 与设计稿 §7 API 契约对应的 TS 类型
 
+export interface DuplicateGroup {
+  /** 这一组共用的公众号 id（base64） */
+  biz: string
+  /** 同一公众号的多个账号行；后端按文章数从多到少排好（前端拿第一个当默认选择） */
+  accounts: { id: string; name: string; article_count: number; created_at: string }[]
+}
+
 export interface Account {
   id: string
   name: string

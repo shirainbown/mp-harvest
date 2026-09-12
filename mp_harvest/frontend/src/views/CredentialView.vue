@@ -8,6 +8,7 @@ import SPopover from '../components/SPopover.vue'
 import STooltip from '../components/STooltip.vue'
 import EmptyState from '../components/EmptyState.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
+import SModal from '../components/SModal.vue'
 import ImportDrawer from './ImportDrawer.vue'
 import { openExternal } from '../api/desktop'
 import { useAccountsStore } from '../stores/accounts'
@@ -97,6 +98,49 @@ async function openLink(a: Account) {
 }
 
 const importOpen = ref(false)
+
+// ---- 重复公众号合并（2026-09）----
+//
+// 同一个 __biz 被加了两行（批量导入按名称去重、不按公众号；短链里没有 __biz
+// 可判）。后果是同一篇文章在两个账号下各存一份：列表里成对出现、筛选跑两遍、
+// 正文拉两遍。合并**保留哪一行由用户选** —— 名字是用户可见的，哪个名字才对
+// 只有他知道（后端的 article_count 只用来排序给个默认）。
+const mergeOpen = ref(false)
+/** 每组选中的保留行；没选过的用该组第一个（文章最多的那行） */
+const mergeKeep = ref<Record<string, string>>({})
+const merging = ref(false)
+
+function keepIdOf(group: { biz: string; accounts: { id: string }[] }): string {
+  return mergeKeep.value[group.biz] || group.accounts[0]?.id || ''
+}
+
+function openMerge() {
+  mergeKeep.value = {}
+  mergeOpen.value = true
+}
+
+async function doMerge() {
+  const groups = accounts.duplicates
+  if (!groups.length || merging.value) return
+  merging.value = true
+  let mergedCount = 0
+  try {
+    for (const g of groups) {
+      const keepId = keepIdOf(g)
+      const dropIds = g.accounts.map((a) => a.id).filter((id) => id !== keepId)
+      if (!dropIds.length) continue
+      if (!(await accounts.mergeDuplicates(keepId, dropIds))) {
+        ui.error('合并失败，已停止（前面的分组可能已经合并）')
+        return
+      }
+      mergedCount += dropIds.length
+    }
+    ui.toast(`已合并 ${mergedCount} 个重复的公众号行`)
+    mergeOpen.value = false
+  } finally {
+    merging.value = false
+  }
+}
 </script>
 
 <template>
@@ -160,6 +204,11 @@ const importOpen = ref(false)
     <!-- 凭证表格 -->
     <div class="toolbar" style="padding:0 2px">
       <span class="muted">已添加 <b style="color:var(--text-primary)">{{ accounts.list.length }}</b></span>
+      <!-- 只在真有重复时出现。平时不显示，免得让人以为列表有问题 -->
+      <span v-if="accounts.duplicates.length" class="spacer"></span>
+      <SButton v-if="accounts.duplicates.length" size="sm" variant="ghost" @click="openMerge">
+        <SIcon name="info" :size="12" /> {{ accounts.duplicates.length }} 组重复公众号
+      </SButton>
     </div>
     <div class="acct-table">
       <div class="acct-head"><span>状态</span><span>名称</span><span>__biz</span><span>链接</span><span></span></div>
@@ -195,5 +244,34 @@ const importOpen = ref(false)
   </div>
 
   <ImportDrawer v-model:open="importOpen" />
+
+  <!-- 合并重复公众号：每组选一个「保留哪个名字」，其余行的文章并过来后删掉。
+       ⚠️ 提醒写清楚「删掉的行连同它的判定一起没了」——文章是并集不会丢，
+       但那一行的名字和状态会消失。 -->
+  <SModal :open="mergeOpen" @close="mergeOpen = false">
+    <template #head>合并重复公众号</template>
+    <div style="display:flex;flex-direction:column;gap:var(--sp-2)">
+      <span class="muted" style="font-size:var(--fs-sm)">
+        下面这些分组里，每一组其实是<b>同一个公众号</b>（<span class="mono">__biz</span> 相同）
+        被添加了两次。合并后文章按篇去重取并集，不会丢；被合并掉的那一行会消失，
+        请选你要保留的名字。
+      </span>
+      <div v-for="g in accounts.duplicates" :key="g.biz"
+           style="border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--sp-2)">
+        <div class="muted mono" style="font-size:var(--fs-xs);margin-bottom:4px">{{ g.biz }}</div>
+        <div v-for="a in g.accounts" :key="a.id" class="radio-row" @click="mergeKeep[g.biz] = a.id">
+          <span class="radio" :class="{ on: keepIdOf(g) === a.id }"></span>
+          <span>{{ a.name }}</span>
+          <span class="tertiary" style="font-size:var(--fs-xs)">
+            {{ a.article_count }} 篇{{ keepIdOf(g) === a.id ? ' · 保留' : ' · 并入后删除' }}
+          </span>
+        </div>
+      </div>
+    </div>
+    <template #foot>
+      <SButton variant="ghost" @click="mergeOpen = false">取消</SButton>
+      <SButton variant="primary" :loading="merging" @click="doMerge">合并</SButton>
+    </template>
+  </SModal>
   </section>
 </template>
