@@ -46,10 +46,20 @@ export const useLogsStore = defineStore('logs', {
     kind: '',
     q: '',
     loading: false,
+    /** 是否**成功拉过一次**。骨架屏只在首次加载时出现 ——
+     *  列表本来就空时（比如切筛选）再插一段骨架行，视觉上就是「闪一下」
+     *  （2026-09 用户报的：日志全空时切 全部/信息 会闪）。 */
+    loaded: false,
     /** 还有更早的没拉（决定「加载更多」是否可点） */
     hasMore: false,
   }),
   getters: {
+    /** 要不要显示骨架屏。**只在首次加载时** ——
+     *  列表本来就空时（比如切级别筛选）再插一段骨架行，视觉上就是「闪一下」。
+     *  视图里的条件没法单测，放这儿才钉得住（同 `articles.pickSort` 的理由）。 */
+    showSkeleton(state): boolean {
+      return state.loading && !state.loaded
+    },
     /** 类型下拉的选项：按前缀收成几组，免得几十项铺满屏幕 */
     kindOptions(state): Array<{ value: string; label: string }> {
       const out = [{ value: '', label: `全部类型（${state.total}）` }]
@@ -80,6 +90,7 @@ export const useLogsStore = defineStore('logs', {
           ),
         )
         if (!r) return
+        this.loaded = true
         this.events = r.events
         this.total = r.total
         this.kinds = r.kinds

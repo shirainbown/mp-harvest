@@ -467,6 +467,34 @@ export async function mockHandle<T>(method: string, path: string, body?: unknown
       template_is_custom: false, template_exists: true,
     } as T
   }
+  if (p === '/api/weekly/candidates' && method === 'GET') {
+    // 三篇覆盖三种状态：已打分且留下 / 已打分但被筛掉 / 没打过分
+    // （第三种是常态 —— 生成前只可能命中**当前提示词指纹**下的缓存）
+    const items = [
+      { key: 'wechat:mid:1', title: '单层 MoS2 顶栅 FET 的界面工程', title_cn: '',
+        source: '某技术号', source_id: 'a1', kind: '公众号', date: '2026-09-02',
+        publish_ts: 1756771200, url: 'https://mp.weixin.qq.com/s/mock1',
+        verdict: true, verdict_reason: '含工艺参数与实测数据，可复现',
+        scored: true, score: 8.5, semiconductor: true, domain: '芯片工艺与器件',
+        business_tags: ['公共'], reason: 'EOT≈1nm、跨导 0.45mS/µm，指向 CFET 后硅节点。' },
+      { key: 'wechat:mid:2', title: '从电网到算力：功率半导体新版图', title_cn: '',
+        source: '某产业号', source_id: 'a2', kind: '公众号', date: '2026-09-03',
+        publish_ts: 1756857600, url: 'https://mp.weixin.qq.com/s/mock2',
+        verdict: false, verdict_reason: '厂商宣传稿，无技术披露',
+        scored: true, score: 3.2, semiconductor: false, domain: '其他',
+        business_tags: ['数通'], reason: '产业趋势论述，无器件结构或工艺量化数据。' },
+      { key: 'arxiv:2609.1', title: 'A Compiler for Heterogeneous Dies',
+        title_cn: '异构裸片编译器', source: 'arXiv · Zhang', source_id: 'mock-src-1',
+        kind: 'arXiv', date: '2026-09-04', publish_ts: 1756944000,
+        url: 'https://arxiv.org/abs/2609.1', verdict: null, verdict_reason: '',
+        scored: false, score: null, semiconductor: null, domain: '',
+        business_tags: [], reason: '' },
+    ]
+    return {
+      from_date: '2026-08-31', to_date: '2026-09-06', only_kept: true,
+      total: items.length, scored: items.filter((i) => i.scored).length, items,
+    } as T
+  }
   if (p === '/api/weekly/issues' && method === 'GET') {
     return [
       { issue_num: 17, date: '2026-09-07', dir: '~/周报/第17期_2026-09-07',

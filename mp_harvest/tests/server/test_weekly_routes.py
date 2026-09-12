@@ -471,3 +471,147 @@ def test_generate_uses_only_kept_flag(client, auth, tmp_path, monkeypatch):
     task = wait_task(r.json()["task_id"])
     assert task.status == "done", task.error
     assert task.result["total"] == 1
+
+
+# ── 候选明细（2026-09）──────────────────────────────────────────────
+#
+# 起因：用户问「能不能看到文章判定的原因」。筛选的理由本来就在列表页显示，
+# 但**周报打分的理由**只存在于生成的 HTML 和缓存文件里 —— 生成前看不到，
+# 「候选 37 篇」是个点不开的数字。这个接口把它还回界面。
+#
+# 两块判定来自不同阶段、回答不同问题，测试也要分开钉：
+#   verdict/verdict_reason ← AI 筛选（这篇该不该进池子），读文章缓存
+#   score/reason           ← 周报打分（排多少名、算不算半导体），读打分缓存
+
+
+def _seed_with_reason(account_id: str, *, tag: str = "r") -> list[str]:
+    """塞 3 篇带**筛选判定 + 理由**的文章，返回它们的候选键。"""
+    from mp_harvest.server import state
+
+    base = _ts(2026, 9, 5)
+    state.set_articles(account_id, [
+        {"title": f"留下{tag}", "link": f"https://mp.weixin.qq.com/s/{tag}1",
+         "publish_ts": base + 3600, "publish_at": "2026-09-05 10:00",
+         "identity": f"mid:{tag}1", "keep": True, "reason": "含工艺参数，可复现",
+         "body_text": "正文内容足够长以便当作真实候选处理。", "body_html": "<p>x</p>"},
+        {"title": f"筛掉{tag}", "link": f"https://mp.weixin.qq.com/s/{tag}2",
+         "publish_ts": base + 7200, "publish_at": "2026-09-05 10:00",
+         "identity": f"mid:{tag}2", "keep": False, "reason": "厂商宣传稿，无技术披露",
+         "body_text": "正文内容足够长以便当作真实候选处理。", "body_html": "<p>x</p>"},
+    ])
+    return [f"wechat:mid:{tag}1", f"wechat:mid:{tag}2"]
+
+
+def _put_score(data_dir, key: str, *, reason: str, fp: str | None = None) -> None:
+    """写一条打分缓存。``fp`` 不传 = 用**当前**提示词指纹（会被命中）。"""
+    from mp_harvest.core import weekly_report as wr
+
+    wr.WeeklyCache(data_dir / "weekly" / "cache.json").put(
+        "scores", f"{fp or wr.prompt_fingerprint('scoring', None)}:{key}",
+        {"score": 8.5, "semiconductor": True, "title_cn": "译名",
+         "domain": wr.DOMAINS[0], "business_tags": ["公共"], "reason": reason},
+    )
+
+
+def test_candidates_detail_matches_preview_total(client, auth):
+    """明细与预览必须是**同一个口径** —— 否则抽屉里 3 篇、面板上写 5 篇。"""
+    acc = add_account(client, auth)
+    _seed_articles(acc["id"], n=3)
+    q = {**auth, "from_date": "2026-09-05", "to_date": "2026-09-05"}
+
+    prev = client.get("/api/weekly/preview", params=q).json()
+    det = client.get("/api/weekly/candidates", params=q).json()
+    assert det["total"] == prev["total"] == 3
+    assert len(det["items"]) == 3
+    assert {i["title"] for i in det["items"]} == {"文章0", "文章1", "文章2"}
+
+
+def test_candidates_carries_filter_verdict_and_reason(client, auth):
+    """筛选判定与理由要逐篇带上 —— 「这篇为什么在/不在池子里」。"""
+    acc = add_account(client, auth)
+    _seed_with_reason(acc["id"])
+    # only_kept=false：被筛掉的那篇默认不进候选，但它**照样要带判定与理由**
+    # （用户取消勾选、或想看「到底筛掉了什么」时就是这个视图）
+    det = client.get("/api/weekly/candidates", params={
+        **auth, "from_date": "2026-09-05", "to_date": "2026-09-05",
+        "only_kept": "false"}).json()
+
+    by = {i["title"]: i for i in det["items"]}
+    assert by["留下r"]["verdict"] is True
+    assert by["留下r"]["verdict_reason"] == "含工艺参数，可复现"
+    assert by["筛掉r"]["verdict"] is False
+    assert by["筛掉r"]["verdict_reason"] == "厂商宣传稿，无技术披露"
+
+
+def test_candidates_shows_cached_score_and_reason(client, auth, isolated_data_dir):
+    """命中打分缓存 → 界面能看到分数与**理由**（这正是本次要补的东西）。"""
+    acc = add_account(client, auth)
+    keys = _seed_with_reason(acc["id"])
+    _put_score(isolated_data_dir, keys[0], reason="含 EOT≈1nm 与跨导数据")
+
+    det = client.get("/api/weekly/candidates", params={
+        **auth, "from_date": "2026-09-05", "to_date": "2026-09-05"}).json()
+    assert det["scored"] == 1
+    hit = next(i for i in det["items"] if i["key"] == keys[0])
+    assert hit["scored"] is True
+    assert hit["score"] == 8.5
+    assert hit["reason"] == "含 EOT≈1nm 与跨导数据"
+    assert hit["business_tags"] == ["公共"]
+
+
+def test_candidates_ignores_stale_fingerprint_cache(client, auth, isolated_data_dir):
+    """**旧指纹的分数不能冒充这次的**。
+
+    用户改过提示词之后，缓存里躺着的是另一套标准打的分。拿它显示比不显示更糟 ——
+    真跑时会重新打分，界面上说的和实际做的就分家了。
+    """
+    acc = add_account(client, auth)
+    keys = _seed_with_reason(acc["id"])
+    _put_score(isolated_data_dir, keys[0], reason="上一套标准打的", fp="deadbeef")
+
+    det = client.get("/api/weekly/candidates", params={
+        **auth, "from_date": "2026-09-05", "to_date": "2026-09-05"}).json()
+    assert det["scored"] == 0
+    hit = next(i for i in det["items"] if i["key"] == keys[0])
+    assert hit["scored"] is False
+    # 未打分就是**没有**，不能编一个 0 分/默认标签出来
+    assert hit["score"] is None
+    assert hit["reason"] == ""
+    assert hit["business_tags"] == []
+
+
+def test_candidates_respects_only_kept(client, auth):
+    """默认跳过被筛掉的 —— 与 preview / 生成同一条口径。"""
+    acc = add_account(client, auth)
+    _seed_with_reason(acc["id"])
+    q = {**auth, "from_date": "2026-09-05", "to_date": "2026-09-05"}
+
+    assert client.get("/api/weekly/candidates", params=q).json()["total"] == 1
+    loose = client.get("/api/weekly/candidates", params={**q, "only_kept": "false"}).json()
+    assert loose["total"] == 2
+
+
+def test_external_verdict_reason_follows_its_own_stage(isolated_data_dir):
+    """外部来源的判定理由要跟着**定它的那一阶段**走。
+
+    内容筛选定的用 content_reason、标题筛选定的用 title_reason —— 一律取某一个
+    会给出另一阶段的理由，读起来像是"内容筛出问题"，其实内容根本没筛过。
+
+    ⚠️ **故意不取 `client` fixture**：它会带来 ``fake_core``，而后者把
+    ``mp_harvest.core.ai_filter`` 换成了一个 ``load_verdicts`` 恒返回 ``{}`` 的假模块
+    —— 那样这个测试就永远是绿的，测不出任何东西（「前缀传错」这个 bug 本来也长在
+    真模块里）。这里要的就是真的 `load_verdicts`，它不碰网络也不需要 app。
+    """
+    from mp_harvest.server.routes import weekly as wroutes
+
+    (isolated_data_dir / "ai_filter_cache.json").write_text(json.dumps({
+        "ext:a": {"title_keep": True, "title_reason": "标题说行"},
+        "ext:b": {"title_keep": True, "title_reason": "标题说行"},
+    }, ensure_ascii=False), encoding="utf-8")
+    (isolated_data_dir / "ai_content_filter_cache.json").write_text(json.dumps({
+        "ext:b": {"content_keep": False, "content_reason": "读完正文：不行"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    v = wroutes._external_verdicts()
+    assert v["ext:a"] == {"keep": True, "reason": "标题说行"}
+    assert v["ext:b"] == {"keep": False, "reason": "读完正文：不行"}, "内容筛选优先，理由也得是内容那一条"

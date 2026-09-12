@@ -1,6 +1,12 @@
 // 周报生成：预览候选 → 生成 → 重渲染（改模板不花钱）。
 import { defineStore } from 'pinia'
-import type { WeeklyIssue, WeeklyPreview, WeeklyPrompt, WeeklyResult } from '../types'
+import type {
+  WeeklyCandidates,
+  WeeklyIssue,
+  WeeklyPreview,
+  WeeklyPrompt,
+  WeeklyResult,
+} from '../types'
 import { LONG_TIMEOUT, call, rest } from '../api/rest'
 import { useTasksStore } from './tasks'
 import { useUiStore } from './ui'
@@ -48,6 +54,9 @@ export const useWeeklyStore = defineStore('weekly', {
     savedPrompts: {} as Record<string, string>,
     // ---- 数据 ----
     preview: null as WeeklyPreview | null,
+    /** 候选逐篇明细（抽屉打开时才有；关掉不清空，省一次往返） */
+    candidates: null as WeeklyCandidates | null,
+    loadingCandidates: false,
     issues: [] as WeeklyIssue[],
     loadingPreview: false,
     loadingIssues: false,
@@ -94,16 +103,21 @@ export const useWeeklyStore = defineStore('weekly', {
       return !all
     },
     // ---- 预览 ----
+    /** 候选查询参数。preview 与 candidates **必须**用同一份 —— 两处各拼一次的话，
+     *  改了口径只改一处，就会出现「面板写 5 篇、抽屉里 3 篇」这种对不上的怪象。 */
+    _candQuery(): URLSearchParams {
+      return new URLSearchParams({
+        from_date: this.fromDate,
+        to_date: this.toDate,
+        account_ids: [...this.accountIds].join(','),
+        source_ids: [...this.sourceIds].join(','),
+        only_kept: String(this.onlyKept),
+      })
+    },
     async loadPreview() {
       this.loadingPreview = true
       try {
-        const q = new URLSearchParams({
-          from_date: this.fromDate,
-          to_date: this.toDate,
-          account_ids: [...this.accountIds].join(','),
-          source_ids: [...this.sourceIds].join(','),
-          only_kept: String(this.onlyKept),
-        })
+        const q = this._candQuery()
         const r = await call(rest.get<WeeklyPreview>(`/api/weekly/preview?${q}`))
         if (r) {
           this.preview = r
@@ -115,6 +129,19 @@ export const useWeeklyStore = defineStore('weekly', {
         }
       } finally {
         this.loadingPreview = false
+      }
+    },
+    /** 拉候选**逐篇明细**（打开抽屉时才调）。与 preview 用同一份查询参数，
+     *  所以「共 N 篇」和抽屉里的条数必然一致。 */
+    async loadCandidates() {
+      this.loadingCandidates = true
+      try {
+        const r = await call(
+          rest.get<WeeklyCandidates>(`/api/weekly/candidates?${this._candQuery()}`),
+        )
+        if (r) this.candidates = r
+      } finally {
+        this.loadingCandidates = false
       }
     },
     async loadIssues() {

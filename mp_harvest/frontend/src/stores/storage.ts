@@ -41,8 +41,14 @@ export const useStorageStore = defineStore('storage', {
     total_bytes: 0,
     clearable_bytes: 0,
     loading: false,
+    /** 同 logs：骨架屏只在首次加载时出现（空列表时插骨架会闪） */
+    loaded: false,
   }),
   getters: {
+    /** 同 logs.showSkeleton：骨架屏只在首次加载时出现 */
+    showSkeleton(state): boolean {
+      return state.loading && !state.loaded
+    },
     clearable(state): StorageItem[] {
       return state.items.filter((i) => i.safe)
     },
@@ -57,6 +63,7 @@ export const useStorageStore = defineStore('storage', {
           ),
         )
         if (!r) return
+        this.loaded = true
         this.items = r.items
         this.total_bytes = r.total_bytes
         this.clearable_bytes = r.clearable_bytes

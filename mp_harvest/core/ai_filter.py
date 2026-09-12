@@ -662,8 +662,39 @@ def _backup_file(cp: Path) -> None:
         pass
 
 
+def _migrate_flat_entries(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, Any]]:
+    """扁平格式 → 带前缀的当前格式。**两代旧格式都要认**。
+
+    判定缓存的文件形状换过两回，中间那一代的产物是「扁平 + **已经带前缀**」：
+
+    | 代 | 字段名 | 谁写的 |
+    |---|---|---|
+    | 最老 | ``keep`` / ``reason``（无前缀） | 只有标题筛选时 |
+    | 中间 | ``title_keep`` / ``content_keep`` | 两阶段拆开、但还没包 ``__version__`` |
+    | 当前 | ``{"__version__": 2, "entries": {...}}`` | ``_CACHE_VERSION`` 之后 |
+
+    只认最老那一代是**读不出中间代的**（``"keep" in v`` 对 ``title_keep`` 是假），
+    于是整份缓存被判为空 —— 实测用户机上两个缓存文件都正好是中间代，后果是
+    重跑筛选对每篇都重新调模型（白花钱），且外部来源的判定一律合并不进来。
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in raw.items():
+        if str(k).startswith("__") or not isinstance(v, dict):
+            continue
+        row: dict[str, Any] = {}
+        for f in _VERDICT_SUFFIXES:
+            pk = f"{prefix}{f}" if prefix else f
+            if pk in v:      # 中间代：字段已经是当前前缀，直接用
+                row[pk] = v[pk]
+            elif f in v:     # 最老那代：无前缀，补上
+                row[pk] = v[f]
+        if row:
+            out[str(k)] = row
+    return out
+
+
 def _load_cache(cp: Path, prefix: str) -> tuple[dict[str, dict[str, Any]], bool]:
-    """读判定缓存；旧格式（无前缀字段）就地迁移为当前 prefix 格式。
+    """读判定缓存；旧格式就地迁移为当前 prefix 格式。
 
     返回 ``(entries, migrated)``；``migrated=True`` 时调用方必须把结果写回去 ——
     否则纯缓存命中的一轮（``judged == 0``）不会落盘，下次又迁移一遍、
@@ -678,17 +709,7 @@ def _load_cache(cp: Path, prefix: str) -> tuple[dict[str, dict[str, Any]], bool]
     entries = raw.get("entries")
     if raw.get("__version__") == _CACHE_VERSION and isinstance(entries, dict):
         return {str(k): v for k, v in entries.items() if isinstance(v, dict)}, False
-    # 旧格式 → 迁移
-    migrated: dict[str, dict[str, Any]] = {}
-    for k, v in raw.items():
-        if str(k).startswith("__") or not isinstance(v, dict):
-            continue
-        row: dict[str, Any] = {}
-        for f in _VERDICT_SUFFIXES:
-            if f in v:
-                row[f"{prefix}{f}" if prefix else f] = v[f]
-        if row:
-            migrated[str(k)] = row
+    migrated = _migrate_flat_entries(raw, prefix)
     if migrated:
         _backup_file(cp)
     return migrated, bool(migrated)
@@ -712,17 +733,9 @@ def load_verdicts(cache_path: str | Path, prefix: str = "") -> dict[str, dict[st
     entries = raw.get("entries")
     if raw.get("__version__") == _CACHE_VERSION and isinstance(entries, dict):
         return {str(k): v for k, v in entries.items() if isinstance(v, dict)}
-    out: dict[str, dict[str, Any]] = {}
-    for k, v in raw.items():
-        if str(k).startswith("__") or not isinstance(v, dict):
-            continue
-        row: dict[str, Any] = {}
-        for f in _VERDICT_SUFFIXES:
-            if f in v:
-                row[f"{prefix}{f}" if prefix else f] = v[f]
-        if row:
-            out[str(k)] = row
-    return out
+    # 与 _load_cache 共用同一份迁移 —— 各写一遍必然漂移，而这里漂移的代价是
+    # 「展示端点说没判定过、主流程却命中了缓存」这种互相矛盾的输出。
+    return _migrate_flat_entries(raw, prefix)
 
 
 # ── 判定主流程 ──────────────────────────────────────────────────────

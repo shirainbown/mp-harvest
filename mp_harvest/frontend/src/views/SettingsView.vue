@@ -200,7 +200,7 @@ function onWorkers() {
             共 {{ fmtSize(storage.total_bytes) }} · 其中可清理 {{ fmtSize(storage.clearable_bytes) }}
           </span>
         </div>
-        <SkeletonRows v-if="storage.loading && !storage.items.length" :rows="3" />
+        <SkeletonRows v-if="storage.showSkeleton" :rows="3" />
         <template v-else>
           <div v-for="it in storage.items" :key="it.key" class="st-row">
             <input v-if="it.safe" type="checkbox" class="cb" :checked="picked.has(it.key)"

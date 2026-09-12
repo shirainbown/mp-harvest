@@ -142,7 +142,8 @@ async function doClear() {
         </template>
       </div>
 
-      <SkeletonRows v-if="logs.loading && !logs.events.length" :rows="6" />
+      <!-- 只在**首次**加载时显示骨架屏：列表本来就空时再插一段，切筛选会闪 -->
+      <SkeletonRows v-if="logs.showSkeleton" :rows="6" />
       <EmptyState v-else-if="!logs.events.length"
                   text="还没有日志。跑一次拉取、筛选或周报生成，这里就会记下来。" />
       <table v-else class="log-table">

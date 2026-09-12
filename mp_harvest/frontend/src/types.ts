@@ -95,6 +95,41 @@ export interface WeeklyPreview {
   template_exists: boolean
 }
 
+/** 候选**逐篇**明细（2026-09）。两块判定来自不同阶段：
+ *  `verdict`/`verdict_reason` = AI 筛选（该不该进候选池）；
+ *  `score`/`reason` = 周报打分（排多少名、算不算半导体）。
+ *  打分只可能来自**缓存** —— 生成前本来就不存在这次的分数，没打过的 `scored=false`。 */
+export interface WeeklyCandidate {
+  key: string
+  title: string
+  title_cn: string
+  source: string
+  source_id: string
+  kind: string
+  date: string
+  publish_ts: number
+  url: string
+  /** AI 筛选：true 留 / false 删 / null 未判定 */
+  verdict: boolean | null
+  verdict_reason: string
+  /** 是否已有**当前提示词指纹**下的打分 */
+  scored: boolean
+  score: number | null
+  semiconductor: boolean | null
+  domain: string
+  business_tags: string[]
+  reason: string
+}
+
+export interface WeeklyCandidates {
+  from_date: string
+  to_date: string
+  only_kept: boolean
+  total: number
+  scored: number
+  items: WeeklyCandidate[]
+}
+
 export interface WeeklyIssue {
   issue_num: number
   date: string

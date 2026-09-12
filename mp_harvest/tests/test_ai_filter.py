@@ -511,6 +511,95 @@ def test_load_verdicts_is_side_effect_free():
     assert before == after, f"load_verdicts 不该产生任何新文件，却有：{set(after) - set(before)}"
 
 
+def test_legacy_unprefixed_fields_get_the_prefix():
+    """**最老那一代**：字段无前缀（``keep``），迁移时要补上当前前缀。
+
+    用户机上 2026-08-16 的 ``.bak-`` 备份就是这个形状。
+    """
+    from mp_harvest.core import ai_filter
+
+    d = Path(tempfile.mkdtemp())
+    f = d / "ai_filter_cache.json"
+    f.write_text(
+        json.dumps({"id1": {"keep": True, "reason": "相关", "model": "m"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    got = ai_filter.load_verdicts(f, prefix="title_")
+    assert got["id1"]["title_keep"] is True
+    assert got["id1"]["title_reason"] == "相关"
+
+
+def test_mid_generation_prefixed_fields_are_readable():
+    """**中间那一代**：扁平格式，但字段**已经带前缀**（``title_keep``）。
+
+    这是真出事的那一代：只认无前缀字段的话 ``"keep" in v`` 为假 → 整行被丢 →
+    整份缓存读成空的。用户机上两个缓存文件（1193 + 127 条）当时正是这个形状，
+    后果是重跑筛选对每篇都重新调模型（白花钱），且外部来源的判定一律合并不进来。
+
+    读不出来**不会报错**，只会安安静静当没有 —— 所以必须专门钉一条。
+    """
+    from mp_harvest.core import ai_filter
+
+    d = Path(tempfile.mkdtemp())
+    f = d / "ai_filter_cache.json"
+    f.write_text(
+        json.dumps({
+            "id1": {"title_keep": False, "title_reason": "财经动态，无技术细节"},
+            "id2": {"title_keep": True, "title_reason": "含工艺参数"},
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    got = ai_filter.load_verdicts(f, prefix="title_")
+    assert len(got) == 2, f"中间代整份被丢了，只读到 {got}"
+    assert got["id1"]["title_keep"] is False
+    assert got["id1"]["title_reason"] == "财经动态，无技术细节"
+    assert got["id2"]["title_keep"] is True
+
+
+def test_load_cache_and_load_verdicts_agree():
+    """主流程（``_load_cache``）与展示端点（``load_verdicts``）必须读到同一份内容。
+
+    两处曾各写一份迁移逻辑 —— 漂移的代价是「展示端点说没判定过、主流程却命中了
+    缓存」这种自相矛盾的输出，且两边看上去都正常。
+    """
+    from mp_harvest.core import ai_filter
+
+    d = Path(tempfile.mkdtemp())
+    f = d / "ai_content_filter_cache.json"
+    f.write_text(
+        json.dumps({"id1": {"content_keep": True, "content_reason": "含实测数据"}},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+    entries, migrated = ai_filter._load_cache(f, "content_")
+    assert entries == ai_filter.load_verdicts(f, prefix="content_")
+    assert entries["id1"]["content_keep"] is True
+    # 迁移过就要落盘 —— 否则每轮都重迁一遍（调用方靠这个标记决定写回）
+    assert migrated is True
+
+
+def test_mid_generation_cache_survives_a_round_trip():
+    """迁移一次之后就落到 ``__version__`` 格式，第二轮认出作者、不再迁移、不再备份。
+
+    少了这层，每跑一轮筛选都会往数据目录里多堆一个 ``.bak-`` 备份。
+    """
+    from mp_harvest.core import ai_filter
+
+    d = Path(tempfile.mkdtemp())
+    f = d / "ai_filter_cache.json"
+    f.write_text(json.dumps({"id1": {"title_keep": True, "title_reason": "好"}},
+                            ensure_ascii=False), encoding="utf-8")
+
+    entries, migrated = ai_filter._load_cache(f, "title_")
+    assert migrated is True
+    f.write_text(json.dumps({"__version__": ai_filter._CACHE_VERSION, "entries": entries},
+                            ensure_ascii=False), encoding="utf-8")
+
+    again, migrated2 = ai_filter._load_cache(f, "title_")
+    assert again == entries
+    assert migrated2 is False, "已是当前格式，不该再判为需要迁移"
+
+
 def test_load_verdicts_reads_v2_and_tolerates_garbage():
     from mp_harvest.core import ai_filter
 

@@ -78,7 +78,10 @@ body{font-family:var(--font-ui);font-size:var(--fs-md);color:var(--text-primary)
 select.input{cursor:pointer}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
 .dot.green{background:var(--success)} .dot.gray{background:var(--text-tertiary)} .dot.yellow{background:var(--warning)} .dot.red{background:var(--danger)}
-.badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--radius-sm);font-size:var(--fs-xs);background:var(--bg-hover);color:var(--text-secondary)}
+/* nowrap + 不收缩：徽章都是短标签，在 flex 行里被挤窄会把文字折成竖排
+   （「筛:留」折成两行，「保留」折成两行 —— 实测截图看到的）。
+   徽章存在的意义就是一眼可读，宁可把旁边的文字挤掉也不能自己变形。 */
+.badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--radius-sm);font-size:var(--fs-xs);background:var(--bg-hover);color:var(--text-secondary);white-space:nowrap;flex-shrink:0}
 .badge.m{background:rgba(47,111,237,.12);color:var(--accent)}
 .badge.g{background:rgba(63,155,98,.12);color:var(--success)}
 .badge.bu{background:rgba(201,138,44,.14);color:var(--warning)}

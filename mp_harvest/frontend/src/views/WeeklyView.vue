@@ -13,7 +13,10 @@ import SkeletonRows from '../components/SkeletonRows.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ProgressInline from '../components/ProgressInline.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
-import type { ExternalSource } from '../types'
+import SDrawer from '../components/SDrawer.vue'
+import SBadge from '../components/SBadge.vue'
+import STooltip from '../components/STooltip.vue'
+import type { ExternalSource, WeeklyCandidate } from '../types'
 import { useWeeklyStore } from '../stores/weekly'
 import { useAccountsStore } from '../stores/accounts'
 import { useExternalStore } from '../stores/external'
@@ -51,6 +54,38 @@ function _clampInt(v: string, lo: number, hi: number, fallback: number): number 
 function onOnlyKept(on: boolean) {
   weekly.onlyKept = on
   void weekly.loadPreview()
+}
+
+// ---- 候选明细（2026-09）----
+//
+// 起因：用户问「能不能看到文章判定的原因」。筛选理由本来就在列表页有，但**打分
+// 理由**只活在生成的 HTML 和缓存文件里 —— 生成前「候选 37 篇」是个点不开的数字。
+// 这里把它摊开：每篇的筛选判定 + 打分理由（有缓存的话）。
+//
+// 打分只可能来自缓存：生成前不存在这次的分数，没打过的老实标「生成时打分」。
+const showCands = ref(false)
+
+async function openCands() {
+  showCands.value = true
+  await weekly.loadCandidates()   // 每次打开都重拉，免得看到过期的口径
+}
+
+/** 只列「有打分」的那部分，供抽屉里的分组计数 */
+const scoredCount = computed(
+  () => weekly.candidates?.items.filter((i) => i.scored).length ?? 0,
+)
+
+/** 一行的副标题：中文译名优先，没有就不显示 */
+function candTitle(c: WeeklyCandidate): string {
+  return c.title_cn && c.title_cn !== c.title ? c.title_cn : ''
+}
+
+/** 筛选判定 → 徽章文案与配色（SBadge 的变体只有 m/g/bu/x/default）。
+ *  **未判定 ≠ 被否掉**，必须分开显示 —— 混成一个颜色会让人以为没筛过的也被筛掉了。 */
+function verdictView(c: WeeklyCandidate): { text: string; variant: 'g' | 'x' | 'bu' } {
+  if (c.verdict === true) return { text: '筛:留', variant: 'g' }
+  if (c.verdict === false) return { text: '筛:删', variant: 'x' }
+  return { text: '筛:未判定', variant: 'bu' }
 }
 
 function setScoreBatch(v: string) {
@@ -272,6 +307,11 @@ async function openPath(p: string) {
               <span class="badge" style="margin-left:8px">
                 本区间共 {{ weekly.preview?.total ?? 0 }} 篇候选
               </span>
+              <!-- 点开看逐篇：凭什么在池子里、怎么被判的、打了多少分 -->
+              <SButton v-if="weekly.preview?.total" size="sm" variant="ghost"
+                       style="margin-left:8px" @click="openCands">
+                查看明细
+              </SButton>
             </template>
           </div>
           <div class="mitm-row" style="align-items:flex-start">
@@ -437,10 +477,134 @@ async function openPath(p: string) {
         </div>
       </template>
     </div>
+  <!-- 候选明细（2026-09）：生成前摊开每篇「为什么在池子里、怎么被判的」。
+       ⚠️ 必须留在 `.view-root` **内部**：App.vue 用 `<WeeklyView v-show>` 切页，
+       放到 section 外面会让本组件变成多根节点、v-show 静默失效 —— 表现是这一页
+       和别的页同时渲染出来（实测踩到过）。抽屉自己是 Teleport 到 body 的，
+       放在这儿不影响它的定位。 -->
+  <SDrawer :open="showCands" title="候选明细" @close="showCands = false">
+    <SkeletonRows v-if="weekly.loadingCandidates" :rows="6" />
+    <EmptyState v-else-if="!weekly.candidates?.items.length"
+                text="当前条件下没有候选文章 —— 检查日期区间是否覆盖了已拉取/已扫描的内容。" />
+    <template v-else>
+      <div class="cand-sum">
+        共 <b>{{ weekly.candidates.total }}</b> 篇 ·
+        已有打分 <b>{{ scoredCount }}</b> 篇
+        <template v-if="scoredCount < weekly.candidates.total">
+          ，其余 <b>{{ weekly.candidates.total - scoredCount }}</b> 篇<b>生成时</b>才打分
+        </template>
+      </div>
+      <!-- 这句是防误解的关键：生成前不存在这次的分数，不是「丢了」 -->
+      <div class="cand-note">
+        打分理由来自缓存，只有与**当前提示词**对得上的才有 —— 改过提示词或首次跑都会显示
+        「待打分」，那是正常的，不是缺陷。筛选判定则一直都有。
+      </div>
+
+      <div v-for="c in weekly.candidates.items" :key="c.key" class="cand-row">
+        <!-- 一行元信息：日期 · 筛选判定 · 来源 · 分数/标签 -->
+        <div class="cand-head">
+          <span class="mono muted cand-date">{{ c.date }}</span>
+          <SBadge :variant="verdictView(c).variant">{{ verdictView(c).text }}</SBadge>
+          <span class="muted cand-src" :title="c.source">{{ c.source || c.kind }}</span>
+          <template v-if="c.scored">
+            <span class="cand-score">{{ c.score }}</span>
+            <SBadge v-if="c.semiconductor === false" variant="bu">非半导体</SBadge>
+            <span v-for="t in c.business_tags" :key="t" class="badge">{{ t }}</span>
+          </template>
+          <span v-else class="tertiary">待打分</span>
+        </div>
+        <div class="cand-title">
+          <STooltip :text="c.title" style="min-width:0"><span>{{ c.title }}</span></STooltip>
+        </div>
+        <div v-if="candTitle(c)" class="cand-sub">{{ candTitle(c) }}</div>
+        <!-- 两种理由各占一行、各带标签：抽屉只有 480px，**必须**说清哪条是哪个阶段的
+             —— 「筛选」决定进不进池子、「入选」是打分时写的，混着看会误判 -->
+        <div v-if="c.verdict_reason" class="cand-line">
+          <span class="cand-tag">筛选理由</span>{{ c.verdict_reason }}
+        </div>
+        <div v-if="c.reason" class="cand-line">
+          <span class="cand-tag">入选理由</span>{{ c.reason }}
+        </div>
+      </div>
+    </template>
+  </SDrawer>
   </section>
 </template>
 
 <style scoped>
+/* 候选明细抽屉 */
+.cand-sum {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.cand-note {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  line-height: 1.6;
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--sp-2);
+}
+/* 一篇一块：上下留白分组，比表格窄屏下好读（抽屉只有 480px） */
+.cand-row {
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+.cand-row:last-child {
+  border-bottom: 0;
+}
+.cand-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+.cand-date {
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+/* 带标签的理由行：标签定宽 + 正文可换行（理由要能读全，不截断） */
+.cand-line {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  line-height: 1.65;
+  margin-top: 3px;
+  word-break: break-word;
+}
+.cand-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.cand-title {
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cand-sub {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  margin-top: 1px;
+}
+.cand-src {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cand-score {
+  font-weight: 600;
+  color: var(--accent);
+}
+
 /* 候选来源（2026-09 重排）：改之前两块是「flex:1 的列 + 内部块级堆叠」——
    结构上就排不出多列，29 个公众号会把面板拉成一长条，而右边只有 1 个目录。 */
 .src-col {

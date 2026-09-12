@@ -773,6 +773,9 @@ def normalize_wechat(
         # AI 筛选的**最终判定**（内容筛选优先，没有则标题筛选；都没判过是 None）。
         # 只有明确的 False 才该被排除 —— 未判定 ≠ 被否掉（2026-09）
         "verdict": row.get("keep"),
+        # 上面那条判定的**理由**（合并时按同一优先级写进 row["reason"]）。
+        # 只用于「候选明细」展示：让人看得出这篇为什么在/不在池子里。
+        "verdict_reason": str(row.get("reason") or ""),
         "title": title or "(无标题)",
         "source": source_name or str(row.get("account") or ""),
         "date": _date_of(ts, str(row.get("publish_at") or "")),
@@ -802,6 +805,7 @@ def normalize_external(item: dict[str, Any]) -> dict[str, Any] | None:
         "source_id": str(item.get("source_id") or ""),
         # 外部条目的判定由调用方从 ai_filter 缓存合并进来（它们不在库里另存判定）
         "verdict": item.get("keep"),
+        "verdict_reason": str(item.get("reason") or ""),
         "arxiv_id": str(item.get("arxiv_id") or ""),
         "title": title or "(无标题)",
         "title_cn": str(item.get("title_cn") or ""),
@@ -1023,6 +1027,34 @@ def cache_key(stage: str, prompt_text: str | None, article_key: str) -> str:
     return f"{prompt_fingerprint(stage, prompt_text)}:{article_key}"
 
 
+def cached_scores(
+    items: Iterable[dict[str, Any]],
+    *,
+    prompts: dict[str, str],
+    cache: "WeeklyCache | None" = None,
+) -> dict[str, dict[str, Any]]:
+    """只查打分缓存、**不调模型**：返回 ``{文章键: 打分记录}``（没有的就不在表里）。
+
+    两个用处，且是同一个口径：
+    - 生成时挑出哪几篇可以跳过请求（``score_candidates`` 的缓存命中）；
+    - 生成**前**预览「这篇会怎么被打分、理由是什么」。
+
+    所以预览看到的理由，与真跑时算作「已打过、不再花钱」的判定**必然一致** ——
+    两处各写一遍的话，改了提示词之后预览会拿旧指纹的条目当数，说的和做的就分家了。
+
+    ⚠️ 指纹吃**整个 system prompt**（含代码固定的输出约束），所以用户改一个字，
+    这里就整体查不到 —— 那是**正确**行为（旧分数是另一套标准打的，不该冒充这次的）。
+    """
+    c = cache if cache is not None else WeeklyCache(default_cache_path())
+    prompt_text = prompts.get("scoring")
+    out: dict[str, dict[str, Any]] = {}
+    for it in items:
+        hit = c.get("scores", cache_key("scoring", prompt_text, it["key"]))
+        if hit is not None:
+            out[it["key"]] = hit
+    return out
+
+
 # ── 五个阶段 ──────────────────────────────────────────────────────
 
 
@@ -1050,14 +1082,11 @@ def score_candidates(
     """
     system = build_prompt("scoring", prompts.get("scoring"))
     prompt_text = prompts.get("scoring")
-    cached: dict[str, Any] = {}
-    pending: list[dict[str, Any]] = []
-    for it in items:
-        hit = cache.get("scores", cache_key("scoring", prompt_text, it["key"]))
-        if hit is not None:
-            cached[it["key"]] = hit
-        else:
-            pending.append(it)
+    # 缓存命中走 cached_scores —— 与「生成前预览」共用同一份查表逻辑
+    cached: dict[str, Any] = dict(cached_scores(items, prompts=prompts, cache=cache))
+    pending: list[dict[str, Any]] = [
+        it for it in items if it["key"] not in cached
+    ]
     if not pending:
         return cached, []
 

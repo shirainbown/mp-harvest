@@ -114,21 +114,27 @@ def _parse_range(from_date: str, to_date: str) -> tuple[int, int, str, str]:
     return start, end, from_date.strip(), to_date.strip()
 
 
-def _external_verdicts() -> dict[str, bool]:
-    """外部条目的**最终**判定：``{<ext:item_key>: keep}``。
+def _external_verdicts() -> dict[str, dict[str, Any]]:
+    """外部条目的**最终**判定与理由：``{<ext:item_key>: {"keep": bool, "reason": str}}``。
 
     外部条目不把判定存在自己的库里（避免两处真相），而是复用 ai_filter 的两阶段
     缓存，读取时合并 —— 这里按与 ``state.merge_article_verdicts`` **同一条优先级**
     取：内容筛选优先，没有则标题筛选；都没判过就不进这个字典。
+
+    理由跟着它自己那一阶段走：内容筛选定的用 ``content_reason``，标题筛选定的用
+    ``title_reason`` —— 不能一律取某一个，否则会给出**另一阶段**的理由。
     """
     from mp_harvest.core import ai_filter as ai_mod
 
     data = paths.data_dir()
-    out: dict[str, bool] = {}
+    out: dict[str, dict[str, Any]] = {}
     title: dict = {}
     content: dict = {}
+    # 前缀必须与**该文件字段的前缀**一致：标题缓存里存的是 ``title_keep``，传 ""
+    # 就一条都映射不出来 —— 于是下面 ``t.get("title_keep")`` 恒为 None、标题阶段的
+    # 判定永远合并不进来（2026-09 修复，与 _migrate_flat_entries 的两代格式问题同时发现）
     for path, prefix, bucket in (
-        (data / "ai_filter_cache.json", "", title),
+        (data / "ai_filter_cache.json", "title_", title),
         (data / "ai_content_filter_cache.json", "content_", content),
     ):
         try:
@@ -136,11 +142,17 @@ def _external_verdicts() -> dict[str, bool]:
         except Exception:  # noqa: BLE001
             continue
     for key in set(title) | set(content):
-        ck = (content.get(key) or {}).get("content_keep")
-        tk = (title.get(key) or {}).get("title_keep")
+        c = content.get(key) or {}
+        t = title.get(key) or {}
+        ck = c.get("content_keep")
+        tk = t.get("title_keep")
         keep = ck if ck is not None else tk
         if keep is not None:
-            out[key] = bool(keep)
+            out[key] = {
+                "keep": bool(keep),
+                "reason": str((c.get("content_reason") if ck is not None
+                               else t.get("title_reason")) or ""),
+            }
     return out
 
 
@@ -182,7 +194,8 @@ def _gather(
         for it in store.list_items(sid):
             # 判定不进外部库（避免两处真相），读的时候合并进来
             k = f"ext:{it.get('item_key') or ''}"
-            external_items.append({**it, "keep": verdicts.get(k)} if k in verdicts else it)
+            v = verdicts.get(k)
+            external_items.append({**it, "keep": v["keep"], "reason": v["reason"]} if v else it)
 
     return wr.collect_candidates(
         wechat_rows=wechat_rows, external_items=external_items,
@@ -246,6 +259,86 @@ def preview(
         "template_path": str(tpl_path),
         "template_is_custom": bool(tpl),
         "template_exists": Path(tpl_path).is_file(),
+    }
+
+
+@router.get("/api/weekly/candidates")
+def candidates(
+    from_date: str = "",
+    to_date: str = "",
+    account_ids: str = "",
+    source_ids: str = "",
+    only_kept: bool = True,
+) -> dict:
+    """候选**逐篇明细**（2026-09）：生成前就能看清每一篇「为什么在池子里、怎么被判的」。
+
+    与 ``/api/weekly/preview`` **同源同口径** —— 同一个 ``_gather``、同一个
+    ``only_kept``，只是把 preview 只用来计数的逐篇信息还回来。所以抽屉里看到
+    「共 N 篇」与面板上的数字必然对得上。
+
+    **单独一个接口**而不是并进 preview：preview 在改日期、勾来源时会被反复调用，
+    挂上整份明细会让每次交互都多传几十 KB。
+
+    两块「判定」分开给，因为它们来自不同阶段、回答不同问题：
+    - ``verdict``/``verdict_reason`` —— **AI 筛选**（要不要进候选池），读文章缓存；
+    - ``score``/``reason`` —— **周报打分**（排多少名、算不算半导体），读打分缓存。
+
+    ⚠️ 打分理由**只可能来自缓存**：生成前本来就不存在这次的分数。指纹对不上的
+    （用户改过提示词）一律按未打分给，由生成时补 —— 拿旧指纹的分数冒充会更糟。
+    """
+    from datetime import date, timedelta
+
+    if not to_date:
+        to_date = date.today().isoformat()
+    if not from_date:
+        from_date = (date.today() - timedelta(days=6)).isoformat()
+    start_ts, end_ts, fd, td = _parse_range(from_date, to_date)
+
+    accs = [x for x in str(account_ids or "").split(",") if x.strip()]
+    srcs = [x for x in str(source_ids or "").split(",") if x.strip()]
+    cands = _gather(accs, srcs, start_ts, end_ts, only_kept=only_kept)
+
+    prompts = wr.load_prompts(_prompts_path())
+    try:
+        scores = wr.cached_scores(
+            cands, prompts=prompts, cache=wr.WeeklyCache(_cache_path())
+        )
+    except Exception:  # noqa: BLE001
+        # 缓存读不出来只是「看不到已有分数」，不该让整页打不开
+        scores = {}
+
+    items: list[dict[str, Any]] = []
+    for c in cands:
+        s = scores.get(c["key"]) or {}
+        items.append(
+            {
+                "key": c["key"],
+                "title": c["title"],
+                "title_cn": str(s.get("title_cn") or c.get("title_cn") or ""),
+                "source": str(c.get("source") or ""),
+                "source_id": str(c.get("source_id") or ""),
+                "kind": str(c.get("kind") or ""),
+                "date": str(c.get("date") or ""),
+                "publish_ts": int(c.get("publish_ts") or 0),
+                "url": str(c.get("url") or ""),
+                "verdict": c.get("verdict"),
+                "verdict_reason": str(c.get("verdict_reason") or ""),
+                "scored": bool(s),
+                "score": s.get("score"),
+                "semiconductor": s.get("semiconductor"),
+                "domain": str(s.get("domain") or ""),
+                "business_tags": list(s.get("business_tags") or []),
+                "reason": str(s.get("reason") or ""),
+            }
+        )
+
+    return {
+        "from_date": fd,
+        "to_date": td,
+        "only_kept": bool(only_kept),
+        "total": len(items),
+        "scored": sum(1 for i in items if i["scored"]),
+        "items": items,
     }
 
 
