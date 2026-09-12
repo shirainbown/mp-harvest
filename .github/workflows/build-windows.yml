@@ -82,11 +82,16 @@ jobs:
 
       # 对**构建产物**跑自检：这是唯一能自动证明「这个 exe 真能起来」的手段。
       # 退出码与 JSON 文件都要看 —— GUI 子系统程序的 stdout 在有些环境下拿不到。
+      # ⚠️ 必须用 Start-Process -Wait：这是 console=False 的 GUI 程序，pwsh 里
+      # `& exe` 会**立即返回、不等待进程结束**（v2.3.0 首次构建就栽在这 ——
+      # exe 还在跑，Test-Path 已经判定「没有产出结果文件」）。
       - name: Self-check on the built exe
         shell: pwsh
         run: |
-          & "dist/MP Harvest/MP Harvest.exe" --self-check --out selfcheck.json
-          $code = $LASTEXITCODE
+          $p = Start-Process -FilePath "dist/MP Harvest/MP Harvest.exe" `
+            -ArgumentList '--self-check', '--out', 'selfcheck.json' `
+            -Wait -PassThru
+          $code = $p.ExitCode
           if (Test-Path selfcheck.json) {
             Get-Content selfcheck.json
             $result = Get-Content selfcheck.json -Raw | ConvertFrom-Json
