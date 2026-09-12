@@ -80,7 +80,7 @@ def dir_size(path: Path) -> tuple[int, int]:
         return 0, 0
     return total, count
 
-APP_VERSION = "2.2.6"
+APP_VERSION = "2.2.7"
 
 _SSL_CONTEXT = None
 
