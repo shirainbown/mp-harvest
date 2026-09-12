@@ -6,6 +6,7 @@ from mp_harvest.server.routes import (
     export,
     external,
     history,
+    logs,
     mitm,
     platform,
     settings,
@@ -26,6 +27,7 @@ ALL_ROUTERS = [
     settings.router,
     update.router,
     tasks.router,
+    logs.router,
 ]
 
 __all__ = ["ALL_ROUTERS"]

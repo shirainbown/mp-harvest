@@ -225,3 +225,21 @@ export interface ImportItem {
   url: string
   dup: boolean
 }
+
+// ---- 执行日志（2026-09）----
+export interface LogEvent {
+  id: number
+  /** epoch 秒 */
+  ts: number
+  level: 'debug' | 'info' | 'warn' | 'error'
+  /** 埋点类型：action / task.start / task.done / task.error / ai.call / ai.reply / ai.verdict / ai.error */
+  kind: string
+  message: string
+  /** 结构化上下文（后端已脱敏；可能含模型原始返回，长文本） */
+  data: Record<string, unknown>
+}
+
+export interface LogKindCount {
+  kind: string
+  count: number
+}

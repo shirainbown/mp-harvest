@@ -19,6 +19,39 @@ from typing import Any, Callable
 from mp_harvest.server.ws import broadcast_event
 
 
+def _log(level: str, kind: str, message: str, data: Any = None) -> None:
+    """执行日志入口（2026-09）。**永不抛** —— 任务的生命周期不该被日志拖垮。"""
+    try:
+        from mp_harvest.core.event_log import log_event
+
+        log_event(level, kind, message, data)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _result_summary(result: Any) -> Any:
+    """任务结果 → 适合进日志的摘要。
+
+    周报的 result 里带整份渲染上下文（几万字），照抄进日志既没用又占地；
+    嵌套结构与长列表一律折成「N 项」。
+    """
+    if not isinstance(result, dict):
+        return str(result)[:200]
+    out: dict[str, Any] = {}
+    for k, v in list(result.items())[:30]:
+        if isinstance(v, str):
+            out[str(k)] = v if len(v) <= 200 else v[:200] + "…"
+        elif isinstance(v, (int, float, bool)) or v is None:
+            out[str(k)] = v
+        elif isinstance(v, list):
+            out[str(k)] = (
+                [str(x)[:80] for x in v[:10]] if len(v) <= 10 else f"<{len(v)} 项，略>"
+            )
+        else:
+            out[str(k)] = f"<{type(v).__name__}>"
+    return out
+
+
 class TaskCancelled(Exception):
     """业务在取消标志置位时抛出，任务进入 cancelled 状态。"""
 
@@ -91,17 +124,30 @@ class TaskRegistry:
 
     def _run(self, task: Task, fn: WorkFn) -> None:
         task.status = "running"
+        started = time.time()
+        # 任务的生命周期在**这一个地方**埋点，就覆盖了全部后台工作
+        # （拉历史 / AI 筛选 / 导出 / 周报 / 更新下载），不必逐个路由去加。
+        _log("info", "task.start", f"{task.type} 开始",
+             {"task_id": task.id, "type": task.type})
+
+        def _elapsed() -> int:
+            return int((time.time() - started) * 1000)
+
         try:
             result = fn(task)
         except TaskCancelled:
             task.status = "cancelled"
             task.error = "任务已取消"
             broadcast_event("task.error", {"task_id": task.id, "error": task.error})
+            _log("info", "task.error", f"{task.type} 已取消",
+                 {"task_id": task.id, "type": task.type, "elapsed_ms": _elapsed()})
             return
         except Exception as exc:  # noqa: BLE001
             task.status = "error"
             task.error = str(exc) or exc.__class__.__name__
             broadcast_event("task.error", {"task_id": task.id, "error": task.error})
+            _log("error", "task.error", f"{task.type} 失败：{task.error}",
+                 {"task_id": task.id, "type": task.type, "elapsed_ms": _elapsed()})
             return
         # 业务静默返回时若已被取消，也按取消处理（保留结果：导出取消时
         # result 带 ok=False/partial 标记与已完成部分，前端可提示中断，2026-09）
@@ -110,11 +156,16 @@ class TaskRegistry:
             task.error = "任务已取消"
             task.result = result
             broadcast_event("task.error", {"task_id": task.id, "error": task.error})
+            _log("info", "task.error", f"{task.type} 已取消（业务已返回）",
+                 {"task_id": task.id, "type": task.type, "elapsed_ms": _elapsed()})
             return
         task.status = "done"
         task.percent = 100.0
         task.result = result
         broadcast_event("task.done", {"task_id": task.id, "result": result})
+        _log("info", "task.done", f"{task.type} 完成（{_elapsed() / 1000:.1f}s）",
+             {"task_id": task.id, "type": task.type, "elapsed_ms": _elapsed(),
+              "result": _result_summary(result)})
 
     def cancel(self, task_id: str) -> Task | None:
         """置取消标志（幂等）。任务不存在返回 None。"""

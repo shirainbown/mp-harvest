@@ -8,6 +8,7 @@ import SModal from '../components/SModal.vue'
 import SPopover from '../components/SPopover.vue'
 import STooltip from '../components/STooltip.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
+import SortControl from '../components/SortControl.vue'
 import SBadge from '../components/SBadge.vue'
 import SIcon from '../components/SIcon.vue'
 import ProgressInline from '../components/ProgressInline.vue'
@@ -165,9 +166,6 @@ const titleKeepCount = computed(() => articles.list.filter((a) => a.title_verdic
 // ---- 批量拉取（2026-08-09）----
 const batchOpen = ref(false)
 const batchSel = ref(new Set<string>())
-const sortDirLabel = computed(() =>
-  articles.sortBy === 'name' ? (articles.sortDir === 'asc' ? 'A→Z' : 'Z→A') : articles.sortDir === 'desc' ? '新→旧' : '旧→新',
-)
 function toggleBatchSel(id: string, on: boolean) {
   const s = new Set(batchSel.value)
   if (on) s.add(id)
@@ -464,16 +462,11 @@ function toggleAiIncludeContent() {
           />
         </template>
         <span class="muted" style="font-size:var(--fs-sm)">排序：</span>
-        <select
-          class="input btn-sm"
-          style="height:24px;font-size:var(--fs-xs);width:80px"
-          :value="articles.sortBy"
-          @change="articles.setSortBy(($event.target as HTMLSelectElement).value as 'time' | 'name')"
-        >
-          <option value="time">按时间</option>
-          <option value="name">按名称</option>
-        </select>
-        <SButton size="sm" variant="ghost" @click="articles.toggleSortDir()">{{ sortDirLabel }} <SIcon name="chevron-down" :size="12" /></SButton>
+        <SortControl
+          :by="articles.sortBy"
+          :dir="articles.sortDir"
+          @pick="articles.pickSort($event)"
+        />
         </template>
         <span class="spacer"></span>
         <span v-if="mixedScope" class="tertiary" style="font-size:var(--fs-xs)">

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .conftest import add_account, wait_task
@@ -31,15 +32,24 @@ def _seed_articles(account_id: str, n: int = 3, *, y: int = 2026, m: int = 9, d:
     )
 
 
-def _stub_model(monkeypatch):
+def _stub_model(monkeypatch, *, calls: list[dict] | None = None):
+    """打分桩**按 user 里的【第 N 篇】逐篇回显**（2026-09 批处理改造后必需）。
+
+    早先一律只回 ``idx: 0``：批模式下只有第 1 篇能对上，其余静默走补漏/兜底，
+    测试却照样绿。``calls`` 传入列表时会记下每次调用的 user，供断言请求形状。
+    """
     from mp_harvest.core import ai_filter as af
 
     def fake_call(cfg, system, user, max_retries=3, **kw):
+        if calls is not None:
+            calls.append({"system": system, "user": user})
         if '"score"' in system:
-            return json.dumps({"items": [{"idx": 0, "score": 8.0, "semiconductor": True,
-                                          "title_cn": "译名", "domain": "AI芯片架构与推理优化",
-                                          "business_tags": ["公共"], "reason": "理由"}]},
-                              ensure_ascii=False)
+            n = len(re.findall(r"【第 \d+ 篇】", user))
+            return json.dumps({"items": [
+                {"idx": i, "score": 8.0 - i * 0.1, "semiconductor": True,
+                 "title_cn": "译名", "domain": "AI芯片架构与推理优化",
+                 "business_tags": ["公共"], "reason": "理由"} for i in range(max(1, n))]},
+                ensure_ascii=False)
         if '"key_innovation"' in system:
             return json.dumps({"key_innovation": "k", "data_results": "d", "summary": "s"},
                               ensure_ascii=False)
@@ -264,3 +274,46 @@ def test_rerender_404_and_400(client, auth, tmp_path):
     empty.mkdir()
     r = client.post("/api/weekly/render", params=auth, json={"issue_dir": str(empty)})
     assert r.status_code == 400 and "数据快照" in r.json()["detail"]
+
+
+# ── 打分批次 / 并发（2026-09）──────────────────────────────────────
+
+
+def test_weekly_score_settings_are_registered(client, auth):
+    """两个新键要出现在 GET 里，且**声明了类型** —— 否则 PUT 会放行任意标量
+    （前端传 `true` 会被悄悄存成 1，下次生成就按「每批 1 篇」跑）。"""
+    s = client.get("/api/settings", params=auth).json()["settings"]
+    assert s["weekly.score_batch_size"] == 8
+    assert s["weekly.workers"] == 4
+
+    bad = client.put("/api/settings", params=auth,
+                     json={"weekly.score_batch_size": True})
+    assert bad.status_code == 400, bad.text
+
+
+def test_generate_uses_weekly_score_settings(client, auth, tmp_path, monkeypatch):
+    """周报打分必须读**周报自己的**旋钮 —— 不是 ai.batch_size。
+
+    3 篇候选 + 每批 2 → 打分请求恰好 2 次（2 篇 + 1 篇）。若读错键（ai.batch_size=50），
+    就只会发 1 次，这条断言会红。
+    """
+    calls: list[dict] = []
+    _stub_model(monkeypatch, calls=calls)
+    acc = add_account(client, auth)
+    _seed_articles(acc["id"], n=3)
+
+    s = client.get("/api/settings", params=auth).json()["settings"]
+    s.update({"weekly.score_batch_size": 2, "weekly.workers": 1,
+              "ai.batch_size": 50, "ai.workers": 4})
+    assert client.put("/api/settings", params=auth, json=s).status_code == 200
+
+    r = client.post("/api/weekly/generate", params=auth,
+                    json={"issue_num": 1, "from_date": "2026-09-05", "to_date": "2026-09-05",
+                          "selected_count": 1, "out_dir": str(tmp_path / "out")})
+    assert r.status_code == 202, r.text
+    task = wait_task(r.json()["task_id"])
+    assert task.status == "done", task.error
+
+    scoring = [c for c in calls if '"score"' in c["system"]]
+    batches = [len(re.findall(r"【第 \d+ 篇】", c["user"])) for c in scoring]
+    assert batches == [2, 1], f"打分批次不对：{batches}（说明没用 weekly.score_batch_size）"

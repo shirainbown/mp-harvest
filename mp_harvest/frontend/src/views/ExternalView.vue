@@ -12,6 +12,7 @@ import SIcon from '../components/SIcon.vue'
 import SSwitch from '../components/SSwitch.vue'
 import STooltip from '../components/STooltip.vue'
 import SegmentedControl from '../components/SegmentedControl.vue'
+import SortControl from '../components/SortControl.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ProgressInline from '../components/ProgressInline.vue'
@@ -137,10 +138,6 @@ const q = computed({
     ext.q = v
   },
 })
-const sortOptions = [
-  { value: 'desc', label: '新→旧' },
-  { value: 'asc', label: '旧→新' },
-]
 const sourceOptions = computed(() => [
   { value: '', label: `全部来源（${ext.sources.length}）` },
   ...ext.sources.map((s) => ({ value: s.id, label: s.name || s.path })),
@@ -286,11 +283,7 @@ async function copyLink(a: { url: string }) {
           </select>
           <SInput v-model="q" placeholder="搜索标题 / 作者 / 领域…" style="width:200px" />
           <span class="form-label">排序</span>
-          <SegmentedControl
-            :model-value="ext.order"
-            :options="sortOptions"
-            @update:model-value="ext.order = $event as 'desc' | 'asc'"
-          />
+          <SortControl :by="ext.sortBy" :dir="ext.sortDir" @pick="ext.pickSort($event)" />
           <span class="spacer"></span>
           <SButton size="sm" variant="ghost" @click="ext.selectAllVisible()">全选</SButton>
           <SButton size="sm" variant="ghost" @click="ext.clearSelection()">取消选择</SButton>
@@ -481,7 +474,8 @@ async function copyLink(a: { url: string }) {
           <SInput v-model="aiWorkers" style="width:90px" />
         </div>
         <span v-if="aiStage === 'content'" class="muted" style="font-size:var(--fs-sm)">
-          内容筛选只处理<b>标题筛选通过</b>的条目，正文优先读本地正文文件，否则用摘要。
+          正文优先读本地正文文件，没有就用摘要（未写回过的目录读到的是论文摘要）——
+          <b>不需要先做标题筛选</b>，外部条目取正文不联网。
         </span>
       </div>
       <template #foot>

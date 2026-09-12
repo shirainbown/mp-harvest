@@ -172,6 +172,17 @@ BUTTON_BINDINGS: list[tuple[str, str, str, int]] = [
     ("layout/Sidebar.vue", "错误中心 - 清空", "ui.clearErrors", 1),
     # 打开本地正文 + 打开 PDF
     ("views/ExternalView.vue", "打开本地正文 / PDF", "openLocal", 2),
+    # 排序两段控件（2026-09 由「下拉 + 方向按钮」合并而来）——两个列表页各一处
+    ("views/HistoryView.vue", "排序控件", "articles.pickSort", 1),
+    ("views/ExternalView.vue", "排序控件", "ext.pickSort", 1),
+    # 打分速度两个输入框（每批篇数 / 并发请求数，2026-09）
+    ("views/WeeklyView.vue", "打分批大小", "setScoreBatch", 1),
+    ("views/WeeklyView.vue", "打分并发请求数", "setScoreWorkers", 1),
+    # 执行日志页（2026-09）：查询按钮 + 搜索框回车各一处
+    ("views/LogsView.vue", "查询（按钮 + 回车）", "logs.load", 2),
+    ("views/LogsView.vue", "加载更多", "logs.loadMore", 1),
+    ("views/LogsView.vue", "复制全部", "copyAll", 1),
+    ("views/LogsView.vue", "清空（二次确认后执行）", "doClear", 1),
 ]
 
 # (文件, 处理函数名, 函数体里必须出现的调用)
@@ -186,6 +197,13 @@ HANDLER_BODIES: list[tuple[str, str, str]] = [
     ("components/ToastHost.vue", "copyToast", "copyText("),
     ("layout/Sidebar.vue", "copyOne", "copyText("),
     ("layout/Sidebar.vue", "copyAll", "copyText("),
+    # 改完必须真的落盘（只在本地赋值的话，下次生成还是用旧值，且不会报错）
+    ("views/WeeklyView.vue", "setScoreBatch", "savePrefs("),
+    ("views/WeeklyView.vue", "setScoreWorkers", "savePrefs("),
+    # 日志页的复制一律走 copyText（带 execCommand 兜底、返回真实结果）
+    ("views/LogsView.vue", "copyAll", "copyText("),
+    ("views/LogsView.vue", "copyOne", "copyText("),
+    ("views/LogsView.vue", "doClear", "logs.clear("),
 ]
 
 

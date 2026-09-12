@@ -16,7 +16,9 @@ export const useExternalStore = defineStore('external', {
     sourceId: '',
     items: [] as ExternalItem[],
     q: '',
-    order: 'desc' as 'desc' | 'asc',
+    // 排序维度与方向（2026-09：原先只有方向，与「历史文章」页的排序控件对不齐）
+    sortBy: 'time' as 'time' | 'name',
+    sortDir: 'desc' as 'asc' | 'desc',
     selected: new Set<string>() as Set<string>,
     loading: false,
     /** 正在扫描的来源 id（用来只在那一行显示进度） */
@@ -45,10 +47,23 @@ export const useExternalStore = defineStore('external', {
             .includes(needle),
         )
       }
-      const sorted = [...rows].sort(
-        (a, b) => Date.parse(b.date || '') - Date.parse(a.date || ''),
-      )
-      return state.order === 'asc' ? sorted.reverse() : sorted
+      // 外部条目没有「公众号名」可排，「按名称」排的是**标题**（论文列表这样才有用）。
+      //
+      // ⚠️ 两个维度的比较器「自然方向」是相反的：`localeCompare` 天然升序
+      // （a<b 给负数），而 `Date.parse(b) - Date.parse(a)` 天然降序。所以方向
+      // 系数要分别算 —— 用一个系数乘两边，时间排序会**整个反过来**（有测试钉住）。
+      const nameDir = state.sortDir === 'asc' ? 1 : -1
+      const timeDir = state.sortDir === 'desc' ? 1 : -1
+      return [...rows].sort((a, b) => {
+        if (state.sortBy === 'name') {
+          const byName = (a.title || '').localeCompare(b.title || '', 'zh')
+          if (byName) return byName * nameDir
+          return Date.parse(b.date || '') - Date.parse(a.date || '') // 同名按时间新→旧
+        }
+        const byTime = Date.parse(b.date || '') - Date.parse(a.date || '')
+        if (byTime) return byTime * timeDir
+        return (a.title || '').localeCompare(b.title || '', 'zh')
+      })
     },
     selectedInView(state): ExternalItem[] {
       return this.visible.filter((a) => state.selected.has(a.id))
@@ -59,9 +74,23 @@ export const useExternalStore = defineStore('external', {
       const r = await call(rest.get<ExternalSource[]>('/api/external/sources'))
       if (r) this.sources = r
     },
+    /** 排序控件的**一次点击**：点已选中的段翻转方向，点另一段换维度（与 articles 同款逻辑） */
+    pickSort(by: 'time' | 'name') {
+      if (this.sortBy === by) this.toggleSortDir()
+      else this.setSortBy(by)
+    },
+    setSortBy(by: 'time' | 'name') {
+      this.sortBy = by
+      // 切维度时重置为该维度的默认方向：时间默认最新在前、名称默认 A→Z
+      this.sortDir = by === 'time' ? 'desc' : 'asc'
+    },
+    toggleSortDir() {
+      this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc'
+    },
     async load() {
       this.loading = true
       try {
+        // order 固定 desc：真正的排序在前端 visible 里做（下面这行只决定拉取顺序）
         const q = new URLSearchParams({ source_id: this.sourceId, order: 'desc' })
         const r = await call(rest.get<ExternalItem[]>(`/api/external/items?${q}`))
         if (r) this.items = r

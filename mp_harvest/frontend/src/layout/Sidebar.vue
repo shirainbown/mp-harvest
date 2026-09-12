@@ -41,6 +41,7 @@ const groups: Array<Array<{ id: ViewId; label: string }>> = [
   ],
   [
     { id: 'ai', label: 'AI 模型' },
+    { id: 'logs', label: '执行日志' },
     { id: 'settings', label: '设置' },
   ],
 ]

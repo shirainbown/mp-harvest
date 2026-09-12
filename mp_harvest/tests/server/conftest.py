@@ -453,6 +453,14 @@ def _fake_ai_filter() -> types.ModuleType:
         raise NotImplementedError("测试里请自行 monkeypatch _call_model")
 
     mod._call_model = _call_model
+
+    # 传输层失败的专用异常（真实模块里是 RuntimeError 的子类，2026-09 加）。
+    # 周报的批处理靠它区分「端点坏了」与「返回的东西解析不了」—— 两者处置不同：
+    # 前者不重试，后者降级逐篇。假模块必须同形，否则 weekly_report 连 import 都过不去。
+    class ModelCallError(RuntimeError):
+        pass
+
+    mod.ModelCallError = ModelCallError
     # 真实模块用 build_prompt 拼「原则 + 固定输出要求」，周报侧同形，这里给个占位
     mod.FIXED_OUTPUT_REQUIREMENTS = "【输出格式（必须严格遵守，软件固定，不可更改）】"
 
@@ -634,6 +642,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     （曾因此在该目录留下带测试临时路径的 harvest.db 记录）。
     """
     import mp_harvest.core.ai_filter as ai_mod
+    import mp_harvest.core.event_log as log_mod
     import mp_harvest.core.external_sources as ext_mod
     import mp_harvest.core.settings as settings_mod
     import mp_harvest.core.sightings as sightings_mod
@@ -643,11 +652,14 @@ def isolated_data_dir(tmp_path, monkeypatch):
     d.mkdir(parents=True, exist_ok=True)
     for mod in (paths_mod, settings_mod, sightings_mod, ai_mod):
         monkeypatch.setattr(mod, "data_dir", lambda *a, **k: d, raising=False)
-    # 外部来源库是**进程内单例**，DB 路径在首次取用时才解析。不复位的话第二个
-    # 测试仍连着上一个测试的 tmp 数据目录 —— 条目会跨测试串味。
+    # 外部来源库与执行日志都是**进程内单例**，DB 路径在首次取用时才解析。
+    # 不复位的话第二个测试仍连着上一个测试的 tmp 数据目录 —— 条目会跨测试串味，
+    # 日志则会被写进一个已经删掉的目录（静默丢失，测试也断言不了内容）。
     ext_mod.reset_external_store()
+    log_mod.reset_event_log()
     yield d
     ext_mod.reset_external_store()
+    log_mod.reset_event_log()
 
 
 @pytest.fixture()

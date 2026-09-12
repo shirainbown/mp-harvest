@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
+import urllib.error
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from mp_harvest.core import ai_filter as af  # noqa: E402
 from mp_harvest.core.ai_filter import (  # noqa: E402
+    _call_model,
     DEFAULT_CONTENT_PRINCIPLES,
     DEFAULT_CONTENT_PROMPT,
     DEFAULT_PRINCIPLES,
@@ -19,6 +25,8 @@ from mp_harvest.core.ai_filter import (  # noqa: E402
     ModelConfig,
     _model_label,
     _build_anthropic_payload,
+    _build_openai_payload,
+    _build_payload,
     _endpoint,
     _parse_content,
     article_key,
@@ -112,6 +120,21 @@ def test_anthropic_endpoint_payload_parse():
         model="m", format="openai",
     )
     assert _parse_content(oai, {"choices": [{"message": {"content": "hi"}}]}) == "hi"
+
+
+def test_openai_payload_json_mode_can_be_turned_off():
+    """要**成稿文字**的阶段必须能关掉 json_object（2026-09 周报核心洞察事故的根因）。
+
+    开着的时候模型只能合规地回 ``{"content": "…"}``，调用方按纯文本处理就会把整包
+    放进最终产物。默认**仍然开着** —— 既有调用点的行为一个字都不能变。
+    """
+    cfg = ModelConfig(id="o", name="O", base_url="https://x/v1", api_key="k",
+                      model="m", format="openai")
+    assert _build_openai_payload(cfg, "s", "u")["response_format"] == {"type": "json_object"}
+    assert "response_format" not in _build_openai_payload(cfg, "s", "u", json_mode=False)
+    # 走 _build_payload 这条真实分发路径也要生效（_call_model 用的是它）
+    assert "response_format" not in _build_payload(cfg, "s", "u", json_mode=False)
+    assert _build_payload(cfg, "s", "u")["response_format"] == {"type": "json_object"}
 
 
 def test_save_load_models():
@@ -506,3 +529,109 @@ def test_load_verdicts_reads_v2_and_tolerates_garbage():
     arr = d / "arr.json"
     arr.write_text("[1,2,3]", encoding="utf-8")
     assert ai_filter.load_verdicts(arr) == {}
+
+
+# ── 执行日志埋点（2026-09）────────────────────────────────────────
+#
+# 「用户能看到 AI 返回了什么、筛选结果如何」是这次需求的**核心诉求**，所以下面
+# 断言的是**事情真的被记下来了**，而不是接口形状。打包版没有控制台，这里是
+# 用户唯一的观察窗口。
+
+
+def _isolated_log(monkeypatch, tmp_path):
+    """把执行日志指向临时库 —— core 测试不走 server 那套隔离夹具。"""
+    from mp_harvest.core import event_log as el
+
+    store = el.EventLog(tmp_path / "events.db")
+    monkeypatch.setattr(el, "get_event_log", lambda *a, **k: store)
+    return store
+
+
+def test_call_model_logs_raw_reply(monkeypatch, tmp_path):
+    """每次模型调用都要留下**原始返回** —— 排查「模型为什么这么判」全靠它。"""
+    store = _isolated_log(monkeypatch, tmp_path)
+    monkeypatch.setattr(af, "_post_chat", lambda cfg, payload, timeout=180: "模型的原话")
+
+    assert _call_model(_cfg("m"), "系统提示", "用户内容") == "模型的原话"
+
+    rows = store.list(kind="ai.reply")
+    assert len(rows) == 1, "模型返回没有留痕"
+    d = rows[0]["data"]
+    assert d["reply"] == "模型的原话"
+    assert d["model"] == "m" and d["elapsed_ms"] >= 0
+    assert d["prompt_chars"] == len("系统提示") and d["input_chars"] == len("用户内容")
+
+
+def test_log_uses_model_label_when_name_is_empty(monkeypatch, tmp_path):
+    """模型没起名时日志要显示**模型 ID** —— 否则就是「模型「模型」返回…」。
+
+    实跑时正是这样：用户配了 deepseek 但没填名称，日志里全是「模型「模型」」，
+    等于什么都没说。
+    """
+    store = _isolated_log(monkeypatch, tmp_path)
+    monkeypatch.setattr(af, "_post_chat", lambda cfg, payload, timeout=180: "ok")
+    unnamed = ModelConfig(id="x", name="", base_url="https://api.deepseek.com",
+                          api_key="k", model="deepseek-v4-flash", format="openai")
+    _call_model(unnamed, "S", "U")
+
+    row = store.list(kind="ai.reply")[0]
+    assert "deepseek-v4-flash" in row["message"], row["message"]
+    assert row["data"]["model"] == "deepseek-v4-flash"
+    assert row["data"]["model_id"] == "deepseek-v4-flash"
+
+
+def test_call_model_logs_http_error_body(monkeypatch, tmp_path):
+    """HTTP 错误响应体原先读出来就**直接丢掉**了 —— 它恰恰是排查「模型为什么
+    不可用」的唯一线索（key 无效？模型名写错？额度耗尽？都在这个 body 里）。"""
+    store = _isolated_log(monkeypatch, tmp_path)
+
+    def boom(cfg, payload, timeout=180):
+        raise urllib.error.HTTPError(
+            "https://x/v1/chat/completions", 404, "Not Found", {},
+            io.BytesIO(b'{"error":{"message":"model not found"}}'),
+        )
+
+    monkeypatch.setattr(af, "_post_chat", boom)
+    with pytest.raises(RuntimeError):
+        _call_model(_cfg("m"), "S", "U", max_retries=1)
+
+    errs = store.list(kind="ai.error")
+    assert errs, "模型调用失败没有留痕"
+    # 每次尝试各记一条，最后再记一条「重试耗尽」—— 404 那条不是最新的
+    with_status = [e for e in errs if e["data"]["status"] == 404]
+    assert with_status, f"HTTP 状态码与响应体都没留下：{[e['data'] for e in errs]}"
+    assert "model not found" in with_status[0]["data"]["reply"]
+    assert any("失败" in e["message"] for e in errs), "重试耗尽也没留痕"
+
+
+def test_judge_articles_logs_batch_summary(monkeypatch, tmp_path):
+    """每批筛选的通过/过滤要留痕 —— 直接对应「用户的一些动作：筛选的结果」。"""
+    store = _isolated_log(monkeypatch, tmp_path)
+    monkeypatch.setattr(af, "_post_chat", lambda cfg, payload, timeout=180: json.dumps({
+        "items": [
+            {"idx": 0, "keep": True, "category": "fpga", "relevance_score": 8,
+             "technical_depth": 7, "confidence": "high", "reason": "相关"},
+            {"idx": 1, "keep": False, "category": "other", "relevance_score": 1,
+             "technical_depth": 1, "confidence": "high", "reason": "无关"},
+        ]}))
+
+    with tempfile.TemporaryDirectory() as td:
+        judge_articles([_art("id1"), _art("id2")], [_cfg("m")], prompt="P",
+                       cache_path=Path(td) / "c.json", batch_size=2, workers=1)
+
+    verdicts = store.list(kind="ai.verdict")
+    assert verdicts, "筛选批次没有留痕"
+    assert "通过 1" in verdicts[0]["message"] and "过滤 1" in verdicts[0]["message"]
+
+
+def test_logging_failure_does_not_break_the_call(monkeypatch, tmp_path):
+    """日志坏了也必须照常返回 —— 埋点在主流程里，绝不能反过来把调用拖垮。"""
+    from mp_harvest.core import event_log as el
+
+    class Exploding:
+        def write(self, **kw):
+            raise RuntimeError("日志库坏了")
+
+    monkeypatch.setattr(el, "get_event_log", lambda *a, **k: Exploding())
+    monkeypatch.setattr(af, "_post_chat", lambda cfg, payload, timeout=180: "照常返回")
+    assert _call_model(_cfg("m"), "S", "U") == "照常返回"

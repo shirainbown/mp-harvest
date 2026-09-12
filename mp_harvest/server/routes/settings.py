@@ -32,6 +32,12 @@ SETTING_DEFAULTS: dict[str, Any] = {
     "weekly.org_name": "",
     "weekly.org_email": "",
     "weekly.archive_url": "",
+    # 打分阶段的「每批几篇」与「并发请求数」（2026-09）。**不复用 ai.batch_size**：
+    # 那个默认 50 是给标题筛选调的（每篇输出 ~60 token），而打分每篇 ~150 token，
+    # 50 篇一批必然超出模型的单次输出上限、整批解析失败。两个阶段的最优值差 6 倍，
+    # 共用一个键等于把筛选页的调优变成周报页的故障。
+    "weekly.score_batch_size": 8,
+    "weekly.workers": 4,
 }
 
 # 已知设置项的声明类型（PUT 校验用；bool 判定须先于 int，因 bool 是 int 子类）
@@ -48,6 +54,8 @@ _SETTING_TYPES: dict[str, type] = {
     "weekly.org_name": str,
     "weekly.org_email": str,
     "weekly.archive_url": str,
+    "weekly.score_batch_size": int,
+    "weekly.workers": int,
 }
 
 # 需要做 ~ 展开 + 绝对化 的路径型设置项。原先只对 export.default_dir 生效，

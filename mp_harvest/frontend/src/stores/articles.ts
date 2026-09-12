@@ -258,6 +258,15 @@ export const useArticlesStore = defineStore('articles', {
     toggleSortDir() {
       this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc'
     },
+    /** 排序控件的**一次点击**：点已选中的段翻转方向，点另一段换维度。
+     *
+     * 放在 store 而不是视图里：这是「点了没反应」的高发区，逻辑得能单测
+     * （`tests/test_sort_control.py` 用 node 驱动真实模块跑）。
+     */
+    pickSort(by: 'time' | 'name') {
+      if (this.sortBy === by) this.toggleSortDir()
+      else this.setSortBy(by)
+    },
     setStage(stage: AiStage) {
       this.aiStage = stage
       this.view = 'all'

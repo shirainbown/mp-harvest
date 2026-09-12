@@ -50,12 +50,20 @@ def _settings() -> dict[str, Any]:
     return settings_mod.load_settings()
 
 
-def _ai_settings() -> tuple[int, int]:
+def _score_settings() -> tuple[int, int]:
+    """打分的「每批几篇 / 并发请求数」。
+
+    用周报**自己的**键（``weekly.score_batch_size`` / ``weekly.workers``），
+    不借 ``ai.batch_size`` —— 那个默认 50 是给逐篇判定调的，打分一篇的输出是它的
+    两倍多，套过来会整批超输出上限。见 settings.py 的键表注释。
+    """
     s = _settings()
     try:
-        return int(s.get("ai.batch_size") or 50), int(s.get("ai.workers") or 4)
+        batch = int(s.get("weekly.score_batch_size") or wr.SCORING_BATCH_DEFAULT)
+        workers = int(s.get("weekly.workers") or 4)
     except Exception:  # noqa: BLE001
-        return 50, 4
+        return wr.SCORING_BATCH_DEFAULT, 4
+    return max(1, min(wr.SCORING_BATCH_MAX, batch)), max(1, min(16, workers))
 
 
 def _resolve_out_dir(raw: str) -> Path:
@@ -211,7 +219,7 @@ def generate(body: WeeklyGenerateIn) -> dict:
         _settings().get("weekly.report_title") or "逻辑芯片行业洞察快报"
     )
     prompts = wr.load_prompts(_prompts_path())
-    _, workers = _ai_settings()
+    batch_size, workers = _score_settings()
     org = _org()
 
     def work(task: Task) -> dict:
@@ -230,6 +238,7 @@ def generate(body: WeeklyGenerateIn) -> dict:
             template_path=template_path or None,
             download_images=body.download_images,
             workers=workers,
+            batch_size=batch_size,
             on_stage=lambda msg: task.update(message=str(msg)),
             on_progress=lambda done, total: task.update(
                 percent=(done / total * 90.0) if total else 0.0,

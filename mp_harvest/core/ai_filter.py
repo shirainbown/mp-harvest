@@ -266,6 +266,37 @@ def article_key(art: dict[str, Any]) -> str:
 # ── 模型调用 ────────────────────────────────────────────────────────
 
 
+class ModelCallError(RuntimeError):
+    """**传输层**失败（重试耗尽）：网络不通、超时、429、key 无效、服务端 5xx。
+
+    与「调用成功了但返回的东西解析不了」是两回事，调用方要分开处置：前者说明
+    端点/凭据有问题，**再拆成 N 个小请求去打只会更糟**（每次还带退避睡眠），
+    后者才值得降级重试。子类化 ``RuntimeError``，既有的 ``except RuntimeError``
+    写法全部照旧有效。
+    """
+
+
+def _log_verdict_batch(stage: str, keep_key: str, rows: list[dict], err: str | None) -> None:
+    """一批判定的汇总进执行日志（2026-09）。
+
+    逐篇判定在界面上本来就看得见，日志要记的是**过程**：这一批判了多少、通过多少、
+    有没有出错 —— 一批一行，不会把日志淹掉。
+    """
+    try:
+        from mp_harvest.core.event_log import log_event
+
+        kept = sum(1 for r in rows if r.get(keep_key) is True)
+        log_event(
+            "warn" if err else "info",
+            "ai.verdict",
+            f"{stage}判定一批 {len(rows)} 篇：通过 {kept}，过滤 {len(rows) - kept}"
+            + (f"；{err}" if err else ""),
+            {"stage": stage, "batch": len(rows), "kept": kept, "error": err or ""},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _endpoint(cfg: ModelConfig) -> str:
     base = cfg.base_url.rstrip("/")
     if cfg.format == "anthropic":
@@ -274,17 +305,25 @@ def _endpoint(cfg: ModelConfig) -> str:
 
 
 def _build_openai_payload(
-    cfg: ModelConfig, system_prompt: str, user_content: str
+    cfg: ModelConfig,
+    system_prompt: str,
+    user_content: str,
+    *,
+    json_mode: bool = True,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "model": cfg.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.1,
-        "response_format": {"type": "json_object"},
     }
+    # json_mode=False 用于**要成稿文字**的阶段（周报核心洞察）。强制 json_object
+    # 会让模型只能合规地回 {"content": "…"}，整包进报告就是乱码（2026-09 实跑暴露）。
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    return payload
 
 
 def _build_anthropic_payload(
@@ -305,11 +344,13 @@ def _build_payload(
     user_content: str,
     *,
     max_tokens: int = 4096,
+    json_mode: bool = True,
 ) -> dict[str, Any]:
     if cfg.format == "anthropic":
+        # Anthropic 没有 response_format 字段，json_mode 对它天然是空操作
         return _build_anthropic_payload(cfg, system_prompt, user_content, max_tokens)
     # OpenAI 兼容格式没有 max_tokens 上限字段（由模型侧决定），该参数只对 anthropic 生效
-    return _build_openai_payload(cfg, system_prompt, user_content)
+    return _build_openai_payload(cfg, system_prompt, user_content, json_mode=json_mode)
 
 
 def _post_chat(cfg: ModelConfig, payload: dict[str, Any], *, timeout: float = 180) -> str:
@@ -354,19 +395,60 @@ def _call_model(
     *,
     max_tokens: int = 4096,
     timeout: float = 180,
+    json_mode: bool = True,
 ) -> str:
     """调用模型并返回纯文本回复。
 
     ``max_tokens`` / ``timeout`` 可选（2026-09 加，默认值与旧行为一致）：周报的
     深度解读/核心洞察输出比逐篇判定长得多，Anthropic 路径写死 4096 会截断。
     OpenAI 兼容格式没有该字段，``max_tokens`` 对它无效（由模型侧决定）。
+
+    ``json_mode=False``（2026-09 加，默认 True 保持既有行为）：**要成稿文字而不是
+    JSON 的阶段必须关掉它**。强制 ``json_object`` 时模型只能回 ``{"content": "…"}``
+    这类包装，若调用方按纯文本处理，整包就会进最终产物（周报核心洞察的乱码事故）。
     """
-    payload = _build_payload(cfg, system_prompt, user_content, max_tokens=max_tokens)
+    payload = _build_payload(
+        cfg, system_prompt, user_content, max_tokens=max_tokens, json_mode=json_mode
+    )
     is_openai = cfg.format != "anthropic"
     last_err: Exception | None = None
+    started = time.time()
+
+    def _log(kind: str, text: str, *, attempt: int, status: int = 0, note: str = "") -> None:
+        """把这次调用的结果记进执行日志。
+
+        埋在这里而不是各调用方：**一处覆盖所有模型调用**（标题/内容筛选、周报四段、
+        测试连接、拉模型列表）。打包版没有控制台，这里是用户唯一能看到
+        「模型到底返回了什么」的地方 —— 而 HTTP 错误响应体原先读出来就直接丢了。
+        """
+        try:
+            from mp_harvest.core.event_log import AI_REPLY_CHARS, log_event
+
+            log_event(
+                "warn" if kind == "ai.error" else "info",
+                kind,
+                f"模型「{_model_label(cfg)}」{note}",
+                {
+                    # 用展示名而不是 cfg.name：用户常常没给模型起名，那样日志里会变成
+                    # 「模型「模型」返回…」，等于什么都没说（实跑时正是这样）。
+                    "model": _model_label(cfg),
+                    "model_id": cfg.model,
+                    "format": cfg.format,
+                    "attempt": attempt,
+                    "status": status,
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                    "prompt_chars": len(system_prompt or ""),
+                    "input_chars": len(user_content or ""),
+                    "reply_chars": len(text or ""),
+                    "reply": (text or "")[:AI_REPLY_CHARS],
+                },
+            )
+        except Exception:  # noqa: BLE001 —— 日志绝不能影响调用（log_event 自己也兜底）
+            pass
+
     for attempt in range(1, max_retries + 1):
         try:
-            return _post_chat(cfg, payload, timeout=timeout)
+            text = _post_chat(cfg, payload, timeout=timeout)
         except urllib.error.HTTPError as e:
             last_err = e
             body = ""
@@ -374,6 +456,8 @@ def _call_model(
                 body = e.read().decode("utf-8", "ignore") or ""
             except Exception:
                 pass
+            _log("ai.error", body, attempt=attempt, status=e.code,
+                 note=f"HTTP {e.code}（第 {attempt} 次）")
             # 模型不支持 response_format：去掉该字段再试一次（仅 OpenAI 格式）
             if (
                 is_openai
@@ -389,10 +473,15 @@ def _call_model(
                 continue
         except (urllib.error.URLError, OSError, KeyError, json.JSONDecodeError) as e:
             last_err = e
+            _log("ai.error", "", attempt=attempt, note=f"{e.__class__.__name__}: {e}")
             if attempt < max_retries:
                 time.sleep(3 * attempt)
                 continue
-    raise RuntimeError(f"模型「{cfg.name}」调用失败: {last_err}")
+        else:
+            _log("ai.reply", text, attempt=attempt, note=f"返回 {len(text or '')} 字")
+            return text
+    _log("ai.error", "", attempt=max_retries, note=f"重试 {max_retries} 次后失败：{last_err}")
+    raise ModelCallError(f"模型「{_model_label(cfg)}」调用失败: {last_err}")
 
 
 def test_connection(cfg: ModelConfig) -> tuple[bool, str]:
@@ -805,6 +894,10 @@ def judge_articles(
             judged += len(rows)
             done += len(rows)
             midx = futures[fut][2]
+            _log_verdict_batch(
+                {"title_": "标题", "content_": "内容"}.get(prefix, "AI"),
+                f"{prefix}keep", rows, err,
+            )
             if err:
                 errors.append(err)
                 # 失败批次统一按 drop 兜底

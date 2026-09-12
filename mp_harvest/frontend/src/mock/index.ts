@@ -107,6 +107,8 @@ const settings: Record<string, unknown> = {
   'ai.batch_size': 50,
   'ai.workers': 4,
   'ai.continue_content_filter': true,
+  'weekly.score_batch_size': 8,
+  'weekly.workers': 4,
 }
 const platform: PlatformInfo = {
   os: 'mac',

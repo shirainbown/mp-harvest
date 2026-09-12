@@ -17,6 +17,7 @@ import { useWeeklyStore } from '../stores/weekly'
 import { useAccountsStore } from '../stores/accounts'
 import { useExternalStore } from '../stores/external'
 import { useTasksStore } from '../stores/tasks'
+import { useSettingsStore } from '../stores/settings'
 import { useUiStore } from '../stores/ui'
 import { chooseDirectory, chooseFile, openLocalPath } from '../api/desktop'
 
@@ -24,15 +25,33 @@ const weekly = useWeeklyStore()
 const accounts = useAccountsStore()
 const ext = useExternalStore()
 const tasks = useTasksStore()
+const settings = useSettingsStore()
 const ui = useUiStore()
 
 onMounted(async () => {
   if (!accounts.loaded) await accounts.load()
   if (!ext.sources.length) await ext.loadAll()
+  if (!settings.loaded) settings.load()
   // 默认全选（只种一次 —— 用户改过就不覆盖）
   weekly.seedSelection(accounts.list.map((a) => a.id), ext.sources.map((s) => s.id))
   if (!weekly.preview) await weekly.loadAll()
 })
+
+// ---- 打分速度（**持久设置**，不是本期参数）----
+//
+// 与同一个面板里的「精选篇数」语义不同：那个是本次请求的参数，这两个改完立即
+// 存盘、对之后每一期都生效。界面上明确写出来，免得以为只影响这一次。
+function _clampInt(v: string, lo: number, hi: number, fallback: number): number {
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(lo, Math.min(hi, n))
+}
+function setScoreBatch(v: string) {
+  void settings.savePrefs({ weeklyScoreBatchSize: _clampInt(v, 1, 20, 8) })
+}
+function setScoreWorkers(v: string) {
+  void settings.savePrefs({ weeklyWorkers: _clampInt(v, 1, 16, 4) })
+}
 
 // ---- 来源勾选（**勾了才算**）----
 //
@@ -161,6 +180,21 @@ async function openPath(p: string) {
             <SInput v-model="weekly.reportTitle" placeholder="留空用设置里的默认标题"
                     style="flex:1;min-width:240px" />
           </div>
+          <div class="mitm-row" style="margin-top:var(--sp-2)">
+            <span class="form-label">打分速度</span>
+            <span class="tertiary" style="font-size:var(--fs-xs)">每批</span>
+            <input :value="settings.prefs.weeklyScoreBatchSize" type="number" min="1" max="20"
+                   class="input" style="width:68px"
+                   @change="setScoreBatch(($event.target as HTMLInputElement).value)" />
+            <span class="tertiary" style="font-size:var(--fs-xs)">篇</span>
+            <span class="form-label">并发请求</span>
+            <input :value="settings.prefs.weeklyWorkers" type="number" min="1" max="16"
+                   class="input" style="width:68px"
+                   @change="setScoreWorkers(($event.target as HTMLInputElement).value)" />
+            <span class="tertiary" style="font-size:var(--fs-xs)">
+              条 · <b>保存为默认</b>（对之后每期生效）。批越大请求越少，并发越大越容易触发模型限流。
+            </span>
+          </div>
         </div>
 
         <!-- 候选与来源 -->
@@ -178,34 +212,39 @@ async function openPath(p: string) {
             </template>
           </div>
           <div class="mitm-row" style="align-items:flex-start">
-            <div style="min-width:240px;flex:1">
-              <div class="muted" style="font-size:var(--fs-sm);margin-bottom:6px">
-                公众号
-                <a href="#" style="margin-left:6px" @click.prevent="selectAllAccounts">
+            <!-- 公众号条目多，给更宽的一列（约 2:1）；两块各自多列 + 各自滚动 -->
+            <div class="src-col" style="flex:2">
+              <div class="muted src-head">
+                <span>公众号 <span class="tertiary">{{ accounts.list.length }}</span></span>
+                <a href="#" @click.prevent="selectAllAccounts">
                   {{ allAccounts ? '全不选' : '全选' }}
                 </a>
               </div>
               <EmptyState v-if="!accounts.list.length" text="还没有添加公众号" />
-              <label v-for="a in accounts.list" :key="a.id" class="ck-row">
-                <input type="checkbox" class="cb" :checked="weekly.accountIds.has(a.id)"
-                       @change="toggleAccount(a.id, ($event.target as HTMLInputElement).checked)" />
-                <span class="acct-name">{{ a.name }}</span>
-              </label>
+              <div v-else class="ck-grid">
+                <label v-for="a in accounts.list" :key="a.id" class="ck-row">
+                  <input type="checkbox" class="cb" :checked="weekly.accountIds.has(a.id)"
+                         @change="toggleAccount(a.id, ($event.target as HTMLInputElement).checked)" />
+                  <span class="acct-name" :title="a.name">{{ a.name }}</span>
+                </label>
+              </div>
             </div>
-            <div style="min-width:240px;flex:1">
-              <div class="muted" style="font-size:var(--fs-sm);margin-bottom:6px">
-                其他来源目录
-                <a href="#" style="margin-left:6px" @click.prevent="selectAllSources">
+            <div class="src-col" style="flex:1">
+              <div class="muted src-head">
+                <span>其他来源目录 <span class="tertiary">{{ ext.sources.length }}</span></span>
+                <a href="#" @click.prevent="selectAllSources">
                   {{ allSources ? '全不选' : '全选' }}
                 </a>
               </div>
               <EmptyState v-if="!ext.sources.length" text="还没有登记外部来源目录" />
-              <label v-for="s in ext.sources" :key="s.id" class="ck-row">
-                <input type="checkbox" class="cb" :checked="weekly.sourceIds.has(s.id)"
-                       @change="toggleSource(s.id, ($event.target as HTMLInputElement).checked)" />
-                <span class="acct-name">{{ s.name || s.path }}</span>
-                <span class="muted mono" style="font-size:var(--fs-xs)">{{ s.item_count }}</span>
-              </label>
+              <div v-else class="ck-grid">
+                <label v-for="s in ext.sources" :key="s.id" class="ck-row">
+                  <input type="checkbox" class="cb" :checked="weekly.sourceIds.has(s.id)"
+                         @change="toggleSource(s.id, ($event.target as HTMLInputElement).checked)" />
+                  <span class="acct-name" :title="s.name || s.path">{{ s.name || s.path }}</span>
+                  <span class="muted mono" style="font-size:var(--fs-xs)">{{ s.item_count }}</span>
+                </label>
+              </div>
             </div>
           </div>
           <div v-if="noneSelected" class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">
@@ -327,6 +366,30 @@ async function openPath(p: string) {
 </template>
 
 <style scoped>
+/* 候选来源（2026-09 重排）：改之前两块是「flex:1 的列 + 内部块级堆叠」——
+   结构上就排不出多列，29 个公众号会把面板拉成一长条，而右边只有 1 个目录。 */
+.src-col {
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+}
+.src-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  margin-bottom: 6px;
+}
+/* 自适应多列；限高 + 滚动，条目再多也不会把面板撑长 */
+.ck-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 0 10px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
 .ck-row {
   display: flex;
   align-items: center;
@@ -334,5 +397,9 @@ async function openPath(p: string) {
   padding: 3px 0;
   font-size: var(--fs-sm);
   cursor: pointer;
+  /* 网格项默认 min-width:auto —— 少了这行，超长公众号名会把整列撑宽而不是
+     走 .acct-name 的省略号（.acct-name 自己是 overflow:hidden 的 flex 子项，
+     自动最小尺寸已经是 0，所以只需要在这一层放行） */
+  min-width: 0;
 }
 </style>

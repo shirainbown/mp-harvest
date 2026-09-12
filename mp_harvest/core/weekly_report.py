@@ -31,6 +31,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+# 外部条目的正文规则与 AI 内容筛选共用同一份实现（2026-09 由两处逐字相同的
+# 副本合并而来）。external_sources 是叶子模块、不反向依赖 core，无循环风险。
+from mp_harvest.core.ai_filter import ModelCallError
+from mp_harvest.core.external_sources import read_external_body
+
 # ── 领域与业务标签（与旧脚本一致，模板注释里也有同一份规范）──────────
 
 DOMAINS = [
@@ -265,7 +270,9 @@ FIXED_OUTPUT: dict[str, str] = {
 只输出严格 JSON 对象（不要 Markdown 代码块、不要任何多余文字）：
 {"items":[{"idx":0,"score":8.5,"semiconductor":true,"title_cn":"中文标题","domain":"五选一领域","business_tags":["公共"],"reason":"30-60字入选理由"}]}
 要求：
-- idx 必须与输入编号一一对应，不能漏项、不能改序；
+- idx 必须与输入编号（【第 N 篇】里的 N）一一对应，不能漏项、不能改序；
+- 输入可能是多篇：必须**逐篇**输出对应记录，不允许把两篇合并成一条、
+  也不允许只答其中一部分；
 - score 为 1-10 浮点，可一位小数；
 - semiconductor 为 true/false，纯软件/纯市场新闻为 false；
 - domain 必须严格取自这五个之一：AI芯片架构与推理优化 / FPGA/可编程计算与架构 / 芯片互联与存储架构 / 处理器安全与可信架构 / 半导体制造与先进封装；
@@ -275,9 +282,14 @@ FIXED_OUTPUT: dict[str, str] = {
     "detail": """【输出格式（软件固定，不可更改）】
 只输出严格 JSON 对象（不要 Markdown 代码块、不要任何多余文字）：
 {"key_innovation":"100-150字，分号分隔多个要点","data_results":"数值: 含义；数值: 含义","summary":"200-300字"}""",
-    # 核心洞察要的是成稿文字而不是 JSON —— 交给模板前由代码清洗成 HTML
+    # 核心洞察要的是成稿文字而不是 JSON —— 交给模板前由代码清洗成 HTML。
+    # ⚠️ 这段文案**刻意不出现 "JSON" 字样**：DeepSeek 要求 response_format=json_object
+    # 时 prompt 必须含 "json"，早先那句「不要 JSON」里的 "JSON" 恰好满足了它的门槛，
+    # 于是模型被迫回 {"content": "…"}，整包进了报告（2026-09 事故）。
+    # 根因已在调用侧关掉 json_mode，这里再拆掉陷阱，别让后来人重新踩上。
     "intro": """【输出格式（软件固定，不可更改）】
-只输出这段中文正文本身，不要 JSON、不要 Markdown、不要任何解释性前后缀。""",
+只输出这段中文正文本身 —— 不要任何包装（不要对象、不要字段名）、不要 Markdown、
+不要解释性前后缀。第一行就是正文第一句。""",
     "brief": """【输出格式（软件固定，不可更改）】
 只输出严格 JSON 对象（不要 Markdown 代码块、不要任何多余文字）：
 {"items":[{"idx":0,"brief":"50-100字中文摘要"}]}
@@ -420,13 +432,9 @@ def llm_json(
 # 代价：打分阶段（跑全部候选）的字符量约 2 倍，且有缓存，同一提示词只花一次。
 SCORING_TEXT_CHARS = 2000
 
-
-def _pick_item(data: Any) -> dict[str, Any]:
-    """从模型回复里取出单篇记录：兼容「包一层 items」与「直接给单对象」两种写法。"""
-    if isinstance(data, dict) and isinstance(data.get("items"), list) and data["items"]:
-        first = data["items"][0]
-        return first if isinstance(first, dict) else {}
-    return data if isinstance(data, dict) else {}
+# 打分阶段每批几篇（1 = 逐篇，等价于 2026-09 改造前的行为）
+SCORING_BATCH_DEFAULT = 8
+SCORING_BATCH_MAX = 20
 
 
 def valid_business_tags(rec: dict[str, Any]) -> bool:
@@ -435,6 +443,245 @@ def valid_business_tags(rec: dict[str, Any]) -> bool:
     if not isinstance(raw, list):
         return False
     return any(t in BUSINESS_TAGS for t in raw)
+
+
+# ── 批处理的解析（2026-09 打分提速）──────────────────────────────
+#
+# 编号一律用**批内下标**（0..n-1），不用全局下标：命中缓存的篇目会被剔除，
+# 全局编号在每次重跑里都整体错位，出错时根本没法复现。
+
+
+def _scoring_max_tokens(n: int) -> int:
+    """一批 n 篇的输出预算（**只对 anthropic 生效** —— OpenAI 兼容格式不发 max_tokens）。
+
+    每篇约 130–160 token，给足余量但别无限涨。DeepSeek 的 ``json_object`` 模式
+    服务端默认输出上限 4096，这正是批大小默认 8、上限 20 的原因。
+    """
+    return min(8000, max(1500, 400 * int(n)))
+
+
+def _extract_items(data: Any) -> list[dict[str, Any]]:
+    """模型回复 → 记录数组。``{"items":[…]}`` / 裸数组 / 裸对象三种都认。"""
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return [r for r in data["items"] if isinstance(r, dict)]
+    if isinstance(data, list):
+        return [r for r in data if isinstance(r, dict)]
+    return [data] if isinstance(data, dict) else []
+
+
+def _as_idx(v: Any) -> int | None:
+    """模型给的编号 → int；认不出返回 None。
+
+    ``bool`` 要**先挡掉** —— 它是 ``int`` 的子类，``True`` 会变成 1，
+    于是「写了个 true」会被当成第 1 篇的记录。
+    """
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+        return int(v.strip())
+    return None
+
+
+def _records_by_pos(data: Any, n: int) -> dict[int, dict[str, Any]]:
+    """模型回复 → ``{位置: 记录}``。位置 = 发出去时的批内编号（0..n-1）。
+
+    **只认编号，不靠数组顺序** —— 模型打乱顺序、多答、少答都不会错位。
+    越界与认不出的编号直接丢，重复编号后者覆盖（与 ``ai_filter`` 的 last-wins 一致）。
+    """
+    rows = _extract_items(data)
+    if n == 1 and len(rows) == 1:
+        # 单篇时接受「不带编号」的老写法 —— 与逐篇模式的 _pick_item 严格等价
+        return {0: rows[0]}
+    recs: dict[int, dict[str, Any]] = {}
+    shifted: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        i = _as_idx(r.get("idx"))
+        if i is None:
+            continue
+        if 0 <= i < n:
+            recs[i] = r
+        # 同时收一份「左移一位」的候选。注意上界必须含 n：1-based 回复的最后一篇
+        # 编号正好是 n，若在这里就按越界丢掉，下面的守卫永远不可能成立
+        # （2026-09 实测：守卫连同它要救的情况一起失效）。
+        if 1 <= i <= n:
+            shifted[i - 1] = r
+    # 整批用了 1-based 编号（模型偶尔如此）：**有守卫地**整体左移一位。
+    # 守卫要求「0 缺席 且 左移后恰好铺满 0..n-1」——不满足就不动，
+    # 绝不做启发式猜测（残缺的 1-based 回复无从判断，宁可按 0-based 处理）。
+    if 0 not in recs and set(shifted) == set(range(n)):
+        return shifted
+    return recs
+
+
+def _batch_user(batch: list[dict[str, Any]], *, supplement: bool = False) -> str:
+    """一批候选 → user message。
+
+    每篇**各自**截断到 ``SCORING_TEXT_CHARS`` —— 对整条 message 截断会让第 2 篇
+    之后的正文全丢（有测试钉住）。编号写成 ``【第 N 篇】`` 独立成行，比 JSON
+    数组更抗错位、也更省 token；单篇的形状与改造前逐字一致。
+    """
+    n = len(batch)
+    head = (
+        f"下面是需要**补充打分**的 {n} 篇（编号从 0 开始）：\n"
+        if supplement
+        else f"下面共 {n} 篇文章/论文，请逐篇打分。\n"
+    )
+    head += (
+        f"items 里必须给出 idx 0 到 {n - 1} 的**全部**记录："
+        "不能合并两篇、不能漏项、不能改序。"
+    )
+    parts = [head]
+    for i, it in enumerate(batch):
+        parts.append(
+            f"\n\n【第 {i} 篇】\n"
+            f"类型:{it['kind']} 来源:{it['source']} 日期:{it['date']}\n"
+            f"标题: {it['title']}\n"
+            f"正文/摘要: {it['text'][:SCORING_TEXT_CHARS] or '（无正文）'}"
+        )
+    return "".join(parts)
+
+
+def _record_of(it: dict[str, Any], rec: dict[str, Any]) -> dict[str, Any]:
+    """模型给的单篇记录 → 落库形状（字段整形 + 标签兜底）。
+
+    整批 / 补漏 / 降级逐篇三条路径**共用这一份** —— 各写一遍必然漂移。
+    """
+    score = _as_float(rec.get("score"), 0.0)
+    # 模型给的有效标签优先；一个都没给（漏字段 / 自造词）才降级到关键词匹配 ——
+    # 不能静默退化成「公共」，那会把分类错误伪装成正常结果。
+    tags = [t for t in (rec.get("business_tags") or []) if t in BUSINESS_TAGS][:3]
+    if not tags:
+        # 关键词也没命中时，「公共」= 跨领域通用，是诚实的兜底位置
+        tags = infer_business_tags(it["title"], it.get("text") or "") or ["公共"]
+    domain = str(rec.get("domain") or "")
+    return {
+        "score": score,
+        "semiconductor": _as_bool(rec.get("semiconductor"), True),
+        "title_cn": str(rec.get("title_cn") or it["title"]),
+        "domain": domain if domain in DOMAINS else DOMAINS[0],
+        "business_tags": tags,
+        "reason": str(rec.get("reason") or "")[:140],
+    }
+
+
+def _fetch_batch(
+    batch: list[dict[str, Any]],
+    model: Any,
+    system: str,
+    *,
+    check_cancelled: Callable[[], None] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """一批候选 → ``({文章键: 记录}, [没拿到记录的篇目说明])``。
+
+    三级阶梯（正常情况只走 L1 一次请求）::
+
+      L1 整批一次。批级 validate 只做**结构性**判断 —— 有没有任何一条能对上编号。
+         整批不可用 → llm_json 自己带原因重发一次（此刻不存在会被浪费的已付费成果）；
+         仍不可用且 n>1 → **降级逐篇**（就是改造前那条路径，输出预算也还给每一篇）。
+      L2 漏答 ∪ 标签非法的位置拼成 mini-batch，**重新从 0 编号**再问一次。
+      L3 仍不合法 → 标签走关键词兜底；仍漏答 → 记 error、**不写缓存**。
+
+    返回的字典里**只有模型明确给出了记录的篇目** —— 调用方据此写缓存
+    （一篇写缓存的充要条件就是这个，否则一次漏答会把文章永久拉黑）。
+
+    **传输失败（``ModelCallError``）不降级、不补漏**：``_call_model`` 内部已经退避
+    重试过，再拿 N 倍请求去打同一个坏端点（每次还带 5s/10s 睡眠）会让整期卡死。
+    补偿机制是「重跑很便宜」—— 成功的批都已进缓存，重跑只剩失败那几篇。
+    """
+    n = len(batch)
+    if not n:
+        return {}, []
+
+    def _title(it: dict[str, Any]) -> str:
+        return str(it.get("title") or "")[:40]
+
+    out: dict[str, Any] = {}
+    errors: list[str] = []
+
+    def ask(
+        items: list[dict[str, Any]],
+        *,
+        supplement: bool = False,
+        check_tags: bool = False,
+        retries: int = 1,
+    ) -> dict[int, dict[str, Any]]:
+        """问一次 → ``{items 内的下标: 记录}``（位置相对 items）。"""
+        m = len(items)
+        user = _batch_user(items, supplement=supplement)
+
+        def _validate(d: Any) -> str | None:
+            recs = _records_by_pos(d, m)
+            if not recs:
+                return "没有任何一条记录能对上输入的编号"
+            if check_tags:
+                bad = sorted(i for i, r in recs.items() if not valid_business_tags(r))
+                if bad:
+                    return f"idx {bad} 的 business_tags 缺失或不在允许的五个取值内"
+            return None
+
+        data = llm_json(
+            model, system, user,
+            max_tokens=_scoring_max_tokens(m), retries=retries, validate=_validate,
+        )
+        return _records_by_pos(data, m)
+
+    # ── L1：整批一次 ─────────────────────────────────────────────
+    if check_cancelled:
+        check_cancelled()
+    try:
+        pos = ask(batch)
+    except ModelCallError as exc:
+        # 传输层失败：**不降级、不补漏**（拆成 N 个小请求只会把同一个坏端点打得更狠）
+        return {}, [f"{_title(it)}：{exc}" for it in batch]
+    except Exception:  # noqa: BLE001 —— 解析不出来等：整批不可用
+        if n > 1:
+            # 降级逐篇。最常见的整批失败成因是**输出被截断**，逐篇恰好把输出预算
+            # 还给每一篇；而且这条路径就是改造前那条，行为有既有测试钉着。
+            # 逐篇仍失败的**不在这里收尾**，交给下面的 L2/L3 统一处理。
+            for it in batch:
+                if check_cancelled:
+                    check_cancelled()
+                try:
+                    one = ask([it])
+                except Exception:  # noqa: BLE001
+                    continue
+                if 0 in one:
+                    out[it["key"]] = one[0]
+    else:
+        for i, rec in pos.items():
+            out[batch[i]["key"]] = rec
+
+    # ── L2：漏答 ∪ 标签非法的，补一轮 ──────────────────────────────
+    #
+    # 只补这几篇，**绝不整批重发**：整批重发会让其余已付费的好答案冒被改写/
+    # 重排的风险，还白付一遍 token。llm_json 的「带原因重发同一条 user 内容」
+    # 对「部分不合格」没有表达力，所以这一轮由我们自己组织（mini-batch 就是
+    # 重试集合，重新从 0 编号，它的 validate 语义此时恰好正确）。
+    need = [
+        it for it in batch if it["key"] not in out or not valid_business_tags(out[it["key"]])
+    ]
+    if need:
+        if check_cancelled:
+            check_cancelled()
+        try:
+            # retries=0：**L2 本身就是那次重试**，再让 llm_json 叠一层内层重试
+            # 会变成两轮 —— 实测比改造前的逐篇路径多花一次调用，等于把批处理
+            # 省下的钱又还回去一部分。
+            pos2 = ask(need, supplement=True, check_tags=True, retries=0)
+        except Exception:  # noqa: BLE001 —— 补漏失败就走 L3，不再纠缠
+            pos2 = {}
+        for i, rec in pos2.items():
+            out[need[i]["key"]] = rec
+
+    # ── L3：仍漏答的记一笔（标签不合法不算失败，_record_of 会兜底）──
+    for it in batch:
+        if it["key"] not in out:
+            errors.append(f"{_title(it)}：模型没有给出这一篇的记录")
+    return out, errors
 
 
 def _map_parallel(
@@ -539,25 +786,6 @@ def normalize_external(item: dict[str, Any]) -> dict[str, Any] | None:
         "body_html": "",
         "body_text": body,
     }
-
-
-def read_external_body(item: dict[str, Any]) -> str:
-    """外部条目的正文：本地正文文件 → summary_cn → abstract。
-
-    正文文件是 MP 自己写的自包含 HTML（内容是摘要），所以按 HTML 取文本；
-    取不到就退回数据库里的摘要字段。
-    """
-    body_path = str(item.get("body_path") or "")
-    if body_path:
-        try:
-            from mp_harvest.core.article_reader import _html_to_text
-
-            text = _html_to_text(Path(body_path).read_text(encoding="utf-8", errors="ignore"))
-            if text.strip():
-                return text.strip()
-        except Exception:  # noqa: BLE001
-            pass
-    return str(item.get("summary_cn") or item.get("abstract") or "").strip()
 
 
 def _title_fingerprint(title: str) -> str:
@@ -688,65 +916,83 @@ def score_candidates(
     prompts: dict[str, str],
     cache: WeeklyCache,
     workers: int = 4,
+    batch_size: int = SCORING_BATCH_DEFAULT,
     on_progress: Callable[[int, int], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """逐篇打分：评分 / 半导体相关性 / 中文译名 / 领域 / 业务标签 / 入选理由。"""
+    """逐**批**打分：评分 / 半导体相关性 / 中文译名 / 领域 / 业务标签 / 入选理由。
+
+    两个旋钮互补：**批大小**省请求数（system prompt 每批只付一次），
+    **并发**控限流。线程池大小固定等于 ``workers``，**不随语料规模浮动** ——
+    否则某周 200 篇候选会一次打出几十个请求，直接撞上模型的速率限制，
+    而 ``_call_model`` 的退避没有抖动，多线程会同步睡、同步醒、再一起撞。
+
+    切块在**缓存过滤之后**：命中缓存的篇目不该白占批位，也不该把一批挤成两批。
+    ``on_progress`` 报的是**篇数**（不是批数），前端进度条语义不变。
+    """
     system = build_prompt("scoring", prompts.get("scoring"))
-    pending = []
+    prompt_text = prompts.get("scoring")
     cached: dict[str, Any] = {}
+    pending: list[dict[str, Any]] = []
     for it in items:
-        k = cache_key("scoring", prompts.get("scoring"), it["key"])
-        hit = cache.get("scores", k)
+        hit = cache.get("scores", cache_key("scoring", prompt_text, it["key"]))
         if hit is not None:
             cached[it["key"]] = hit
         else:
-            pending.append((it, k))
+            pending.append(it)
+    if not pending:
+        return cached, []
 
-    def work(it: dict[str, Any], model: Any) -> dict[str, Any]:
-        user = (
-            f"类型:{it['kind']} 来源:{it['source']} 日期:{it['date']}\n"
-            f"标题: {it['title']}\n正文/摘要: "
-            f"{it['text'][:SCORING_TEXT_CHARS] or '（无正文）'}"
+    enabled = [m for m in models if getattr(m, "enabled", True)] or list(models)
+    if not enabled:
+        raise RuntimeError("没有可用的 AI 模型，请先到「AI 模型」页配置并启用")
+
+    step = max(1, int(batch_size))
+    concurrency = max(1, int(workers))
+    chunks = [pending[i : i + step] for i in range(0, len(pending), step)]
+    if on_stage:
+        on_stage(
+            f"打分 {len(pending)} 篇（{len(chunks)} 批 × 并发 {concurrency}"
+            f"，每批 {step} 篇）…"
         )
-        data = llm_json(
-            model, system, user, max_tokens=4000,
-            # 漏了 business_tags 就带着这句话重试 —— 让模型再读一遍正文去判，
-            # 别急着用关键词表替它做决定
-            validate=lambda d: None if valid_business_tags(_pick_item(d))
-            else "business_tags 缺失或不在允许的五个取值内",
-        )
-        rec = _pick_item(data)
-        score = _as_float(rec.get("score"), 0.0)
-        # 模型给的有效标签优先；一个都没给（漏字段 / 自造词）才降级到关键词匹配 ——
-        # 不能静默退化成「公共」，那会把分类错误伪装成正常结果。
-        tags = [t for t in (rec.get("business_tags") or []) if t in BUSINESS_TAGS][:3]
-        if not tags:
-            # 关键词也没命中时，「公共」= 跨领域通用，是诚实的兜底位置
-            tags = infer_business_tags(it["title"], it.get("text") or "") or ["公共"]
-        domain = str(rec.get("domain") or "")
-        return {
-            "score": score,
-            "semiconductor": _as_bool(rec.get("semiconductor"), True),
-            "title_cn": str(rec.get("title_cn") or it["title"]),
-            "domain": domain if domain in DOMAINS else DOMAINS[0],
-            "business_tags": tags,
-            "reason": str(rec.get("reason") or "")[:140],
+
+    errors: list[str] = []
+    done = 0
+    total = len(pending)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futures = {
+            # 一批只发给一个模型；多模型时按**批序号**轮询（负载均衡的粒度从
+            # 每 k 篇变成每 k 批，篇数误差 ±(batch_size-1)，可接受）
+            ex.submit(
+                _fetch_batch, chunk, enabled[b % len(enabled)], system,
+                check_cancelled=check_cancelled,
+            ): chunk
+            for b, chunk in enumerate(chunks)
         }
-
-    fresh, errors = _map_parallel(
-        [it for it, _ in pending],
-        models,
-        work,
-        workers=workers,
-        on_progress=on_progress,
-        check_cancelled=check_cancelled,
-        on_result=lambda it, val: cache.put(
-            "scores", cache_key("scoring", prompts.get("scoring"), it["key"]), val
-        ),
-    )
-    merged = {**cached, **fresh}
-    return merged, errors
+        for fut in concurrent.futures.as_completed(futures):
+            chunk = futures[fut]
+            try:
+                got, errs = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                # 取消要原样抛出（TaskCancelled），其余按整批失败处理
+                if exc.__class__.__name__ == "TaskCancelled":
+                    raise
+                got, errs = {}, [f"{str(chunk[0].get('title') or '')[:40]}：{exc}"]
+            errors.extend(errs)
+            for it in chunk:
+                rec = got.get(it["key"])
+                if rec is None:
+                    continue  # 没拿到记录就**不写缓存** —— 漏答不能把文章永久拉黑
+                val = _record_of(it, rec)
+                cached[it["key"]] = val
+                cache.put("scores", cache_key("scoring", prompt_text, it["key"]), val)
+            done += len(chunk)
+            if on_progress:
+                on_progress(done, total)
+            if on_stage:
+                on_stage(f"打分 {min(done, total)}/{total} 篇…")
+    return cached, errors
 
 
 def analyze_selected(
@@ -883,7 +1129,11 @@ def generate_intro(
         )
         # 核心洞察要的是**成稿文字**，不是 JSON —— 走 llm_json 会永远解析失败、
         # 永远落到兜底文案（2026-09 由测试抓出）。这里直接取文本。
-        text = ai_mod._call_model(enabled[0], system, user, max_tokens=4000, timeout=300)
+        # **必须 json_mode=False**：否则传输层强制 json_object，模型只能回
+        # {"content": "…"}，_clean_intro 处理不了就整包进报告（2026-09 事故根因）。
+        text = ai_mod._call_model(
+            enabled[0], system, user, max_tokens=4000, timeout=300, json_mode=False
+        )
         cleaned = _clean_intro(text)
         return cleaned or _fallback_intro(selected, scores, from_date, to_date)
     except Exception:  # noqa: BLE001
@@ -901,14 +1151,71 @@ def _fallback_intro(
     )
 
 
+# 模型把正文包进对象时，这些字段名最可能装的是正文本身
+_INTRO_TEXT_FIELDS = ("content", "text", "intro", "summary", "result", "output", "body")
+
+
+def _unwrap_intro_text(raw: str) -> str:
+    """模型把正文包进 JSON 对象时，把正文取出来。
+
+    根因（``json_object`` 强制）已经在调用侧用 ``json_mode=False`` 关掉了，这里是
+    **防御层**：别的模型也可能自作主张包一层，而一旦漏进模板就是满屏乱码 ——
+    2026-09 实跑那期核心洞察的 ``{"content": "…"}`` 就是这么来的。
+
+    只认「对象里有一个已知正文字段、且值是字符串」这一种形状；认不出**原样返回** ——
+    绝不因为正文本身长得像 JSON 就把它吃掉。
+    """
+    s = raw.strip()
+    if not (s.startswith("{") and s.endswith("}")):
+        return raw
+    try:
+        data = json.loads(s)
+    except Exception:  # noqa: BLE001
+        # 解析不了的「像 JSON 的东西」（常见成因：正文里带裸换行、尾逗号）——
+        # 退一步按字段抠。贪婪匹配到最后一个引号，正好覆盖单字段对象；
+        # `,?` 容忍模型爱加的尾逗号。抠不出就原样返回。
+        m = re.search(
+            r'"(?:' + "|".join(_INTRO_TEXT_FIELDS) + r')"\s*:\s*"(.*)"\s*,?\s*\}\s*$',
+            s,
+            re.S,
+        )
+        if not m:
+            return raw
+        # 这条路径没有 JSON 解码，转义过的换行要手动还原（否则分段全部失效）
+        return m.group(1).replace("\\n", "\n").replace('\\"', '"')
+    if isinstance(data, dict):
+        for k in _INTRO_TEXT_FIELDS:
+            v = data.get(k)
+            if isinstance(v, str) and v.strip():
+                return v
+    return raw
+
+
 def _clean_intro(text: Any) -> str:
-    """核心洞察清洗：去 Markdown 加粗、折叠多余空行、\\n → <br>（模板里 | safe）。"""
+    """核心洞察清洗：解包、去 Markdown 加粗、折叠多余空行、换行 → `<br>`（模板里 `| safe`）。"""
     s = str(text or "").strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", s, flags=re.S).strip()
+    s = _unwrap_intro_text(s)
     s = s.replace("**", "").replace("\r\n", "\n")
     s = re.sub(r"\n\s*\n+", "\n", s)
     return html_mod.escape(s).replace("\n", "<br>\n")
+
+
+def repair_saved_intro(text: Any) -> str:
+    """修掉**历史快照**里已经被转义过的引言（2026-09 事故的一次性数据修复）。
+
+    那批快照的形状是「`_clean_intro` 跑在 JSON 包装上」的产物 —— 引号已经变成
+    ``&quot;``，`json.loads` 再也解不开。这里先还原实体、再走一遍正常清洗，
+    好让**已生成的往期报告重渲染一次就能修好**，不必重新花钱生成。
+
+    认不出来（正常引言）就**原样返回**，不做任何猜测。
+    """
+    s = str(text or "")
+    unescaped = html_mod.unescape(s).strip()
+    if _unwrap_intro_text(unescaped) == unescaped:   # 解不出包装 → 不是那批坏数据
+        return s
+    return _clean_intro(unescaped)
 
 
 # ── 渲染 ──────────────────────────────────────────────────────────
@@ -1375,13 +1682,21 @@ def write_report_outputs(
 
 
 def load_saved_context(issue_dir: str | Path) -> dict[str, Any] | None:
-    """读回某期归档的渲染上下文（供「改模板后重渲染」，不调 AI）。"""
+    """读回某期归档的渲染上下文（供「改模板后重渲染」，不调 AI）。
+
+    顺带修一下 2026-09 那批被 JSON 包装污染过的 ``intro`` —— 让往期报告
+    重渲染就能恢复，不必重新生成（见 :func:`repair_saved_intro`）。
+    """
     p = Path(str(issue_dir)).expanduser() / "data" / "report.json"
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
     except Exception:  # noqa: BLE001
         return None
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("intro"), str):
+        data["intro"] = repair_saved_intro(data["intro"])
+    return data
 
 
 # ── 整期编排 ──────────────────────────────────────────────────────
@@ -1403,6 +1718,7 @@ def generate_issue(
     template_path: str | Path | None = None,
     download_images: bool = False,
     workers: int = 4,
+    batch_size: int = SCORING_BATCH_DEFAULT,
     on_stage: Callable[[str], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
@@ -1414,10 +1730,11 @@ def generate_issue(
     stage = on_stage or (lambda _m: None)
     n = max(1, int(selected_count))
 
-    stage(f"打分 {len(candidates)} 篇候选…")
+    # 阶段文案由 score_candidates 自己报（它知道会切成几批、并发多少）
     scores, score_errors = score_candidates(
         candidates, models, prompts=prompts, cache=cache, workers=workers,
-        on_progress=on_progress, check_cancelled=check_cancelled,
+        batch_size=batch_size, on_progress=on_progress, on_stage=stage,
+        check_cancelled=check_cancelled,
     )
 
     valid = [c for c in candidates if (scores.get(c["key"]) or {}).get("semiconductor", True)]
@@ -1502,6 +1819,8 @@ __all__ = [
     "BUSINESS_TAGS",
     "BUSINESS_TAG_KEYWORDS",
     "BUSINESS_TAG_STANDARD",
+    "SCORING_BATCH_DEFAULT",
+    "SCORING_BATCH_MAX",
     "infer_business_tags",
     "archive_articles",
     "archive_article",
@@ -1528,7 +1847,7 @@ __all__ = [
     "normalize_wechat",
     "prompt_fingerprint",
     "prompts_payload",
-    "read_external_body",
+    "repair_saved_intro",
     "render_report",
     "resolve_template_dir",
     "save_prompts",

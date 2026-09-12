@@ -285,14 +285,40 @@ def test_filter_with_no_items_is_400(client, auth, tmp_path):
     assert "没有可筛选" in r.json()["detail"]
 
 
-def test_content_filter_requires_title_keep(client, auth, tmp_path):
-    """没有通过标题筛选的条目时，内容筛选要明确报错而不是空跑。"""
+def test_content_filter_runs_without_title_stage(client, auth, tmp_path, monkeypatch):
+    """外部条目**可以直接做内容筛选**，不要求先跑标题筛选（2026-09 放开）。
+
+    微信侧那条「请先执行标题筛选」的 400 是**成本保护** —— 那边内容筛选要联网
+    逐篇抓正文，标题先行能把抓取量压下来。外部条目的正文本地就有
+    （``read_external_body``：正文文件 → summary_cn → abstract，全程不联网），
+    卡它一道只是照搬了邻居的规则。
+
+    这里同时钉住**内容筛选真正读到的正文是什么** —— 未写回过的来源目录没有
+    本地正文文件，读到的就是 papers_data.json 里的英文 abstract。
+    """
+    from mp_harvest.core import ai_filter as ai_mod
+
+    seen: list[list[dict]] = []
+    real = ai_mod.judge_articles
+
+    def recording(articles, models, **kw):
+        seen.append([dict(a) for a in articles])
+        return real(articles, models, **kw)
+
+    monkeypatch.setattr(ai_mod, "judge_articles", recording)
+
     src = _add(client, auth, _make_dir(tmp_path))
     _scan(client, auth, src["id"])
     r = client.post("/api/external/filter", params=auth,
                     json={"source_id": src["id"], "stage": "content"})
-    assert r.status_code == 400
-    assert "标题筛选" in r.json()["detail"]
+    assert r.status_code == 202, r.text          # 直接跑得起来，不再被 400 挡住
+    task = wait_task(r.json()["task_id"])
+    assert task.status == "done", task.error
+
+    assert seen, "内容筛选没有把条目交给 judge_articles"
+    bodies = [str(a.get("body_text") or "") for a in seen[0]]
+    assert len(bodies) == 2, "应当把两条都送去判定，而不是先按 title_keep 过滤掉"
+    assert all("的摘要" in b for b in bodies), f"正文不是 abstract：{bodies}"
 
 
 def test_filter_unknown_source_is_404(client, auth):

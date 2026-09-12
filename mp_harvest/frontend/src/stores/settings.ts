@@ -44,6 +44,9 @@ export const useSettingsStore = defineStore('settings', {
       aiBatchSize: 50,
       aiWorkers: 4,
       aiContinueContentFilter: true,
+      // 周报打分：每批几篇 / 并发请求数（与 aiBatchSize 是两码事，见后端键表注释）
+      weeklyScoreBatchSize: 8,
+      weeklyWorkers: 4,
     },
     prefsLoaded: false,
     prefsError: '',
@@ -108,6 +111,8 @@ export const useSettingsStore = defineStore('settings', {
       this.prefs.exportDownloadImages = s['export.download_images'] !== false
       this.prefs.aiBatchSize = Number(s['ai.batch_size']) || 50
       this.prefs.aiWorkers = Number(s['ai.workers']) || 4
+      this.prefs.weeklyScoreBatchSize = Number(s['weekly.score_batch_size']) || 8
+      this.prefs.weeklyWorkers = Number(s['weekly.workers']) || 4
       this.prefs.aiContinueContentFilter = s['ai.continue_content_filter'] !== false
       this.prefsLoaded = true
     },
@@ -132,6 +137,8 @@ export const useSettingsStore = defineStore('settings', {
         'ai.batch_size': this.prefs.aiBatchSize,
         'ai.workers': this.prefs.aiWorkers,
         'ai.continue_content_filter': this.prefs.aiContinueContentFilter,
+        'weekly.score_batch_size': this.prefs.weeklyScoreBatchSize,
+        'weekly.workers': this.prefs.weeklyWorkers,
       }
     },
     async saveModels(silent = false) {

@@ -8,6 +8,7 @@ import HistoryView from './views/HistoryView.vue'
 import ExternalView from './views/ExternalView.vue'
 import WeeklyView from './views/WeeklyView.vue'
 import AiModelsView from './views/AiModelsView.vue'
+import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { useUiStore } from './stores/ui'
 import { useAccountsStore } from './stores/accounts'
@@ -32,6 +33,7 @@ onMounted(() => {
       <ExternalView v-show="ui.view === 'external'" />
       <WeeklyView v-show="ui.view === 'weekly'" />
       <AiModelsView v-show="ui.view === 'ai'" />
+      <LogsView v-show="ui.view === 'logs'" />
       <SettingsView v-show="ui.view === 'settings'" />
     </div>
   </div>

@@ -67,25 +67,6 @@ def _external_identity(item_key: str) -> str:
     return f"ext:{item_key}"
 
 
-def _body_text(item: dict[str, Any]) -> str:
-    """内容筛选用的正文：优先读本地正文文件，退回中文摘要/英文摘要。
-
-    外部条目的一个天然优势是**不用联网抓正文** —— 正文要么已经在目录里，
-    要么摘要本身就是可判定的内容（arXiv 摘要信息量足够）。
-    """
-    body_path = str(item.get("body_path") or "")
-    if body_path:
-        try:
-            from mp_harvest.core.article_reader import _html_to_text
-
-            text = _html_to_text(Path(body_path).read_text(encoding="utf-8", errors="ignore"))
-            if text.strip():
-                return text.strip()
-        except Exception:  # noqa: BLE001
-            pass
-    return str(item.get("summary_cn") or item.get("abstract") or "").strip()
-
-
 def _core_row(item: dict[str, Any], *, verdicts: dict[str, dict], content: dict[str, dict]) -> dict:
     """外部条目 → core 行形状，好让 ``article_out`` / ``judge_articles`` 直接复用。
 
@@ -104,7 +85,7 @@ def _core_row(item: dict[str, Any], *, verdicts: dict[str, dict], content: dict[
         "account": str(item.get("source_name") or ""),
         "source": "external",
         # 内容筛选的输入（judge_articles 的 content_field="body_text"）
-        "body_text": _body_text(item),
+        "body_text": ext.read_external_body(item),
     }
     # 判定结果从缓存合并进来（外部条目不另存判定，避免两处真相）。
     # 标题缓存是裸字段名，内容缓存读出来就带 content_ 前缀，各自 update 即可。
@@ -288,15 +269,12 @@ def filter_items(body: ExternalFilterIn) -> dict:
 
     stage = "content" if str(body.stage).lower() == "content" else "title"
     verdicts, content_cache = _load_verdicts()
+    # **可以直接做内容筛选，不要求先跑标题筛选**（2026-09 放开）。
+    # 微信侧那条「必须先标题筛选」的 400 是**成本保护** —— 那边要联网逐篇抓正文，
+    # 标题先行能把抓取量压下来。外部条目没有这个前提：正文来自
+    # `read_external_body()`（本地正文文件 → summary_cn → abstract），
+    # 全程不联网、不花额外代价，卡它一道纯属照搬了邻居的规则。
     rows = [_core_row(r, verdicts=verdicts, content=content_cache) for r in articles]
-    if stage == "content":
-        # 没有标题判定为 keep 的不做内容筛选（与微信侧同一语义）
-        rows = [r for r in rows if r.get("title_keep") is True]
-        if not rows:
-            raise HTTPException(
-                status_code=400,
-                detail="没有通过标题筛选的条目（请先执行 AI 标题筛选）",
-            )
 
     def work(task: Task) -> dict:
         models = ai_mod.load_models(_models_path())

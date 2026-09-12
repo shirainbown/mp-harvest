@@ -248,6 +248,32 @@ def body_filename(rec: dict[str, Any]) -> str:
     return f"{safe_id(str(rec.get('item_key') or ''))}.html"
 
 
+# ── 正文 ──────────────────────────────────────────────────────────
+
+
+def read_external_body(item: dict[str, Any]) -> str:
+    """条目的正文：本地正文文件 → ``summary_cn`` → ``abstract``。
+
+    外部条目的一个天然优势是**不用联网抓正文** —— 正文要么已经在目录里
+    （写回时产出的自包含 HTML，内容是摘要），要么摘要本身就是可判定的内容
+    （arXiv 摘要信息量足够）。AI 内容筛选与周报都用它。
+
+    2026-09 从两处**逐字相同**的实现（``server/routes/external.py`` 与
+    ``core/weekly_report.py``）合并到这里 —— 外部来源的正文规则只该有一份。
+    """
+    body_path = str(item.get("body_path") or "")
+    if body_path:
+        try:
+            from mp_harvest.core.article_reader import _html_to_text
+
+            text = _html_to_text(Path(body_path).read_text(encoding="utf-8", errors="ignore"))
+            if text.strip():
+                return text.strip()
+        except Exception:  # noqa: BLE001
+            pass
+    return str(item.get("summary_cn") or item.get("abstract") or "").strip()
+
+
 # ── 存储 ──────────────────────────────────────────────────────────
 
 
@@ -864,6 +890,7 @@ __all__ = [
     "scan_source",
     "write_external_export",
     "parse_papers_data",
+    "read_external_body",
     "normalize_record",
     "normalize_url",
     "item_key_for",

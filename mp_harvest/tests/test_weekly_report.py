@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -433,15 +435,29 @@ def test_suggest_issue_number(tmp_path):
 # ── 整期端到端（打桩模型）─────────────────────────────────────────
 
 
+def _fake_scoring_reply(user: str, *, score: float = 8.5) -> str:
+    """按 user message 里的【第 N 篇】**逐篇回显**记录 —— 批处理测试的前提。
+
+    早先这里一律只回 ``idx: 0`` 一条：批模式下只有第 1 篇能对上，其余全走
+    补漏/兜底，测试却照样绿 —— 「结果型断言对批处理不敏感」的典型。回显之后，
+    断言才真的在检验「每篇都拿到了自己的记录」。
+    """
+    n = len(re.findall(r"【第 \d+ 篇】", user))
+    # 分数按批内位置递减：既能验证「每篇拿到自己那份」，也保证选题顺序确定
+    return json.dumps({"items": [
+        {"idx": i, "score": score - i * 0.1, "semiconductor": True,
+         "title_cn": "译名", "domain": wr.DOMAINS[0],
+         "business_tags": ["数通", "公共"], "reason": "关键数据支撑的入选理由"}
+        for i in range(max(1, n))
+    ]}, ensure_ascii=False)
+
+
 def _stub_model(monkeypatch, *, n_candidates: int = 3):
     from mp_harvest.core import ai_filter as af
 
     def fake_call(cfg, system, user, max_retries=3, **kw):
         if '"score"' in system:
-            return json.dumps({"items": [{
-                "idx": 0, "score": 8.5, "semiconductor": True, "title_cn": "译名",
-                "domain": wr.DOMAINS[0], "business_tags": ["数通", "公共"],
-                "reason": "关键数据支撑的入选理由"}]}, ensure_ascii=False)
+            return _fake_scoring_reply(user)
         if '"key_innovation"' in system:
             return json.dumps({"key_innovation": "创新点；第二点",
                                "data_results": "3x: 加速比",
@@ -812,8 +828,8 @@ def test_llm_json_retries_on_missing_field_then_returns_good_data(monkeypatch):
 
     monkeypatch.setattr(af, "_call_model", fake_call)
     data = wr.llm_json(_cfg(), "SYS", "USER",
-                       validate=lambda d: None if wr.valid_business_tags(wr._pick_item(d)) else "缺标签")
-    assert wr._pick_item(data)["business_tags"] == ["传送"]
+                       validate=lambda d: None if wr.valid_business_tags(d["items"][0]) else "缺标签")
+    assert data["items"][0]["business_tags"] == ["传送"]
     assert len(prompts) == 2
     assert "缺标签" in prompts[1]        # 重试提示里带上了具体原因
 
@@ -825,8 +841,8 @@ def test_llm_json_returns_incomplete_data_instead_of_raising(monkeypatch):
 
     monkeypatch.setattr(af, "_call_model", fake_call)
     data = wr.llm_json(_cfg(), "SYS", "USER",
-                       validate=lambda d: None if wr.valid_business_tags(wr._pick_item(d)) else "缺标签")
-    assert wr._pick_item(data)["score"] == 7      # 数据还在
+                       validate=lambda d: None if wr.valid_business_tags(d["items"][0]) else "缺标签")
+    assert data["items"][0]["score"] == 7      # 数据还在
 
 
 def test_scoring_retry_beats_keyword_fallback(monkeypatch, tmp_path):
@@ -895,3 +911,447 @@ def test_scoring_sends_enough_context_to_classify(monkeypatch, tmp_path):
     assert seen, "打分阶段没有调用模型"
     assert "硅光 CPO 封装方案" in seen[0], "正文被截断，模型看不到第 1500 字的领域信号"
     assert wr.SCORING_TEXT_CHARS >= 2000
+
+
+# ── 打分批处理（2026-09 提速：每批 N 篇 + 可配置并发）────────────────
+#
+# ⚠️ 批处理对**结果型断言几乎不敏感** —— 把实现悄悄改回逐篇，「每篇都拿到自己的
+# 记录」这类断言照样全绿。所以下面一律断言**请求的次数与形状**（录制桩），
+# 每条都做过变异验证。
+
+_OK = json.dumps({"ok": True}, ensure_ascii=False)
+
+
+def _recording(monkeypatch, reply):
+    """装一个录制桩，记下每次调用的 (system, user, model 名)。
+
+    ``reply`` 传字符串则固定返回，传函数则按 ``(system, user)`` 现算。
+    """
+    calls: list[dict] = []
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        calls.append({"system": system, "user": user, "model": cfg.name})
+        return reply(system, user) if callable(reply) else reply
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    return calls
+
+
+def _positions(user: str) -> list[int]:
+    """user message 里的【第 N 篇】编号 —— 断言批的切法与编号用。"""
+    return [int(m) for m in re.findall(r"【第 (\d+) 篇】", user)]
+
+
+def _echo_by_pos(user: str, *, tags: tuple = ("数通",)) -> str:
+    """按编号回显，每篇带一个能区分身份的 title_cn（译名0 / 译名1 …）。"""
+    return json.dumps({"items": [
+        {"idx": i, "score": 8.0 - i * 0.1, "semiconductor": True,
+         "title_cn": f"译名{i}", "domain": wr.DOMAINS[0],
+         "business_tags": list(tags), "reason": "r"}
+        for i in _positions(user)]}, ensure_ascii=False)
+
+
+def _echo_by_title(user: str) -> str:
+    """按输入里各篇的**标题**回显 —— 与编号/批大小无关，用于等价性对比。"""
+    items = []
+    for i, block in enumerate(user.split("【第 ")[1:]):
+        m = re.search(r"标题: (.+)", block)
+        items.append({"idx": i, "score": 8.0, "semiconductor": True,
+                      "title_cn": (m.group(1).strip() if m else "?"),
+                      "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"})
+    return json.dumps({"items": items}, ensure_ascii=False)
+
+
+def _cands(n: int, *, ts0: int = 1754400000) -> list[dict]:
+    return [_cand(f"a{i}", f"文章{i}", ts=ts0 + i) for i in range(n)]
+
+
+def _score(cands, tmp_path, *, batch=8, workers=1, cache=None, on_progress=None):
+    return wr.score_candidates(
+        cands, [_cfg()],
+        prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=cache or wr.WeeklyCache(tmp_path / "c.json"),
+        workers=workers, batch_size=batch, on_progress=on_progress)
+
+
+def test_scoring_sends_one_request_per_batch(monkeypatch, tmp_path):
+    """9 篇 + 每批 4 → **恰好 3 次请求**，每批编号从 0 连续。"""
+    calls = _recording(monkeypatch, lambda s, u: _echo_by_pos(u))
+    _score(_cands(9), tmp_path, batch=4)
+
+    assert len(calls) == 3, f"期望 3 次请求（9 篇 / 每批 4），实际 {len(calls)}"
+    assert [_positions(c["user"]) for c in calls] == [
+        [0, 1, 2, 3], [0, 1, 2, 3], [0],
+    ], "批的切法或编号不对"
+
+
+def test_scoring_batch_maps_idx_back_to_articles(monkeypatch, tmp_path):
+    """**只看编号、不看数组顺序** —— 模型打乱顺序也不能错位。"""
+    def reply(system, user):
+        rows = [{"idx": i, "score": 5.0 + i, "semiconductor": True, "title_cn": f"译名{i}",
+                 "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"}
+                for i in _positions(user)]
+        return json.dumps({"items": list(reversed(rows))}, ensure_ascii=False)
+
+    _recording(monkeypatch, reply)
+    got, _ = _score(_cands(4), tmp_path, batch=4)
+    assert [got[f"a{i}"]["title_cn"] for i in range(4)] == ["译名0", "译名1", "译名2", "译名3"]
+    assert [got[f"a{i}"]["score"] for i in range(4)] == [5.0, 6.0, 7.0, 8.0]
+
+
+def test_scoring_ignores_extra_and_invalid_idx(monkeypatch, tmp_path):
+    """越界 / 非法 / 重复编号都不能让解析炸掉或产生多余篇目。"""
+    def reply(system, user):
+        return json.dumps({"items": [
+            {"idx": 0, "score": 7, "semiconductor": True, "title_cn": "第一次",
+             "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"},
+            {"idx": 99, "score": 9, "semiconductor": True, "title_cn": "越界",
+             "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"},
+            {"idx": "abc", "score": 9, "title_cn": "非法", "business_tags": ["数通"]},
+            {"idx": True, "score": 9, "title_cn": "布尔", "business_tags": ["数通"]},
+            {"idx": 0, "score": 6, "semiconductor": True, "title_cn": "第二次",
+             "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"},
+        ]}, ensure_ascii=False)
+
+    _recording(monkeypatch, reply)
+    got, _ = _score(_cands(1), tmp_path, batch=1)
+    assert len(got) == 1, "越界/非法编号不该凭空多出篇目"
+    assert got["a0"]["title_cn"] == "第二次", "重复编号应当后者覆盖（与 ai_filter 一致）"
+    assert got["a0"]["score"] == 6
+
+
+def test_scoring_partial_batch_only_reasks_missing(monkeypatch, tmp_path):
+    """漏答时**只补那几篇**（重新编号），绝不整批重发。"""
+    def reply(system, user):
+        if "补充打分" in user:
+            return _echo_by_pos(user)         # 补漏轮正常作答
+        pos = _positions(user)[:1]            # 首轮只答第 0 篇
+        return json.dumps({"items": [
+            {"idx": i, "score": 8, "semiconductor": True, "title_cn": f"译名{i}",
+             "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"}
+            for i in pos]}, ensure_ascii=False)
+
+    calls = _recording(monkeypatch, reply)
+    got, errors = _score(_cands(4), tmp_path, batch=4)
+
+    assert len(got) == 4 and not [e for e in errors if "没有给出" in e], errors
+    assert len(calls) == 2, f"补漏应当只多一次请求，实际 {len(calls)} 次"
+    assert _positions(calls[1]["user"]) == [0, 1, 2], "补漏轮必须只含漏掉的三篇且重新编号"
+
+
+def test_scoring_missing_item_is_not_cached(monkeypatch, tmp_path):
+    """**漏答的篇目绝不写缓存** —— 否则一次网络抖动会把文章永久拉黑。"""
+    def reply(system, user):
+        # 按**标题**跳过「文章1」：补漏轮会重新编号，按位置跳会被绕过
+        rows = []
+        for i, block in enumerate(user.split("【第 ")[1:]):
+            if "标题: 文章1" in block:
+                continue
+            rows.append({"idx": i, "score": 8, "semiconductor": True, "title_cn": f"译名{i}",
+                         "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"})
+        return json.dumps({"items": rows}, ensure_ascii=False)
+
+    _recording(monkeypatch, reply)
+    cache = wr.WeeklyCache(tmp_path / "c.json")
+    got, errors = _score(_cands(3), tmp_path, batch=3, cache=cache)
+
+    assert "a1" not in got
+    assert cache.get("scores", wr.cache_key("scoring", None, "a1")) is None, "漏答被写进了缓存"
+    assert cache.get("scores", wr.cache_key("scoring", None, "a0")) is not None
+    assert any("没有给出" in e for e in errors), errors
+
+
+def test_scoring_empty_items_reply_is_not_cached(monkeypatch, tmp_path):
+    """`{"items":[]}` / 无关对象**不算记录** —— 这是改造前的一个隐性 bug。
+
+    旧代码 `_pick_item` 会把整个信封当记录返回，于是产出 `score=0.0` 的一条
+    **并写进缓存**；批处理会把它放大成「模型漏答 N 篇 = N 条永久 0 分」。
+    """
+    cache = wr.WeeklyCache(tmp_path / "c.json")
+    for payload in ('{"items": []}', '{"foo": 1}'):
+        _recording(monkeypatch, payload)
+        got, errors = _score(_cands(2), tmp_path, batch=2, cache=cache)
+        assert got == {}, f"{payload} 被当成了有效记录"
+        assert len(errors) == 2, errors
+
+
+def test_scoring_batch_transport_failure_writes_nothing(monkeypatch, tmp_path):
+    """传输失败：该批零缓存、逐篇记 error，**不降级**（拿 N 倍请求打坏端点只会更糟）。"""
+    def reply(system, user):
+        if len(_positions(user)) > 1:
+            raise af.ModelCallError("模型「m1」调用失败: key 无效")
+        return _echo_by_pos(user)
+
+    calls = _recording(monkeypatch, reply)
+    cache = wr.WeeklyCache(tmp_path / "c.json")
+    got, errors = _score(_cands(3), tmp_path, batch=3, cache=cache)
+
+    assert got == {}
+    assert len(errors) == 3, "该批三篇都要记一笔"
+    assert len(calls) == 1, "传输失败**不许**降级逐篇再打三次"
+    assert cache.get("scores", wr.cache_key("scoring", None, "a0")) is None
+
+
+def test_scoring_batch_parse_failure_degrades_to_single(monkeypatch, tmp_path):
+    """整批解析不出来 → 降级逐篇（输出被截断是最常见的成因，逐篇把预算还给每篇）。"""
+    def reply(system, user):
+        if len(_positions(user)) > 1:
+            return "抱歉，我无法完成这个请求。"          # 整批不可用
+        return _echo_by_pos(user)
+
+    calls = _recording(monkeypatch, reply)
+    got, errors = _score(_cands(3), tmp_path, batch=3)
+
+    assert len(got) == 3, errors
+    # 整批 2 次（含 llm_json 的带原因重发）+ 降级逐篇 3 次
+    assert len(calls) == 2 + 3, f"期望整批 2 次 + 逐篇 3 次，实际 {len(calls)} 次"
+    assert [len(_positions(c["user"])) for c in calls] == [3, 3, 1, 1, 1]
+
+
+def test_scoring_bad_tags_reasks_only_that_item(monkeypatch, tmp_path):
+    """个别篇标签非法 → 只补那一篇，**其余不重发**（重发会让好答案冒被改写的风险）。"""
+    def reply(system, user):
+        pos = _positions(user)
+        rows = []
+        for i in pos:
+            tags = ["自造词"] if len(pos) > 1 and i == 1 else ["数通"]
+            rows.append({"idx": i, "score": 8, "semiconductor": True, "title_cn": f"译名{i}",
+                         "domain": wr.DOMAINS[0], "business_tags": tags, "reason": "r"})
+        return json.dumps({"items": rows}, ensure_ascii=False)
+
+    calls = _recording(monkeypatch, reply)
+    got, errors = _score(_cands(4), tmp_path, batch=4, )
+
+    assert len(calls) == 2, f"应当只补一轮，实际 {len(calls)} 次请求"
+    assert _positions(calls[1]["user"]) == [0], "补漏轮只该含标签非法的那一篇"
+    assert got["a1"]["business_tags"] == ["接入"] or got["a1"]["business_tags"] == ["公共"] \
+        or got["a1"]["business_tags"], "标签兜底没生效"
+    assert got["a1"]["business_tags"] != ["自造词"], "自造词被原样留下"
+    assert got["a0"]["business_tags"] == ["数通"], "其余篇目的标签被改动了"
+
+
+def test_scoring_progress_counts_articles_not_batches(monkeypatch, tmp_path):
+    """进度回调的语义是**篇数**（前端进度条按它算），不是批数。"""
+    _recording(monkeypatch, lambda s, u: _echo_by_pos(u))
+    seen: list[tuple[int, int]] = []
+    _score(_cands(9), tmp_path, batch=4, on_progress=lambda d, t: seen.append((d, t)))
+    assert seen == [(4, 9), (8, 9), (9, 9)], seen
+
+
+def test_scoring_batch_size_one_accepts_reply_without_idx(monkeypatch, tmp_path):
+    """batch=1 时必须接受「不带 idx」的老写法 —— 与改造前的 _pick_item 等价。"""
+    _recording(monkeypatch, json.dumps({"items": [
+        {"score": 7, "semiconductor": True, "title_cn": "译名",
+         "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"}]},
+        ensure_ascii=False))
+    got, _ = _score(_cands(1), tmp_path, batch=1)
+    assert got["a0"]["score"] == 7 and got["a0"]["title_cn"] == "译名"
+
+
+def test_scoring_batch_size_one_equals_legacy(monkeypatch, tmp_path):
+    """批大小不能改变**结果**：1 与 8 跑同一份语料，逐字段相等。"""
+    _recording(monkeypatch, lambda s, u: _echo_by_title(u))
+    one, _ = _score(_cands(5), tmp_path, batch=1,
+                    cache=wr.WeeklyCache(tmp_path / "c1.json"))
+    many, _ = _score(_cands(5), tmp_path, batch=8,
+                     cache=wr.WeeklyCache(tmp_path / "c8.json"))
+    assert one == many
+
+
+def test_scoring_batches_rotate_models_by_batch(monkeypatch, tmp_path):
+    """一批只发给**一个**模型；多模型时按批序号轮询（不是按篇）。"""
+    models = [ModelConfig(id="m1", name="A", base_url="http://x", api_key="k",
+                          model="x", enabled=True, format="openai"),
+              ModelConfig(id="m2", name="B", base_url="http://x", api_key="k",
+                          model="x", enabled=True, format="openai")]
+    calls: list[str] = []
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        calls.append(cfg.name)
+        return _echo_by_pos(user)
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    got, _ = wr.score_candidates(
+        _cands(5), models, prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+        cache=wr.WeeklyCache(tmp_path / "c.json"), workers=1, batch_size=1)
+
+    assert len(got) == 5
+    assert calls == ["A", "B", "A", "B", "A"], calls
+
+
+def test_scoring_chunks_after_cache_filtering(monkeypatch, tmp_path):
+    """切块要在**缓存过滤之后** —— 命中缓存的篇目不该白占批位。"""
+    cache = wr.WeeklyCache(tmp_path / "c.json")
+    cands = _cands(8)
+    for it in cands[:2]:
+        cache.put("scores", wr.cache_key("scoring", None, it["key"]),
+                  {"score": 9, "semiconductor": True, "title_cn": "命中",
+                   "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "cached"})
+
+    calls = _recording(monkeypatch, lambda s, u: _echo_by_pos(u))
+    got, _ = _score(cands, tmp_path, batch=4, cache=cache)
+
+    assert len(got) == 8
+    assert len(calls) == 2, f"8 篇里 2 篇命中，剩 6 篇应当只切 2 批，实际 {len(calls)}"
+    assert "文章0" not in calls[0]["user"] and "文章1" not in calls[0]["user"]
+    for it in cands[:2]:
+        assert got[it["key"]]["title_cn"] == "命中", "缓存命中的篇目被覆盖了"
+
+
+def test_scoring_batch_truncates_each_article_not_the_whole_message(monkeypatch, tmp_path):
+    """**每篇各自**截断到 2000 字 —— 对整条 message 截断会让第 2 篇之后全丢。"""
+    calls = _recording(monkeypatch, lambda s, u: _echo_by_pos(u))
+    long = "开场。" * 600 + "关键信号甲。"      # 关键词落在 ~1800 字
+    other = "引子。" * 600 + "关键信号乙。"
+    _score([_cand("a1", "甲", text=long), _cand("a2", "乙", text=other)],
+           tmp_path, batch=2)
+
+    user = calls[0]["user"]
+    assert "关键信号甲。" in user, "第一篇正文被截断了"
+    assert "关键信号乙。" in user, "后面那篇的正文被整条 message 截断吃掉了"
+    assert len(user) < 2 * wr.SCORING_TEXT_CHARS + 800
+
+
+def test_scoring_batch_1based_numbering_is_corrected(monkeypatch, tmp_path):
+    """整批用 1-based 编号时左移一位 —— 但有守卫，不做启发式猜测。"""
+    def reply(system, user):
+        return json.dumps({"items": [
+            {"idx": i + 1, "score": 8, "semiconductor": True, "title_cn": f"译名{i}",
+             "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"}
+            for i in _positions(user)]}, ensure_ascii=False)
+
+    _recording(monkeypatch, reply)
+    got, errors = _score(_cands(3), tmp_path, batch=3)
+    assert [got[f"a{i}"]["title_cn"] for i in range(3)] == ["译名0", "译名1", "译名2"]
+    assert not errors, errors
+
+
+def test_scoring_1based_guard_does_not_fire_on_partial_answers(monkeypatch, tmp_path):
+    """守卫条件：只有「0 缺席**且**编号恰好是 1..n」才纠偏。
+
+    只答了 {1,2} 的残缺回复不能被当成 1-based 整体左移 —— 那会把第 1 篇的答案
+    错按到第 0 篇头上。
+    """
+    def reply(system, user):
+        return json.dumps({"items": [
+            {"idx": i, "score": 8, "semiconductor": True, "title_cn": f"译名{i}",
+             "domain": wr.DOMAINS[0], "business_tags": ["数通"], "reason": "r"}
+            for i in _positions(user) if i != 0]}, ensure_ascii=False)
+
+    _recording(monkeypatch, reply)
+    got, _ = _score(_cands(3), tmp_path, batch=3)
+    assert "a0" not in got or got["a0"]["title_cn"] != "译名1", "残缺回复被错误地左移了"
+
+
+# ── 核心洞察的 JSON 包装事故（2026-09 实跑第 1 期）────────────────────
+#
+# 故障链：传输层强制 response_format=json_object → 模型只能回 {"content": "…"}
+#         → _clean_intro 不解析 JSON，整包原样进报告
+#         → JSON 里转义的 \n 是**字面反斜杠+n**，所以分段全失效、①–⑤ 挤成一行
+#         → html.escape 把引号编成 &quot;，模板 | safe 输出后就是用户看到的那串
+#
+# 所以这里的 fixture 不手抄，而是**按故障本身的构造过程生成**，改哪一环都会跟着变。
+
+
+def _model_wrapped_intro() -> str:
+    """模型在 json_object 模式下**只能**回出来的形状（\\n 是 JSON 转义，不是真换行）。"""
+    return json.dumps(
+        {"content": "本期（2026-09-06 至 2026-09-12）精选 10 篇。\n① 看点一。\n② 看点二。"},
+        ensure_ascii=False,
+    )
+
+
+def _incident_snapshot_intro() -> str:
+    """那期 ``data/report.json`` 里真正存下来的东西 —— _clean_intro 已经跑过一遍。"""
+    return html.escape(_model_wrapped_intro()).replace("\n", "<br>\n")
+
+
+def test_intro_call_turns_off_json_mode(monkeypatch, tmp_path):
+    """协议约束必须与「要的是成稿文字」这个语义一致 —— 这是根因所在。
+
+    json_object 模式下模型**只能**回包装对象，`_clean_intro` 再怎么修都只是兜底。
+    """
+    seen: dict = {}
+
+    def fake_call(cfg, system, user, max_retries=3, **kw):
+        seen.update(kw)
+        return "本期精选 3 篇。\n① 看点一。"
+
+    monkeypatch.setattr(af, "_call_model", fake_call)
+    wr.generate_intro([_cand("a1", "文章")], {}, {}, [_cfg()],
+                      prompts=dict(wr.load_prompts(tmp_path / "none.json")),
+                      from_date="2026-09-01", to_date="2026-09-07")
+    assert seen.get("json_mode") is False, "核心洞察阶段必须关掉 json_object"
+
+
+def test_clean_intro_unwraps_json_wrapper():
+    """万一还是被包了一层（换了模型、协议层回退），也绝不能让它进报告。"""
+    out = wr._clean_intro(_model_wrapped_intro())
+    assert "content" not in out, "包装对象的字段名漏进了报告正文"
+    assert "{" not in out
+    assert "<br>" in out, "字面量 \\n 没有被还原成换行，① ② 会挤成一行"
+    assert "① 看点一。" in out
+
+
+def test_clean_intro_unwraps_wrapper_with_bare_newlines():
+    """`json.loads` 解不开的包装也要能抠出来 —— 正则兜底那条路。
+
+    两种成因分开钉：裸换行（非法 JSON，但换行本来就是**真的**）与
+    转义换行 + 语法错误（换行是**字面反斜杠+n**，必须手动还原，否则整段不分行）。
+    """
+    # ① 正文里带裸换行 → JSON 非法，换行本身是真的
+    out = wr._clean_intro('{"content": "第一行\n第二行"}')
+    assert "content" not in out
+    assert "第一行<br>" in out
+
+    # ② 转义换行 + 尾逗号 → JSON 非法，但换行是字面量，不还原就永远分不了行
+    out2 = wr._clean_intro('{"content": "甲\\n乙",}')
+    assert "content" not in out2
+    assert "甲<br>" in out2, "字面量 \\n 没有被还原成真换行"
+
+
+def test_clean_intro_leaves_plain_text_alone():
+    """解包只认「已知正文字段」那一种形状 —— 正文长得像 JSON 也不能被吃掉。"""
+    assert "正常正文" in wr._clean_intro("这是 {不是 JSON} 的一段正常正文。")
+    # 合法 JSON、但没有正文字段：不认识就原样留着，不做猜测
+    assert "标题" in wr._clean_intro('{"标题": "正文"}')
+
+
+def test_repair_saved_intro_fixes_the_incident_snapshot():
+    """那期快照存的是**已经转义过**的坏数据，json.loads 再也解不开，得先还原实体。"""
+    snapshot = _incident_snapshot_intro()
+    assert "&quot;content&quot;" in snapshot, "没复现出那批数据的形状，这个测试就白写了"
+    fixed = wr.repair_saved_intro(snapshot)
+    assert "content" not in fixed
+    assert "<br>" in fixed
+    assert "① 看点一。" in fixed
+
+
+def test_repair_saved_intro_keeps_normal_intro():
+    """正常引言（哪怕是带实体的）必须原样返回 —— 修复不能把好数据改坏。"""
+    normal = "本期精选 10 篇。&amp;<br>\n① 看点一。"
+    assert wr.repair_saved_intro(normal) == normal
+
+
+def test_load_saved_context_repairs_intro(tmp_path):
+    """往期报告点一次「重新渲染」就该恢复 —— 不必重新花钱生成。"""
+    d = tmp_path / "第1期_2026-09-12"
+    (d / "data").mkdir(parents=True)
+    (d / "data" / "report.json").write_text(
+        json.dumps({"issue": {"num": 1}, "intro": _incident_snapshot_intro()},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+    ctx = wr.load_saved_context(d)
+    assert ctx is not None
+    assert "content" not in ctx["intro"]
+    assert "<br>" in ctx["intro"]
+
+
+def test_intro_prompt_never_mentions_json():
+    """拆掉陷阱：intro 的固定输出约束里**不能**出现 "json"。
+
+    DeepSeek 要求 json_object 模式时 prompt 必须含 "json" —— 早先那句「不要 JSON」
+    恰好满足了它，于是模型被迫包装。根因虽已关掉，但这行字留着就是下一颗雷。
+    """
+    assert "json" not in wr.build_prompt("intro").lower()

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -14,6 +16,7 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from mp_harvest.infra.platform import paths
 from mp_harvest.server import get_token
@@ -78,6 +81,79 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def _unhandled(request, exc):  # noqa: ANN001
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    @app.middleware("http")
+    async def _log_actions(request, call_next):  # noqa: ANN001
+        """把**写操作**记进执行日志（2026-09）。
+
+        用中间件而不是逐个路由加埋点：一处覆盖全部用户动作（拉取 / 筛选 / 导出 /
+        生成 / 保存设置…），以后新增的路由也自动在内。只记 POST/PUT/PATCH/DELETE ——
+        GET 是浏览不是动作，记下来只会把日志淹掉。
+
+        ⚠️ 查询串里带**启动 token**（`?token=…`），一律经 `event_log._redact`
+        按 `token` 键名打码后才落库（有测试钉住）。
+        """
+        method = request.method.upper()
+        if method not in ("POST", "PUT", "PATCH", "DELETE"):
+            return await call_next(request)
+        # 清空日志这个动作本身不记 —— 否则点完「清空」还剩一条，用户会以为按钮坏了
+        # （本项目对「点了没反应 / 看着像坏了」有过多轮返工，这点直觉值得照顾）。
+        if request.url.path == "/api/logs":
+            return await call_next(request)
+        started = time.time()
+
+        def _write(level: str, message: str, status: int = 0, detail: str = "") -> None:
+            try:
+                from mp_harvest.core.event_log import log_event
+
+                log_event(level, "action", message, {
+                    "method": method,
+                    "path": request.url.path,
+                    "status": status,
+                    "detail": detail,
+                    "query": dict(request.query_params),
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            response = await call_next(request)
+        except Exception as exc:  # noqa: BLE001
+            _write("error", f"{method} {request.url.path} 抛异常：{exc}")
+            raise
+        if response.status_code < 400:
+            _write("info", f"{method} {request.url.path} → {response.status_code}",
+                   status=response.status_code)
+            return response
+        # 失败一定要带上**原因**（FastAPI 把原因放在 body 的 `detail` 里）——
+        # 「POST → 400」这种记录对排查毫无帮助，用户来看的就是为什么。
+        #
+        # 但 `call_next` 给的是 `_StreamingResponse`（**没有 `.body`**），只能把
+        # 迭代器读完再原样造一个响应回去。本应用没有流式 HTTP 响应；WebSocket
+        # 不走 HTTP 中间件，不受影响。
+        chunks: list[bytes] = []
+        try:
+            async for c in response.body_iterator:
+                chunks.append(c if isinstance(c, bytes) else str(c).encode("utf-8"))
+        except Exception:  # noqa: BLE001 —— 读不出来就只记状态码，别把响应弄坏
+            pass
+        raw = b"".join(chunks)
+        detail = ""
+        try:
+            detail = str(json.loads(raw.decode("utf-8", "ignore")).get("detail") or "")
+        except Exception:  # noqa: BLE001
+            detail = ""
+        _write("warn", f"{method} {request.url.path} → {response.status_code}"
+                       + (f"：{detail}" if detail else ""),
+               status=response.status_code, detail=detail)
+        # 原样返回。只丢 content-length（body 换了、长度必须重算）；
+        # **content-type 一定要留着** —— 流式包装的 `media_type` 是空的，
+        # 一起丢掉的话客户端会收到一个没有类型的响应（有测试钉住）。
+        headers = {
+            k: v for k, v in response.headers.items() if k.lower() != "content-length"
+        }
+        return Response(content=raw, status_code=response.status_code, headers=headers)
 
     for r in ALL_ROUTERS:
         app.include_router(r)
