@@ -213,6 +213,12 @@ async function openTemplate() {
   if (!ok && reason) ui.error(reason)
 }
 
+/** 双击路径 → 打开所在文件夹（并选中该文件）。
+ *
+ * **只挂 dblclick，不挂 click**：用户要的是「只支持双击打开文件夹」——单击不做
+ * 任何事。反过来（单击开文件 + 双击开文件夹）在浏览器里是做不到干净的：
+ * 双击会先派发两次 click，要么把文件打开两遍，要么得延迟 250ms 等一等，单击会顿一下。
+ */
 async function revealTemplate() {
   const { ok, reason } = await revealLocalPath(currentTemplate.value)
   if (!ok && reason) ui.error(reason)
@@ -414,9 +420,20 @@ async function openPath(p: string) {
           <div class="muted" style="font-size:var(--fs-xs);margin-top:var(--sp-2);line-height:1.7">
             <!-- 「当前模板」而不是「内置模板」：上面输入框填了自定义模板时，
                  这一行显示的就是那个自定义文件，写「内置」会让人以为改的没生效 -->
-            当前模板（{{ weekly.preview?.template_is_custom ? '自定义' : '内置' }}）：
-            <STooltip text="在文件夹中显示">
-              <span class="mono tpl-path" @click="revealTemplate">{{ currentTemplate || '（未知）' }}</span>
+            <!-- 「当前使用的模板」说的是**这次生成实际会用哪一份**（可能是内置、
+                 也可能是你选的自定义那几篇），别写成「内置模板」——填了自定义模板时
+                 那会让人以为改的没生效。是内置还是自定义，放在悬停里说。 -->
+            当前使用的模板：
+            <span class="mono tpl-path" title="双击打开所在文件夹"
+                  @dblclick="revealTemplate">{{ currentTemplate || '（未知）' }}</span>
+            <STooltip
+              v-if="weekly.preview"
+              :text="weekly.preview.template_is_custom
+                ? '自定义模板（模板文件输入框里指定的那份）'
+                : '内置模板（模板文件输入框留空时的默认模板）'"
+            >
+              <span class="muted" style="font-size:var(--fs-xs);cursor:help"
+                    >［{{ weekly.preview.template_is_custom ? '自定义' : '内置' }}］</span>
             </STooltip>
             <template v-if="weekly.preview && !weekly.preview.template_exists">
               <br /><span class="status-fail">模板文件不存在，生成会失败</span>
@@ -568,15 +585,11 @@ async function openPath(p: string) {
 </template>
 
 <style scoped>
-/* 可点击的模板路径：要一眼看出「这个能点」（点它 = 在文件夹中显示） */
+/* 模板路径：**不要高亮**（用户要求），只在悬停时把光标变成放大镜的样子暗示
+   「可以双击」，具体做什么写在 title 里 —— 没有下划线也不能让人完全摸不着头脑 */
 .tpl-path {
-  cursor: pointer;
-  border-bottom: 1px dashed var(--text-tertiary);
+  cursor: zoom-in;
   word-break: break-all;
-}
-.tpl-path:hover {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
 }
 
 /* 候选明细抽屉 */

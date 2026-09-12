@@ -339,10 +339,18 @@ def test_template_panel_has_open_and_reveal():
     # 两个动作都接了真实路径（不是空串/占位）
     assert re.search(r"openLocalPath\(currentTemplate\.value\)", src), "打开模板没接当前模板路径"
     assert re.search(r"revealLocalPath\(currentTemplate\.value\)", src), "定位没接当前模板路径"
-    # 路径本身可点
-    assert re.search(r'class="mono tpl-path"\s+@click="revealTemplate"', src), "路径不可点"
-    # 文案：当前模板（不是「内置模板」——填了自定义模板时那会误导）
-    assert "当前模板（" in src, "标签还是旧的「内置模板」"
+    # 路径只挂 dblclick、**不挂 click**（用户明确「只支持双击打开文件夹」）。
+    # 单击开文件 + 双击开文件夹在浏览器里做不到干净：双击会先派发两次 click，
+    # 要么把文件打开两遍，要么得延迟 250ms 让单击顿一下。
+    assert '@dblclick="revealTemplate"' in src, "路径没有挂双击"
+    assert not re.search(r'tpl-path[^>]*@click', src), "路径不该挂单击（会与双击打架）"
+    # 文案说的是「当前使用的」那一份，不是「内置模板」——填了自定义模板时后者会误导
+    assert "当前使用的模板" in src, "标签没写成「当前使用的模板」"
+    assert "内置模板：" not in src, "还留着旧的「内置模板：」文案"
+    # 不要高亮（用户要求）：没有虚线下划线、没有悬停变色
+    css = src[src.index(".tpl-path"):]
+    css = css[: css.index("}") + 1]
+    assert "dashed" not in css and ":hover" not in css, f"路径仍被高亮：{css}"
 
 
 def test_reveal_helper_posts_to_the_reveal_endpoint():
