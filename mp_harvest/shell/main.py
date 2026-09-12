@@ -202,6 +202,18 @@ def self_check(out_path: str = "") -> int:
     except Exception as exc:  # noqa: BLE001
         check("HTTP 装配", False, f"{type(exc).__name__}: {exc}")
 
+    # uvicorn.Config 的 __init__ 会跑 configure_logging → sys.stdout.isatty()。
+    # GUI 程序（console=False）里 stdout 是 None，这就是 v2.3.0 Windows 真机
+    # 「exe 起不来」的根因 —— 而上面的 HTTP 装配走的是 TestClient，抓不到它。
+    # 这里真的构造一次 Config，把这个崩溃钉在 CI 上（依赖 main() 开头的 _ensure_stdio）。
+    try:
+        import uvicorn
+
+        uvicorn.Config(create_app(), host="127.0.0.1", port=0, log_level="warning")
+        check("uvicorn 配置（无控制台环境）", True)
+    except Exception as exc:  # noqa: BLE001
+        check("uvicorn 配置（无控制台环境）", False, f"{type(exc).__name__}: {exc}")
+
     failed = [c for c in checks if not c["ok"]]
     payload = {
         "ok": not failed,
@@ -263,6 +275,21 @@ def _webview2_runtime_version() -> str:
 
 DEFAULT_PORT = 8765
 PORT_PROBE_LIMIT = 100
+
+
+def _ensure_stdio() -> None:
+    """冻结版是 ``console=False`` 的 GUI 程序：没有控制台，``sys.stdout`` / ``sys.stderr``
+    是 **None**。不补上的话 uvicorn 配日志时 ``sys.stdout.isatty()`` 直接
+    AttributeError（v2.3.0 Windows 真机实测，进程起不来），``main()`` 里的 ``print()``
+    同理。指到 ``os.devnull`` —— 诊断信息本就走 core/event_log 写文件，不靠控制台。
+
+    mac 与 Windows 两份 spec 都是 ``console=False``，所以不分平台、一律兜底。
+    """
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(
+                sys, name, open(os.devnull, "w", encoding="utf-8", errors="replace")
+            )
 
 
 def webview_start_kwargs() -> dict[str, Any]:
@@ -397,6 +424,7 @@ def cleanup(server: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_stdio()
     args = parse_args(argv)
 
     # ⚠️ 自检必须排在免责声明门禁**之前**：未同意时 require_consent() 会

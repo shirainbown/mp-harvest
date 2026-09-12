@@ -63,3 +63,27 @@ def test_ca_untrusted_hint_matches_platform(monkeypatch, tmp_path):
         assert not ok
         assert want in msg
         assert not_want not in msg
+
+
+# ── _ensure_stdio：冻结 GUI 程序没有控制台 ─────────────────────────
+
+
+def test_ensure_stdio_restores_none_streams():
+    """console=False 的冻结程序里 sys.stdout/stderr 是 None：uvicorn 配日志
+    （sys.stdout.isatty()）与 print() 都会炸（v2.3.0 Windows 真机实测）。
+    _ensure_stdio 必须把它们补成可写、非 tty 的对象。"""
+    saved_out, saved_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout = sys.stderr = None
+        shell_main._ensure_stdio()
+        assert sys.stdout is not None and not sys.stdout.isatty()
+        assert sys.stderr is not None and not sys.stderr.isatty()
+        sys.stdout.write("ok")  # 可写，不抛
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+
+
+def test_ensure_stdio_keeps_existing_streams():
+    """开发模式（有控制台）绝不能被换掉。"""
+    shell_main._ensure_stdio()
+    assert sys.stdout is not None
